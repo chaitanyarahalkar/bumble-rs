@@ -275,6 +275,13 @@ impl Command {
                 p.push(*advertising_filter_policy);
             }
             Command::LeSetAdvertisingData { advertising_data } => {
+                // Advertising data is a fixed 31-byte field (Core Spec caps it
+                // at 31); longer input would be silently truncated by the
+                // resize below.
+                debug_assert!(
+                    advertising_data.len() <= 31,
+                    "advertising_data exceeds the 31-byte field"
+                );
                 p.push(advertising_data.len() as u8);
                 p.extend_from_slice(advertising_data);
                 // Pad to the fixed 31-byte advertising-data field.
