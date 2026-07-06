@@ -1,0 +1,3 @@
+[workspace]
+members = ["bumble"]
+resolver = "2"

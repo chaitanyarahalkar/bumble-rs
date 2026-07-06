@@ -1,0 +1,8 @@
+[package]
+name = "bumble"
+version = "0.1.0"
+edition = "2021"
+description = "Rust port of google/bumble core Bluetooth primitives (slice 1: core types & advertising data)"
+license = "Apache-2.0"
+
+[dependencies]
