@@ -20,12 +20,15 @@
 //! ## Scope
 //!
 //! Implemented: `Reset`, `LE_Set_Random_Address`, `LE_Set_Advertising_Data`,
-//! `LE_Set_Advertising_Enable`, `LE_Set_Scan_Enable`, and the resulting
-//! Command Complete acknowledgements and LE Advertising Report events.
+//! `LE_Set_Advertising_Enable`, `LE_Set_Scan_Enable`, and `LE_Create_Connection`,
+//! producing the resulting Command Complete / Command Status acknowledgements,
+//! LE Advertising Report events, and — via [`LocalLink::establish_connections`]
+//! — LE Connection Complete events on both the central and the peripheral
+//! (slice 7).
 //!
-//! Deferred to later slices: LE connections, ACL data, LL control PDUs,
-//! extended advertising sets, CIS/ISO, encryption, and classic/LMP — the bulk
-//! of Bumble's `controller.py`.
+//! Deferred to later slices: ACL data, LL control PDUs, disconnection, extended
+//! advertising sets, CIS/ISO, encryption, and classic/LMP — the bulk of
+//! Bumble's `controller.py`.
 
 use bumble::{Address, AddressType};
 use bumble_hci::codes::*;
@@ -33,12 +36,41 @@ use bumble_hci::{AdvertisingReport, Command, Event, HciPacket, LeMetaEvent, Retu
 
 /// Legacy connectable-and-scannable undirected advertising event type.
 const ADV_IND: u8 = 0x00;
+/// Address type used for public device addresses.
+const ADDRESS_TYPE_PUBLIC: u8 = 0;
 /// Address type used for random device addresses.
 const ADDRESS_TYPE_RANDOM: u8 = 1;
 /// A fixed RSSI reported for received advertisements (dBm).
 const DEFAULT_RSSI: i8 = -40;
 /// HCI "Unknown HCI Command" error, returned for commands this slice ignores.
 const UNKNOWN_HCI_COMMAND_ERROR: u8 = 0x01;
+/// LE connection role: central (initiator).
+pub const ROLE_CENTRAL: u8 = 0x00;
+/// LE connection role: peripheral (advertiser).
+pub const ROLE_PERIPHERAL: u8 = 0x01;
+
+// Fixed LE connection parameters reported in Connection Complete (matching
+// Bumble's placeholder values).
+const CONNECTION_INTERVAL: u16 = 10;
+const PERIPHERAL_LATENCY: u16 = 0;
+const SUPERVISION_TIMEOUT: u16 = 10;
+const CENTRAL_CLOCK_ACCURACY: u8 = 7;
+
+/// An established LE connection on a controller.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Connection {
+    pub handle: u16,
+    pub role: u8,
+    pub peer_address: Address,
+}
+
+/// A pending outgoing connection recorded by `LE_Create_Connection`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PendingConnection {
+    peer_address: Address,
+    peer_address_type: u8,
+    own_address_type: u8,
+}
 
 /// An advertising PDU as it travels over the [`LocalLink`]. Since the link is
 /// in-process, this is a plain struct rather than a serialized LL PDU.
@@ -60,6 +92,9 @@ pub struct Controller {
     advertising_data: Vec<u8>,
     advertising_enabled: bool,
     scanning_enabled: bool,
+    connections: Vec<Connection>,
+    initiating: Option<PendingConnection>,
+    next_handle: u16,
     host_queue: Vec<HciPacket>,
 }
 
@@ -74,6 +109,9 @@ impl Controller {
             advertising_data: Vec::new(),
             advertising_enabled: false,
             scanning_enabled: false,
+            connections: Vec::new(),
+            initiating: None,
+            next_handle: 1,
             host_queue: Vec::new(),
         }
     }
@@ -103,7 +141,28 @@ impl Controller {
                 self.advertising_enabled = false;
                 self.scanning_enabled = false;
                 self.advertising_data.clear();
+                self.connections.clear();
+                self.initiating = None;
                 self.ack(op_code, HCI_SUCCESS);
+            }
+            Command::LeCreateConnection {
+                peer_address,
+                peer_address_type,
+                own_address_type,
+                ..
+            } => {
+                self.initiating = Some(PendingConnection {
+                    peer_address,
+                    peer_address_type,
+                    own_address_type,
+                });
+                // LE_Create_Connection is acknowledged with a Command Status;
+                // the Connection Complete follows once the link connects.
+                self.host_queue.push(HciPacket::Event(Event::CommandStatus {
+                    status: HCI_SUCCESS,
+                    num_hci_command_packets: 1,
+                    command_opcode: op_code,
+                }));
             }
             Command::LeSetRandomAddress { random_address } => {
                 self.random_address = random_address;
@@ -161,6 +220,80 @@ impl Controller {
                 }],
             },
         )));
+    }
+
+    /// The connections currently established on this controller.
+    pub fn connections(&self) -> &[Connection] {
+        &self.connections
+    }
+
+    /// `true` if an `LE_Create_Connection` is pending (initiating).
+    pub fn is_initiating(&self) -> bool {
+        self.initiating.is_some()
+    }
+
+    fn allocate_handle(&mut self) -> u16 {
+        let handle = self.next_handle;
+        self.next_handle += 1;
+        handle
+    }
+
+    /// The address this controller presents while initiating, and its type,
+    /// if a connection is pending.
+    fn initiating_self_address(&self) -> Option<(Address, u8)> {
+        self.initiating.as_ref().map(|p| {
+            if p.own_address_type == ADDRESS_TYPE_PUBLIC {
+                (self.public_address.clone(), ADDRESS_TYPE_PUBLIC)
+            } else {
+                (self.random_address.clone(), ADDRESS_TYPE_RANDOM)
+            }
+        })
+    }
+
+    fn push_connection_complete(&mut self, connection: &Connection, peer_address_type: u8) {
+        self.host_queue.push(HciPacket::Event(Event::LeMeta(
+            LeMetaEvent::ConnectionComplete {
+                status: HCI_SUCCESS,
+                connection_handle: connection.handle,
+                role: connection.role,
+                peer_address_type,
+                peer_address: connection.peer_address.clone(),
+                connection_interval: CONNECTION_INTERVAL,
+                peripheral_latency: PERIPHERAL_LATENCY,
+                supervision_timeout: SUPERVISION_TIMEOUT,
+                central_clock_accuracy: CENTRAL_CLOCK_ACCURACY,
+            },
+        )));
+    }
+
+    /// Complete the pending connection as the central. Emits a Connection
+    /// Complete (role = central) and clears the initiating state.
+    pub fn connect_as_central(&mut self) {
+        let Some(pending) = self.initiating.take() else {
+            return;
+        };
+        let handle = self.allocate_handle();
+        let connection = Connection {
+            handle,
+            role: ROLE_CENTRAL,
+            peer_address: pending.peer_address,
+        };
+        self.push_connection_complete(&connection, pending.peer_address_type);
+        self.connections.push(connection);
+    }
+
+    /// Accept an incoming connection as the peripheral. Emits a Connection
+    /// Complete (role = peripheral) and stops advertising.
+    pub fn connect_as_peripheral(&mut self, central_address: Address, central_address_type: u8) {
+        let handle = self.allocate_handle();
+        let connection = Connection {
+            handle,
+            role: ROLE_PERIPHERAL,
+            peer_address: central_address,
+        };
+        self.push_connection_complete(&connection, central_address_type);
+        self.connections.push(connection);
+        self.advertising_enabled = false;
     }
 
     fn ack(&mut self, command_opcode: u16, status: u8) {
@@ -226,6 +359,36 @@ impl LocalLink {
                     controller.on_advertising_pdu(&pdu);
                 }
             }
+        }
+    }
+
+    /// Complete pending connections: for each initiating central, find a
+    /// connectable advertiser at the target address and connect the two,
+    /// emitting a Connection Complete to each host.
+    pub fn establish_connections(&mut self) {
+        // Match (central, peripheral) pairs first, to avoid aliasing during mutation.
+        let mut pairs: Vec<(usize, usize, Address, u8)> = Vec::new();
+        for (ci, central) in self.controllers.iter().enumerate() {
+            let Some((central_addr, central_addr_type)) = central.initiating_self_address() else {
+                continue;
+            };
+            let target = central.initiating.as_ref().unwrap().peer_address.clone();
+            if let Some(pi) = self
+                .controllers
+                .iter()
+                .position(|p| p.is_advertising() && *p.random_address() == target)
+            {
+                if pi != ci {
+                    pairs.push((ci, pi, central_addr, central_addr_type));
+                }
+            }
+        }
+
+        for (ci, pi, central_addr, central_addr_type) in pairs {
+            // Peripheral accepts, seeing the central's address.
+            self.controllers[pi].connect_as_peripheral(central_addr, central_addr_type);
+            // Central completes its pending connection.
+            self.controllers[ci].connect_as_central();
         }
     }
 }

@@ -14,11 +14,12 @@ crate whose behavior is verified against the upstream Python.
 |-------|-------|--------|
 | 1. Core types & advertising data | `bumble` | ✅ complete — 16/16 tests green |
 | 2. HCI packet codec (framing + commands + events + return params) | `bumble-hci` | ✅ 43/43 tests green |
-| 3. Software controller + virtual link (LE advertising scenario) | `bumble-controller` | ✅ 4/4 tests green |
+| 3+7. Software controller + virtual link (advertising + LE connections) | `bumble-controller` | ✅ 6/6 tests green |
 | 4. L2CAP frame codec (PDU + signaling frames + FCS) | `bumble-l2cap` | ✅ 8/8 tests green |
 | 5. ATT protocol PDU codec | `bumble-att` | ✅ 8/8 tests green |
 | 6. SMP cryptographic toolbox | `bumble-crypto` | ✅ 10/10 vectors green |
-| 7+. GATT client/server → profiles | — | planned |
+| 7. LE connection establishment (in the controller) | `bumble-controller` | ✅ (see slice 3+7) |
+| 8+. ACL data path → GATT client/server → profiles | — | planned |
 
 Slice 2 covers the HCI **framing foundation**, every command exercised by
 `hci_test.py::run_test_commands` (fixed-layout, address, mask, and the per-entry
@@ -102,7 +103,10 @@ virtual devices actually talk:
   `LE_Set_Scan_Enable`), producing Command Complete acks and, when scanning,
   LE Advertising Report events.
 - **`LocalLink`** — an in-process bus that broadcasts an advertiser's PDU to
-  scanning controllers.
+  scanning controllers, and (slice 7) establishes LE connections: an initiating
+  central (`LE_Create_Connection`) plus a connectable advertiser produce an
+  `LE_Connection_Complete` on both hosts (central role / peripheral role, each
+  seeing the other's address), and the advertiser stops.
 
 ### Design notes
 
