@@ -16,7 +16,8 @@ crate whose behavior is verified against the upstream Python.
 | 2. HCI packet codec (framing + commands + events + return params) | `bumble-hci` | ✅ 43/43 tests green |
 | 3. Software controller + virtual link (LE advertising scenario) | `bumble-controller` | ✅ 4/4 tests green |
 | 4. L2CAP frame codec (PDU + signaling frames + FCS) | `bumble-l2cap` | ✅ 8/8 tests green |
-| 5+. ATT/GATT → SMP | — | planned |
+| 5. ATT protocol PDU codec | `bumble-att` | ✅ 8/8 tests green |
+| 6+. SMP → GATT client/server | — | planned |
 
 Slice 2 covers the HCI **framing foundation**, every command exercised by
 `hci_test.py::run_test_commands` (fixed-layout, address, mask, and the per-entry
@@ -132,6 +133,21 @@ the frame format is independent of HCI and addresses):
 Deferred: the full signaling command set, configuration options,
 enhanced-retransmission control fields, and the channel manager / reassembly.
 
+## Slice 5 — what's here
+
+The ATT (Attribute Protocol) PDU codec in the [`bumble-att`](bumble-att/) crate
+(depends on `bumble` for `Uuid`):
+
+- **`AttPdu`** — `[op_code, payload…]` framing with typed variants:
+  Error_Response, Exchange_MTU_Request/Response, Read_Request/Response,
+  Read_By_Group_Type_Request (UUID group type), Write_Request/Response,
+  Handle_Value_Notification, plus a `Generic` fallback and the `is_command` /
+  `is_signed` op-code bit helpers.
+
+Deferred: the remaining ATT PDUs (Find_Information, grouped
+Read_By_Type_Response, prepared/queued and signed writes, indications) and the
+GATT client/server layers.
+
 ## Acceptance
 
 The port's contract is the upstream Python test suite, ported 1:1:
@@ -179,6 +195,9 @@ bumble-rs/
 ├── bumble-l2cap/              # slice-4 L2CAP frame codec crate
 │   ├── src/lib.rs
 │   └── tests/acceptance.rs    # ported l2cap_test.py codec cases (oracle-pinned)
+├── bumble-att/                # slice-5 ATT protocol PDU codec crate
+│   ├── src/lib.rs
+│   └── tests/acceptance.rs    # ported gatt_test.py ATT cases (oracle-pinned)
 └── docs/superpowers/          # design specs + implementation plans
 ```
 
