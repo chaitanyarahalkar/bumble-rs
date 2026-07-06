@@ -5,6 +5,7 @@
 //! Ported from `bumble.hci.HCI_Event` / `HCI_LE_Meta_Event`.
 
 use crate::codes::*;
+use crate::return_parameters::ReturnParameters;
 use crate::{Error, Reader, Result};
 use bumble::{Address, AddressType};
 
@@ -12,6 +13,11 @@ use bumble::{Address, AddressType};
 /// preserves raw parameters for event codes this slice does not decode.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Event {
+    CommandComplete {
+        num_hci_command_packets: u8,
+        command_opcode: u16,
+        return_parameters: ReturnParameters,
+    },
     CommandStatus {
         status: u8,
         num_hci_command_packets: u8,
@@ -103,6 +109,7 @@ impl Event {
     /// The 8-bit event code.
     pub fn event_code(&self) -> u8 {
         match self {
+            Event::CommandComplete { .. } => HCI_COMMAND_COMPLETE_EVENT,
             Event::CommandStatus { .. } => HCI_COMMAND_STATUS_EVENT,
             Event::NumberOfCompletedPackets { .. } => HCI_NUMBER_OF_COMPLETED_PACKETS_EVENT,
             Event::LeMeta(_) => HCI_LE_META_EVENT,
@@ -113,6 +120,17 @@ impl Event {
     /// The serialized event parameters (without the packet/event-code header).
     pub fn parameters(&self) -> Vec<u8> {
         match self {
+            Event::CommandComplete {
+                num_hci_command_packets,
+                command_opcode,
+                return_parameters,
+            } => {
+                let mut p = Vec::new();
+                p.push(*num_hci_command_packets);
+                p.extend_from_slice(&command_opcode.to_le_bytes());
+                p.extend_from_slice(&return_parameters.to_bytes());
+                p
+            }
             Event::CommandStatus {
                 status,
                 num_hci_command_packets,
@@ -184,6 +202,16 @@ impl Event {
 
         let mut r = Reader::new(parameters, 0);
         Ok(match event_code {
+            HCI_COMMAND_COMPLETE_EVENT => {
+                let num_hci_command_packets = r.u8()?;
+                let command_opcode = r.u16_le()?;
+                let return_parameters = ReturnParameters::parse(command_opcode, r.rest())?;
+                Event::CommandComplete {
+                    num_hci_command_packets,
+                    command_opcode,
+                    return_parameters,
+                }
+            }
             HCI_COMMAND_STATUS_EVENT => Event::CommandStatus {
                 status: r.u8()?,
                 num_hci_command_packets: r.u8()?,

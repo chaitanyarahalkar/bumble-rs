@@ -29,12 +29,14 @@ pub mod codes;
 pub mod command;
 pub mod event;
 pub mod packet;
+pub mod return_parameters;
 
 pub use bumble::{Address, AddressType};
 pub use codes::*;
 pub use command::{CodingFormat, Command};
 pub use event::{AdvertisingReport, Event, ExtendedAdvertisingReport, LeMetaEvent};
 pub use packet::{AclDataPacket, CustomPacket, IsoDataPacket, SynchronousDataPacket};
+pub use return_parameters::{map_null_terminated_utf8_string, ReturnParameters};
 
 use core::fmt;
 

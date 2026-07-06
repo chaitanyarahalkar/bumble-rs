@@ -10,8 +10,8 @@
 
 use bumble::{Address, AddressType};
 use bumble_hci::{
-    AdvertisingReport, CodingFormat, Command, Event, ExtendedAdvertisingReport, HciPacket,
-    IsoDataPacket, LeMetaEvent,
+    map_null_terminated_utf8_string, AdvertisingReport, CodingFormat, Command, Event,
+    ExtendedAdvertisingReport, HciPacket, IsoDataPacket, LeMetaEvent, ReturnParameters,
 };
 
 fn hex(bytes: &[u8]) -> String {
@@ -481,6 +481,102 @@ fn test_hci_read_local_supported_features_command() {
         HciPacket::Command(Command::ReadLocalSupportedFeatures),
         "01031000",
     );
+}
+
+// hci_test.py::test_HCI_Command_Complete_Event
+#[test]
+fn test_hci_command_complete_event() {
+    // With a serializable object (LE_Read_Buffer_Size return parameters).
+    check(
+        HciPacket::Event(Event::CommandComplete {
+            num_hci_command_packets: 34,
+            command_opcode: 0x2002, // HCI_LE_READ_BUFFER_SIZE_COMMAND
+            return_parameters: ReturnParameters::LeReadBufferSize {
+                status: 0,
+                le_acl_data_packet_length: 1234,
+                total_num_le_acl_data_packets: 56,
+            },
+        }),
+        "040e0722022000d20438",
+    );
+
+    // With a simple integer status.
+    let event3 = HciPacket::Event(Event::CommandComplete {
+        num_hci_command_packets: 1,
+        command_opcode: 0x0c03, // HCI_RESET_COMMAND
+        return_parameters: ReturnParameters::Status { status: 9 },
+    });
+    check(event3.clone(), "040e0401030c09");
+    match HciPacket::from_bytes(&event3.to_bytes()).unwrap() {
+        HciPacket::Event(Event::CommandComplete {
+            return_parameters, ..
+        }) => assert_eq!(return_parameters.status(), Some(9)),
+        other => panic!("expected CommandComplete, got {other:?}"),
+    }
+}
+
+// hci_test.py::test_return_parameters
+#[test]
+fn test_return_parameters() {
+    // Reset: status only. 0x3C = ADVERTISING_TIMEOUT_ERROR.
+    let p = ReturnParameters::parse(0x0c03, &unhex("3c")).unwrap();
+    assert_eq!(p.status(), Some(0x3c));
+    assert!(matches!(p, ReturnParameters::Status { .. }));
+
+    // Read_BD_ADDR, full (SUCCESS) response.
+    let p = ReturnParameters::parse(0x1009, &unhex("00001122334455")).unwrap();
+    assert_eq!(p.status(), Some(0));
+    assert!(matches!(p, ReturnParameters::ReadBdAddr { .. }));
+
+    // Read_Local_Name: status + 248-byte name field.
+    let mut name_params = unhex("0068656c6c6f"); // status=0 + "hello"
+    name_params.resize(1 + 248, 0);
+    let p = ReturnParameters::parse(0x0c14, &name_params).unwrap();
+    assert_eq!(p.status(), Some(0));
+    match &p {
+        ReturnParameters::ReadLocalName { local_name, .. } => {
+            assert_eq!(local_name.len(), 248);
+            assert_eq!(map_null_terminated_utf8_string(local_name), "hello");
+        }
+        other => panic!("expected ReadLocalName, got {other:?}"),
+    }
+
+    // Read_BD_ADDR error (short) response -> status only.
+    // 0x01 = UNKNOWN_HCI_COMMAND_ERROR.
+    let p = ReturnParameters::parse(0x1009, &unhex("010011223344")).unwrap();
+    assert!(matches!(p, ReturnParameters::Status { .. }));
+    assert_eq!(p.status(), Some(1));
+}
+
+// hci_test.py::test_HCI_Read_Local_Supported_Codecs_Command_Complete
+#[test]
+fn test_read_local_supported_codecs_command_complete() {
+    // status, num=3, [A_LOG=1, CVSD=2, LINEAR_PCM=4], vendor_num=0
+    let p = ReturnParameters::parse(0x100b, &[0, 3, 1, 2, 4, 0]).unwrap();
+    match &p {
+        ReturnParameters::ReadLocalSupportedCodecs {
+            standard_codec_ids, ..
+        } => assert_eq!(standard_codec_ids, &vec![1, 2, 4]),
+        other => panic!("expected ReadLocalSupportedCodecs, got {other:?}"),
+    }
+}
+
+// hci_test.py::test_HCI_Read_Local_Supported_Codecs_V2_Command_Complete
+#[test]
+fn test_read_local_supported_codecs_v2_command_complete() {
+    // status, num=3, pairs (A_LOG,BR_EDR_ACL)(CVSD,BR_EDR_SCO)(LINEAR_PCM,LE_CIS), vendor_num=0
+    let p = ReturnParameters::parse(0x100d, &[0, 3, 1, 1, 2, 2, 4, 4, 0]).unwrap();
+    match &p {
+        ReturnParameters::ReadLocalSupportedCodecsV2 {
+            standard_codec_ids,
+            standard_codec_transports,
+            ..
+        } => {
+            assert_eq!(standard_codec_ids, &vec![1, 2, 4]);
+            assert_eq!(standard_codec_transports, &vec![1, 2, 4]);
+        }
+        other => panic!("expected ReadLocalSupportedCodecsV2, got {other:?}"),
+    }
 }
 
 // hci_test.py::test_HCI_Command_Status_Event
