@@ -1,3 +1,10 @@
 [workspace]
-members = ["bumble", "bumble-hci", "bumble-controller", "bumble-l2cap", "bumble-att"]
+members = [
+    "bumble",
+    "bumble-hci",
+    "bumble-controller",
+    "bumble-l2cap",
+    "bumble-att",
+    "bumble-crypto",
+]
 resolver = "2"

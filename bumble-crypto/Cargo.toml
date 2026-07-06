@@ -1,0 +1,9 @@
+[package]
+name = "bumble-crypto"
+version = "0.1.0"
+edition = "2021"
+description = "Rust port of google/bumble SMP cryptographic toolbox (slice 6: e, AES-CMAC, c1, s1, f4/f5/f6, g2, h6/h7, ah)"
+license = "Apache-2.0"
+
+[dependencies]
+aes = "0.8"

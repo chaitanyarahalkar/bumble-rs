@@ -17,7 +17,8 @@ crate whose behavior is verified against the upstream Python.
 | 3. Software controller + virtual link (LE advertising scenario) | `bumble-controller` | ✅ 4/4 tests green |
 | 4. L2CAP frame codec (PDU + signaling frames + FCS) | `bumble-l2cap` | ✅ 8/8 tests green |
 | 5. ATT protocol PDU codec | `bumble-att` | ✅ 8/8 tests green |
-| 6+. SMP → GATT client/server | — | planned |
+| 6. SMP cryptographic toolbox | `bumble-crypto` | ✅ 10/10 vectors green |
+| 7+. GATT client/server → profiles | — | planned |
 
 Slice 2 covers the HCI **framing foundation**, every command exercised by
 `hci_test.py::run_test_commands` (fixed-layout, address, mask, and the per-entry
@@ -148,6 +149,22 @@ Deferred: the remaining ATT PDUs (Find_Information, grouped
 Read_By_Type_Response, prepared/queued and signed writes, indications) and the
 GATT client/server layers.
 
+## Slice 6 — what's here
+
+The SMP cryptographic toolbox in the [`bumble-crypto`](bumble-crypto/) crate
+(Vol 3, Part H - 2.2), on top of the audited `aes` crate:
+
+- **`e`** — the AES block security function (byte-swapped I/O).
+- **`aes_cmac`** — RFC 4493 AES-CMAC, hand-implemented (subkey generation +
+  padding) over AES-128.
+- **`c1` / `s1` / `ah`** — LE Legacy confirm/key/hash functions.
+- **`f4` / `f5` / `f6` / `g2` / `h6` / `h7`** — LE Secure Connections
+  confirm/key/check/numeric-comparison and link-key conversion functions.
+
+Every function is pinned to the published Bluetooth-spec and RFC 4493 test
+vectors — the strongest correctness check in the whole port. ECC P-256 key
+agreement and RNG are out of scope for this slice.
+
 ## Acceptance
 
 The port's contract is the upstream Python test suite, ported 1:1:
@@ -198,6 +215,9 @@ bumble-rs/
 ├── bumble-att/                # slice-5 ATT protocol PDU codec crate
 │   ├── src/lib.rs
 │   └── tests/acceptance.rs    # ported gatt_test.py ATT cases (oracle-pinned)
+├── bumble-crypto/             # slice-6 SMP crypto toolbox crate
+│   ├── src/lib.rs
+│   └── tests/vectors.rs       # ported smp_test.py spec/RFC vectors
 └── docs/superpowers/          # design specs + implementation plans
 ```
 
