@@ -231,6 +231,17 @@ fn test_hci_le_set_advertising_data_command() {
     );
 }
 
+// HCI_LE_Set_Advertising_Enable (used by the slice-3 controller scenario)
+#[test]
+fn test_hci_le_set_advertising_enable_command() {
+    check(
+        HciPacket::Command(Command::LeSetAdvertisingEnable {
+            advertising_enable: 1,
+        }),
+        "010a200101",
+    );
+}
+
 // hci_test.py::test_HCI_LE_Set_Scan_Parameters_Command
 #[test]
 fn test_hci_le_set_scan_parameters_command() {

@@ -79,6 +79,9 @@ pub enum Command {
         /// field, zero-padded, preceded by a length byte).
         advertising_data: Vec<u8>,
     },
+    LeSetAdvertisingEnable {
+        advertising_enable: u8,
+    },
     LeSetScanParameters {
         le_scan_type: u8,
         le_scan_interval: u16,
@@ -199,6 +202,7 @@ impl Command {
             Command::LeSetRandomAddress { .. } => HCI_LE_SET_RANDOM_ADDRESS_COMMAND,
             Command::LeSetAdvertisingParameters { .. } => HCI_LE_SET_ADVERTISING_PARAMETERS_COMMAND,
             Command::LeSetAdvertisingData { .. } => HCI_LE_SET_ADVERTISING_DATA_COMMAND,
+            Command::LeSetAdvertisingEnable { .. } => HCI_LE_SET_ADVERTISING_ENABLE_COMMAND,
             Command::LeSetScanParameters { .. } => HCI_LE_SET_SCAN_PARAMETERS_COMMAND,
             Command::LeSetScanEnable { .. } => HCI_LE_SET_SCAN_ENABLE_COMMAND,
             Command::LeCreateConnection { .. } => HCI_LE_CREATE_CONNECTION_COMMAND,
@@ -287,6 +291,7 @@ impl Command {
                 // Pad to the fixed 31-byte advertising-data field.
                 p.resize(1 + 31, 0);
             }
+            Command::LeSetAdvertisingEnable { advertising_enable } => p.push(*advertising_enable),
             Command::LeSetScanParameters {
                 le_scan_type,
                 le_scan_interval,
@@ -532,6 +537,9 @@ impl Command {
                     advertising_data: field[..length.min(31)].to_vec(),
                 }
             }
+            HCI_LE_SET_ADVERTISING_ENABLE_COMMAND => Command::LeSetAdvertisingEnable {
+                advertising_enable: r.u8()?,
+            },
             HCI_LE_SET_SCAN_PARAMETERS_COMMAND => Command::LeSetScanParameters {
                 le_scan_type: r.u8()?,
                 le_scan_interval: r.u16_le()?,

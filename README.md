@@ -13,8 +13,8 @@ crate whose behavior is verified against the upstream Python.
 | Slice | Crate | Status |
 |-------|-------|--------|
 | 1. Core types & advertising data | `bumble` | ✅ complete — 16/16 tests green |
-| 2. HCI packet codec (framing + commands + events + return params) | `bumble-hci` | ✅ 42/42 tests green |
-| 3. Software controller + virtual link | — | planned |
+| 2. HCI packet codec (framing + commands + events + return params) | `bumble-hci` | ✅ 43/43 tests green |
+| 3. Software controller + virtual link (LE advertising scenario) | `bumble-controller` | ✅ 4/4 tests green |
 | 4+. L2CAP → ATT/GATT → SMP | — | planned |
 
 Slice 2 covers the HCI **framing foundation**, every command exercised by
@@ -88,6 +88,33 @@ The HCI packet codec in the [`bumble-hci`](bumble-hci/) crate (depends on
   round-trip would pass on a symmetric-but-wrong layout (and in fact the oracle
   caught exactly such a bug in `Number_Of_Completed_Packets`).
 
+## Slice 3 — what's here
+
+A minimal software controller and an in-process link in the
+[`bumble-controller`](bumble-controller/) crate — the first slice where two
+virtual devices actually talk:
+
+- **`Controller`** — LE state driven by HCI commands (`Reset`,
+  `LE_Set_Random_Address`, `LE_Set_Advertising_Data`, `LE_Set_Advertising_Enable`,
+  `LE_Set_Scan_Enable`), producing Command Complete acks and, when scanning,
+  LE Advertising Report events.
+- **`LocalLink`** — an in-process bus that broadcasts an advertiser's PDU to
+  scanning controllers.
+
+### Design notes
+
+- **Synchronous link.** Bumble's `LocalLink` schedules delivery on an asyncio
+  loop; this slice models it synchronously (`propagate_advertising` delivers
+  PDUs when called, and host events are drained from a queue) — deterministic
+  and dependency-free, with the same packet flow, only the real-time scheduling
+  dropped.
+- **End-to-end.** The acceptance test wires two controllers to a link: one
+  advertises, the other scans, and the scanner's host receives an Advertising
+  Report carrying the advertiser's address and data — which then round-trips
+  through the `bumble-hci` codec.
+- **Deferred:** LE connections, ACL data, LL control PDUs, extended advertising
+  sets, CIS/ISO, encryption, and classic/LMP.
+
 ## Acceptance
 
 The port's contract is the upstream Python test suite, ported 1:1:
@@ -129,6 +156,9 @@ bumble-rs/
 ├── bumble-hci/                # slice-2 HCI codec crate
 │   ├── src/{lib,codes,command,event,packet,return_parameters}.rs
 │   └── tests/acceptance.rs    # ported hci_test.py cases (oracle-pinned)
+├── bumble-controller/         # slice-3 controller + virtual link crate
+│   ├── src/lib.rs
+│   └── tests/scenario.rs      # end-to-end advertising→scan→report scenario
 └── docs/superpowers/          # design specs + implementation plans
 ```
 

@@ -1,0 +1,10 @@
+[package]
+name = "bumble-controller"
+version = "0.1.0"
+edition = "2021"
+description = "Rust port of google/bumble software controller + virtual link (slice 3: LE advertising scenario)"
+license = "Apache-2.0"
+
+[dependencies]
+bumble = { path = "../bumble" }
+bumble-hci = { path = "../bumble-hci" }
