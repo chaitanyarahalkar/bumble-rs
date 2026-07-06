@@ -19,7 +19,8 @@ crate whose behavior is verified against the upstream Python.
 | 5. ATT protocol PDU codec | `bumble-att` | ✅ 8/8 tests green |
 | 6. SMP cryptographic toolbox | `bumble-crypto` | ✅ 10/10 vectors green |
 | 7. LE connection establishment (in the controller) | `bumble-controller` | ✅ (see slice 3+7) |
-| 8+. ACL data path → GATT client/server → profiles | — | planned |
+| 8. ACL data path (ATT-over-L2CAP-over-ACL, cross-layer) | `bumble-controller` | ✅ 8/8 controller tests |
+| 9+. GATT client/server → profiles | — | planned |
 
 Slice 2 covers the HCI **framing foundation**, every command exercised by
 `hci_test.py::run_test_commands` (fixed-layout, address, mask, and the per-entry
@@ -119,8 +120,14 @@ virtual devices actually talk:
   advertises, the other scans, and the scanner's host receives an Advertising
   Report carrying the advertiser's address and data — which then round-trips
   through the `bumble-hci` codec.
-- **Deferred:** LE connections, ACL data, LL control PDUs, extended advertising
-  sets, CIS/ISO, encryption, and classic/LMP.
+- **ACL data path (slice 8).** Once connected, `LocalLink::send_acl_data` routes
+  a host's ACL payload to the peer host on its own connection handle. The
+  controller treats the payload as opaque bytes — the integration test builds an
+  **ATT PDU → L2CAP PDU → ACL** on the sender and parses it back up the stack on
+  the receiver, composing four crates (`bumble-controller`, `bumble-hci`,
+  `bumble-l2cap`, `bumble-att`) into one end-to-end flow.
+- **Deferred:** LL control PDUs, disconnection, extended advertising sets,
+  CIS/ISO, encryption, and classic/LMP.
 
 ## Slice 4 — what's here
 

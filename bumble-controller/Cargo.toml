@@ -8,3 +8,9 @@ license = "Apache-2.0"
 [dependencies]
 bumble = { path = "../bumble" }
 bumble-hci = { path = "../bumble-hci" }
+
+[dev-dependencies]
+# Used only by the ACL-data-path integration test to build/parse the payload
+# that rides over the (layer-agnostic) ACL channel.
+bumble-l2cap = { path = "../bumble-l2cap" }
+bumble-att = { path = "../bumble-att" }

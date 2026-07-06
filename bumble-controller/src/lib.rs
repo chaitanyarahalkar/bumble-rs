@@ -32,7 +32,9 @@
 
 use bumble::{Address, AddressType};
 use bumble_hci::codes::*;
-use bumble_hci::{AdvertisingReport, Command, Event, HciPacket, LeMetaEvent, ReturnParameters};
+use bumble_hci::{
+    AclDataPacket, AdvertisingReport, Command, Event, HciPacket, LeMetaEvent, ReturnParameters,
+};
 
 /// Legacy connectable-and-scannable undirected advertising event type.
 const ADV_IND: u8 = 0x00;
@@ -61,6 +63,8 @@ const CENTRAL_CLOCK_ACCURACY: u8 = 7;
 pub struct Connection {
     pub handle: u16,
     pub role: u8,
+    /// The address this controller uses for the connection.
+    pub self_address: Address,
     pub peer_address: Address,
 }
 
@@ -272,10 +276,16 @@ impl Controller {
         let Some(pending) = self.initiating.take() else {
             return;
         };
+        let self_address = if pending.own_address_type == ADDRESS_TYPE_PUBLIC {
+            self.public_address.clone()
+        } else {
+            self.random_address.clone()
+        };
         let handle = self.allocate_handle();
         let connection = Connection {
             handle,
             role: ROLE_CENTRAL,
+            self_address,
             peer_address: pending.peer_address,
         };
         self.push_connection_complete(&connection, pending.peer_address_type);
@@ -289,11 +299,28 @@ impl Controller {
         let connection = Connection {
             handle,
             role: ROLE_PERIPHERAL,
+            self_address: self.random_address.clone(),
             peer_address: central_address,
         };
         self.push_connection_complete(&connection, central_address_type);
         self.connections.push(connection);
         self.advertising_enabled = false;
+    }
+
+    /// Deliver received ACL data to the host as an HCI ACL Data packet on the
+    /// given connection handle.
+    fn deliver_acl(&mut self, connection_handle: u16, data: &[u8]) {
+        self.host_queue.push(HciPacket::AclData(AclDataPacket {
+            connection_handle,
+            pb_flag: 0,
+            bc_flag: 0,
+            data_total_length: data.len() as u16,
+            data: data.to_vec(),
+        }));
+    }
+
+    fn connection_by_handle(&self, handle: u16) -> Option<&Connection> {
+        self.connections.iter().find(|c| c.handle == handle)
     }
 
     fn ack(&mut self, command_opcode: u16, status: u8) {
@@ -389,6 +416,39 @@ impl LocalLink {
             self.controllers[pi].connect_as_peripheral(central_addr, central_addr_type);
             // Central completes its pending connection.
             self.controllers[ci].connect_as_central();
+        }
+    }
+
+    /// Route ACL data sent by controller `from` on `connection_handle` to the
+    /// peer controller, delivering it to that peer's host on its own handle for
+    /// the connection. Returns `true` if a peer received the data.
+    ///
+    /// The controller treats the payload as opaque bytes (typically an L2CAP
+    /// PDU); it does not parse it.
+    pub fn send_acl_data(&mut self, from: usize, connection_handle: u16, data: &[u8]) -> bool {
+        // Resolve the sender's connection endpoints.
+        let Some(conn) = self.controllers[from].connection_by_handle(connection_handle) else {
+            return false;
+        };
+        let source_address = conn.self_address.clone();
+        let peer_address = conn.peer_address.clone();
+
+        // Find the destination controller and its handle for the mirror connection.
+        let destination = self.controllers.iter().enumerate().find_map(|(i, ctrl)| {
+            if i == from {
+                return None;
+            }
+            ctrl.connections()
+                .iter()
+                .find(|c| c.self_address == peer_address && c.peer_address == source_address)
+                .map(|c| (i, c.handle))
+        });
+
+        if let Some((i, handle)) = destination {
+            self.controllers[i].deliver_acl(handle, data);
+            true
+        } else {
+            false
         }
     }
 }
