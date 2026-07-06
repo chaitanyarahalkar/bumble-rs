@@ -6,5 +6,6 @@ members = [
     "bumble-l2cap",
     "bumble-att",
     "bumble-crypto",
+    "bumble-gatt",
 ]
 resolver = "2"

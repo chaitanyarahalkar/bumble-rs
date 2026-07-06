@@ -1,0 +1,16 @@
+[package]
+name = "bumble-gatt"
+version = "0.1.0"
+edition = "2021"
+description = "Rust port of google/bumble GATT — a minimal ATT attribute server (slice 9)"
+license = "Apache-2.0"
+
+[dependencies]
+bumble-att = { path = "../bumble-att" }
+
+[dev-dependencies]
+# The end-to-end test drives the server over the full stack.
+bumble = { path = "../bumble" }
+bumble-hci = { path = "../bumble-hci" }
+bumble-l2cap = { path = "../bumble-l2cap" }
+bumble-controller = { path = "../bumble-controller" }

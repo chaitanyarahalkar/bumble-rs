@@ -20,7 +20,8 @@ crate whose behavior is verified against the upstream Python.
 | 6. SMP cryptographic toolbox | `bumble-crypto` | ✅ 10/10 vectors green |
 | 7. LE connection establishment (in the controller) | `bumble-controller` | ✅ (see slice 3+7) |
 | 8. ACL data path (ATT-over-L2CAP-over-ACL, cross-layer) | `bumble-controller` | ✅ 8/8 controller tests |
-| 9+. GATT client/server → profiles | — | planned |
+| 9. Minimal GATT/ATT server (end-to-end characteristic read/write) | `bumble-gatt` | ✅ 5/5 tests green |
+| 10+. GATT discovery, notifications, profiles, classic (RFCOMM/SDP/A2DP…) | — | planned |
 
 Slice 2 covers the HCI **framing foundation**, every command exercised by
 `hci_test.py::run_test_commands` (fixed-layout, address, mask, and the per-entry
@@ -176,6 +177,24 @@ Every function is pinned to the published Bluetooth-spec and RFC 4493 test
 vectors — the strongest correctness check in the whole port. ECC P-256 key
 agreement and RNG are out of scope for this slice.
 
+## Slice 9 — what's here (the capstone)
+
+A minimal GATT/ATT server in the [`bumble-gatt`](bumble-gatt/) crate:
+
+- **`AttServer`** — an attribute table (handle → value) that turns an incoming
+  ATT request into the correct response: Exchange_MTU, Read_Request,
+  Write_Request, with Error_Response for missing attributes.
+
+Its integration test is the real payoff — a **characteristic write-then-read
+between two virtual devices, end-to-end through every layer**: the central
+issues ATT requests that travel ATT → L2CAP → ACL → link → peer host; the
+peripheral feeds them to the `AttServer` and returns the responses the same way.
+Central writes `[0xBB, 0xCC]` to handle `0x0025` and reads back exactly that.
+
+This composes all seven crates and is the first point where the port does
+something a Bluetooth stack is actually *for* — read/write a characteristic
+between two devices — rather than exercising a single layer in isolation.
+
 ## Acceptance
 
 The port's contract is the upstream Python test suite, ported 1:1:
@@ -229,6 +248,9 @@ bumble-rs/
 ├── bumble-crypto/             # slice-6 SMP crypto toolbox crate
 │   ├── src/lib.rs
 │   └── tests/vectors.rs       # ported smp_test.py spec/RFC vectors
+├── bumble-gatt/               # slice-9 minimal GATT/ATT server crate
+│   ├── src/lib.rs
+│   └── tests/end_to_end.rs    # characteristic write/read across the full stack
 └── docs/superpowers/          # design specs + implementation plans
 ```
 
