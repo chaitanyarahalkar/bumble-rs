@@ -15,7 +15,8 @@ crate whose behavior is verified against the upstream Python.
 | 1. Core types & advertising data | `bumble` | ✅ complete — 16/16 tests green |
 | 2. HCI packet codec (framing + commands + events + return params) | `bumble-hci` | ✅ 43/43 tests green |
 | 3. Software controller + virtual link (LE advertising scenario) | `bumble-controller` | ✅ 4/4 tests green |
-| 4+. L2CAP → ATT/GATT → SMP | — | planned |
+| 4. L2CAP frame codec (PDU + signaling frames + FCS) | `bumble-l2cap` | ✅ 8/8 tests green |
+| 5+. ATT/GATT → SMP | — | planned |
 
 Slice 2 covers the HCI **framing foundation**, every command exercised by
 `hci_test.py::run_test_commands` (fixed-layout, address, mask, and the per-entry
@@ -115,6 +116,22 @@ virtual devices actually talk:
 - **Deferred:** LE connections, ACL data, LL control PDUs, extended advertising
   sets, CIS/ISO, encryption, and classic/LMP.
 
+## Slice 4 — what's here
+
+The L2CAP frame codec in the [`bumble-l2cap`](bumble-l2cap/) crate (std-only —
+the frame format is independent of HCI and addresses):
+
+- **`L2capPdu`** — the L2CAP data-packet frame with an optional Frame Check
+  Sequence (`crc_16`, CRC-16-IBM), verified against Bumble's FCS test vectors.
+- **`serialize_psm` / `parse_psm`** — the variable-length Protocol/Service
+  Multiplexer encoding.
+- **`ControlFrame`** — signaling frames: Connection_Request and the four
+  credit-based frames (Connection Request/Response, Reconfigure
+  Request/Response), plus a `Generic` fallback for other signaling codes.
+
+Deferred: the full signaling command set, configuration options,
+enhanced-retransmission control fields, and the channel manager / reassembly.
+
 ## Acceptance
 
 The port's contract is the upstream Python test suite, ported 1:1:
@@ -159,6 +176,9 @@ bumble-rs/
 ├── bumble-controller/         # slice-3 controller + virtual link crate
 │   ├── src/lib.rs
 │   └── tests/scenario.rs      # end-to-end advertising→scan→report scenario
+├── bumble-l2cap/              # slice-4 L2CAP frame codec crate
+│   ├── src/lib.rs
+│   └── tests/acceptance.rs    # ported l2cap_test.py codec cases (oracle-pinned)
 └── docs/superpowers/          # design specs + implementation plans
 ```
 

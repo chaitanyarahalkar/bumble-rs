@@ -1,0 +1,8 @@
+[package]
+name = "bumble-l2cap"
+version = "0.1.0"
+edition = "2021"
+description = "Rust port of google/bumble L2CAP frame codec (slice 4: PDU + signaling frames + FCS)"
+license = "Apache-2.0"
+
+[dependencies]
