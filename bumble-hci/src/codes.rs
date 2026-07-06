@@ -1,0 +1,44 @@
+//! HCI constants: packet type indicators, op codes, event/subevent codes, and
+//! status. Values ported verbatim from `bumble.hci`.
+
+// Packet type indicators (the first byte of every HCI packet).
+pub const HCI_COMMAND_PACKET: u8 = 0x01;
+pub const HCI_ACL_DATA_PACKET: u8 = 0x02;
+pub const HCI_SYNCHRONOUS_DATA_PACKET: u8 = 0x03;
+pub const HCI_EVENT_PACKET: u8 = 0x04;
+pub const HCI_ISO_DATA_PACKET: u8 = 0x05;
+
+// Command op codes (OGF << 10 | OCF).
+pub const HCI_DISCONNECT_COMMAND: u16 = 0x0406;
+pub const HCI_SET_EVENT_MASK_COMMAND: u16 = 0x0C01;
+pub const HCI_RESET_COMMAND: u16 = 0x0C03;
+pub const HCI_READ_LOCAL_VERSION_INFORMATION_COMMAND: u16 = 0x1001;
+pub const HCI_READ_LOCAL_SUPPORTED_COMMANDS_COMMAND: u16 = 0x1002;
+pub const HCI_READ_LOCAL_SUPPORTED_FEATURES_COMMAND: u16 = 0x1003;
+pub const HCI_LE_SET_EVENT_MASK_COMMAND: u16 = 0x2001;
+pub const HCI_LE_SET_RANDOM_ADDRESS_COMMAND: u16 = 0x2005;
+pub const HCI_LE_SET_SCAN_ENABLE_COMMAND: u16 = 0x200C;
+
+// Event codes.
+pub const HCI_COMMAND_STATUS_EVENT: u8 = 0x0F;
+pub const HCI_NUMBER_OF_COMPLETED_PACKETS_EVENT: u8 = 0x13;
+pub const HCI_LE_META_EVENT: u8 = 0x3E;
+
+// LE Meta sub-event codes.
+pub const HCI_LE_CONNECTION_COMPLETE_EVENT: u8 = 0x01;
+pub const HCI_LE_CONNECTION_UPDATE_COMPLETE_EVENT: u8 = 0x03;
+pub const HCI_LE_READ_REMOTE_FEATURES_COMPLETE_EVENT: u8 = 0x04;
+pub const HCI_LE_CHANNEL_SELECTION_ALGORITHM_EVENT: u8 = 0x14;
+
+// Status.
+pub const HCI_SUCCESS: u8 = 0x00;
+
+/// Decompose an op code into (OGF, OCF).
+pub fn ogf_ocf(op_code: u16) -> (u8, u16) {
+    ((op_code >> 10) as u8, op_code & 0x03FF)
+}
+
+/// Compose an op code from OGF and OCF.
+pub fn op_code(ogf: u8, ocf: u16) -> u16 {
+    ((ogf as u16) << 10) | (ocf & 0x03FF)
+}

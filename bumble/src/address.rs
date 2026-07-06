@@ -21,7 +21,7 @@ impl AddressType {
 }
 
 /// A 48-bit Bluetooth address plus its type qualifier.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Address {
     /// Little-endian: `bytes[0]` = LSB, `bytes[5]` = MSB.
     bytes: [u8; 6],

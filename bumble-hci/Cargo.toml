@@ -1,0 +1,9 @@
+[package]
+name = "bumble-hci"
+version = "0.1.0"
+edition = "2021"
+description = "Rust port of google/bumble HCI packet codec (slice 2: framing + representative commands/events)"
+license = "Apache-2.0"
+
+[dependencies]
+bumble = { path = "../bumble" }
