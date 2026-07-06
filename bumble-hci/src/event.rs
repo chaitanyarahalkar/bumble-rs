@@ -29,6 +29,33 @@ pub enum Event {
     },
 }
 
+/// One entry in an LE Advertising Report event.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AdvertisingReport {
+    pub event_type: u8,
+    pub address_type: u8,
+    pub address: Address,
+    pub data: Vec<u8>,
+    pub rssi: i8,
+}
+
+/// One entry in an LE Extended Advertising Report event.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExtendedAdvertisingReport {
+    pub event_type: u16,
+    pub address_type: u8,
+    pub address: Address,
+    pub primary_phy: u8,
+    pub secondary_phy: u8,
+    pub advertising_sid: u8,
+    pub tx_power: i8,
+    pub rssi: i8,
+    pub periodic_advertising_interval: u16,
+    pub direct_address_type: u8,
+    pub direct_address: Address,
+    pub data: Vec<u8>,
+}
+
 /// An LE Meta sub-event.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LeMetaEvent {
@@ -58,6 +85,12 @@ pub enum LeMetaEvent {
         status: u8,
         connection_handle: u16,
         le_features: [u8; 8],
+    },
+    AdvertisingReport {
+        reports: Vec<AdvertisingReport>,
+    },
+    ExtendedAdvertisingReport {
+        reports: Vec<ExtendedAdvertisingReport>,
     },
     /// Any LE sub-event not decoded by this slice.
     Generic {
@@ -190,6 +223,10 @@ impl LeMetaEvent {
             LeMetaEvent::ReadRemoteFeaturesComplete { .. } => {
                 HCI_LE_READ_REMOTE_FEATURES_COMPLETE_EVENT
             }
+            LeMetaEvent::AdvertisingReport { .. } => HCI_LE_ADVERTISING_REPORT_EVENT,
+            LeMetaEvent::ExtendedAdvertisingReport { .. } => {
+                HCI_LE_EXTENDED_ADVERTISING_REPORT_EVENT
+            }
             LeMetaEvent::Generic { subevent_code, .. } => *subevent_code,
         }
     }
@@ -248,6 +285,35 @@ impl LeMetaEvent {
                 p.extend_from_slice(&connection_handle.to_le_bytes());
                 p.extend_from_slice(le_features);
             }
+            LeMetaEvent::AdvertisingReport { reports } => {
+                p.push(reports.len() as u8);
+                for r in reports {
+                    p.push(r.event_type);
+                    p.push(r.address_type);
+                    p.extend_from_slice(r.address.address_bytes());
+                    p.push(r.data.len() as u8);
+                    p.extend_from_slice(&r.data);
+                    p.push(r.rssi as u8);
+                }
+            }
+            LeMetaEvent::ExtendedAdvertisingReport { reports } => {
+                p.push(reports.len() as u8);
+                for r in reports {
+                    p.extend_from_slice(&r.event_type.to_le_bytes());
+                    p.push(r.address_type);
+                    p.extend_from_slice(r.address.address_bytes());
+                    p.push(r.primary_phy);
+                    p.push(r.secondary_phy);
+                    p.push(r.advertising_sid);
+                    p.push(r.tx_power as u8);
+                    p.push(r.rssi as u8);
+                    p.extend_from_slice(&r.periodic_advertising_interval.to_le_bytes());
+                    p.push(r.direct_address_type);
+                    p.extend_from_slice(r.direct_address.address_bytes());
+                    p.push(r.data.len() as u8);
+                    p.extend_from_slice(&r.data);
+                }
+            }
             LeMetaEvent::Generic { parameters, .. } => {
                 p.extend_from_slice(parameters);
             }
@@ -287,6 +353,61 @@ impl LeMetaEvent {
                 connection_handle: r.u16_le()?,
                 le_features: r.array::<8>()?,
             },
+            HCI_LE_ADVERTISING_REPORT_EVENT => {
+                let num_reports = r.u8()? as usize;
+                let mut reports = Vec::with_capacity(num_reports);
+                for _ in 0..num_reports {
+                    let event_type = r.u8()?;
+                    let address_type = r.u8()?;
+                    let address = Address::from_bytes(r.array::<6>()?, AddressType::RANDOM_DEVICE);
+                    let data_length = r.u8()? as usize;
+                    let data = r.take(data_length)?.to_vec();
+                    let rssi = r.u8()? as i8;
+                    reports.push(AdvertisingReport {
+                        event_type,
+                        address_type,
+                        address,
+                        data,
+                        rssi,
+                    });
+                }
+                LeMetaEvent::AdvertisingReport { reports }
+            }
+            HCI_LE_EXTENDED_ADVERTISING_REPORT_EVENT => {
+                let num_reports = r.u8()? as usize;
+                let mut reports = Vec::with_capacity(num_reports);
+                for _ in 0..num_reports {
+                    let event_type = r.u16_le()?;
+                    let address_type = r.u8()?;
+                    let address = Address::from_bytes(r.array::<6>()?, AddressType::RANDOM_DEVICE);
+                    let primary_phy = r.u8()?;
+                    let secondary_phy = r.u8()?;
+                    let advertising_sid = r.u8()?;
+                    let tx_power = r.u8()? as i8;
+                    let rssi = r.u8()? as i8;
+                    let periodic_advertising_interval = r.u16_le()?;
+                    let direct_address_type = r.u8()?;
+                    let direct_address =
+                        Address::from_bytes(r.array::<6>()?, AddressType::RANDOM_DEVICE);
+                    let data_length = r.u8()? as usize;
+                    let data = r.take(data_length)?.to_vec();
+                    reports.push(ExtendedAdvertisingReport {
+                        event_type,
+                        address_type,
+                        address,
+                        primary_phy,
+                        secondary_phy,
+                        advertising_sid,
+                        tx_power,
+                        rssi,
+                        periodic_advertising_interval,
+                        direct_address_type,
+                        direct_address,
+                        data,
+                    });
+                }
+                LeMetaEvent::ExtendedAdvertisingReport { reports }
+            }
             _ => LeMetaEvent::Generic {
                 subevent_code,
                 parameters: fields.to_vec(),

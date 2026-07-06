@@ -9,7 +9,10 @@
 //! carried on the wire for these fields.
 
 use bumble::{Address, AddressType};
-use bumble_hci::{CodingFormat, Command, Event, HciPacket, IsoDataPacket, LeMetaEvent};
+use bumble_hci::{
+    AdvertisingReport, CodingFormat, Command, Event, ExtendedAdvertisingReport, HciPacket,
+    IsoDataPacket, LeMetaEvent,
+};
 
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
@@ -548,6 +551,47 @@ fn test_hci_le_channel_selection_algorithm_event() {
             channel_selection_algorithm: 1,
         })),
         "043e0414070001",
+    );
+}
+
+// hci_test.py::test_HCI_LE_Advertising_Report_Event
+#[test]
+fn test_hci_le_advertising_report_event() {
+    check(
+        HciPacket::Event(Event::LeMeta(LeMetaEvent::AdvertisingReport {
+            reports: vec![AdvertisingReport {
+                event_type: 0, // ADV_IND
+                address_type: 0,
+                address: addr("00:11:22:33:44:55"),
+                data: unhex("0201061106ba5689a6fabfa2bd01467d6e00fbabad08160a181604659b03"),
+                rssi: 100,
+            }],
+        })),
+        "043e2a020100005544332211001e0201061106ba5689a6fabfa2bd01467d6e00fbabad08160a181604659b0364",
+    );
+}
+
+// hci_test.py::test_HCI_LE_Extended_Advertising_Report_Event
+#[test]
+fn test_hci_le_extended_advertising_report_event() {
+    check(
+        HciPacket::Event(Event::LeMeta(LeMetaEvent::ExtendedAdvertisingReport {
+            reports: vec![ExtendedAdvertisingReport {
+                event_type: 1, // CONNECTABLE_ADVERTISING
+                address_type: 0,
+                address: addr("00:11:22:33:44:55"),
+                primary_phy: 1,   // LE 1M
+                secondary_phy: 3, // LE Coded
+                advertising_sid: 0,
+                tx_power: 10,
+                rssi: 100,
+                periodic_advertising_interval: 2,
+                direct_address_type: 0,
+                direct_address: addr("00:11:22:33:44:55"),
+                data: unhex("0201061106ba5689a6fabfa2bd01467d6e00fbabad08160a181604659b03"),
+            }],
+        })),
+        "043e380d010100005544332211000103000a640200005544332211001e0201061106ba5689a6fabfa2bd01467d6e00fbabad08160a181604659b03",
     );
 }
 

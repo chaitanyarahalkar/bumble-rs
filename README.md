@@ -13,15 +13,20 @@ crate whose behavior is verified against the upstream Python.
 | Slice | Crate | Status |
 |-------|-------|--------|
 | 1. Core types & advertising data | `bumble` | ✅ complete — 16/16 tests green |
-| 2. HCI packet codec (framing + representative commands/events) | `bumble-hci` | ✅ complete — 18/18 tests green |
+| 2. HCI packet codec (framing + commands + LE events) | `bumble-hci` | ✅ 38/38 tests green |
 | 3. Software controller + virtual link | — | planned |
 | 4+. L2CAP → ATT/GATT → SMP | — | planned |
 
-Slice 2 covers the HCI **framing foundation** plus a representative subset of
-the command/event catalog — not the full ~700-entry catalog. Deferred to later
-HCI slices: Advertising Report events, Command_Complete return-parameters, the
-vendor-event factory, the parametrized full-registry checks, and complex
-multi-array commands.
+Slice 2 covers the HCI **framing foundation**, every command exercised by
+`hci_test.py::run_test_commands` (fixed-layout, address, mask, and the
+per-entry array commands like Extended_Create_Connection), the generic
+command/event fallbacks, and the LE events (Command_Status,
+Number_Of_Completed_Packets, Connection_Complete / Update / Channel_Selection /
+Read_Remote_Features, and both Advertising Report events). Still deferred to a
+later HCI slice: Command_Complete + the per-command return-parameters registry,
+Read_Local_Supported_Codecs, the vendor-event factory, and the parametrized
+full-catalog registry checks — these need the exhaustive catalog or runtime
+registration rather than a representative port.
 
 ## Slice 1 — what's here
 
@@ -54,13 +59,17 @@ The HCI packet codec in the [`bumble-hci`](bumble-hci/) crate (depends on
 `bumble` for `Address`):
 
 - **`HciPacket`** — top-level dispatch on the packet type byte.
-- **`Command`** — Reset, Disconnect, Set_Event_Mask, LE_Set_Event_Mask,
-  LE_Set_Random_Address, LE_Set_Scan_Enable, and the three
-  Read_Local_Supported/Version commands, plus a `Generic` fallback.
-- **`Event` / `LeMetaEvent`** — Command_Status, Number_Of_Completed_Packets, and
-  the LE Connection_Complete / Connection_Update_Complete /
-  Channel_Selection_Algorithm / Read_Remote_Features_Complete meta events, plus
-  `Generic` fallbacks.
+- **`Command`** — 22 typed commands (Reset, Disconnect, PIN_Code_Request_Reply,
+  Set/LE_Set_Event_Mask, LE_Set_Random_Address, LE advertising/scan/connection
+  commands including the per-PHY array forms Extended_Create_Connection /
+  Set_Extended_Scan_Parameters / Set_Extended_Advertising_Enable,
+  LE_Setup_ISO_Data_Path, and the Read_Local_* commands), plus a `Generic`
+  fallback.
+- **`Event` / `LeMetaEvent`** — Command_Status, Number_Of_Completed_Packets, the
+  LE Connection_Complete / Connection_Update_Complete /
+  Channel_Selection_Algorithm / Read_Remote_Features_Complete meta events, and
+  both LE Advertising Report events (nested per-report structs), plus `Generic`
+  fallbacks.
 - **Data packets** — ACL, Synchronous (SCO), ISO (with the timestamp / SDU-info
   blocks), and the custom passthrough packet.
 
@@ -91,7 +100,7 @@ The port's contract is the upstream Python test suite, ported 1:1:
 These live in [`bumble/tests/acceptance.rs`](bumble/tests/acceptance.rs); the
 same behaviors are also covered by inline unit tests in each module.
 
-Slice 2's 18 HCI tests live in
+Slice 2's 38 HCI tests live in
 [`bumble-hci/tests/acceptance.rs`](bumble-hci/tests/acceptance.rs), each ported
 from a `tests/hci_test.py` case and pinned to Python-oracle bytes.
 

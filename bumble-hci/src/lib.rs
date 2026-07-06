@@ -33,7 +33,7 @@ pub mod packet;
 pub use bumble::{Address, AddressType};
 pub use codes::*;
 pub use command::{CodingFormat, Command};
-pub use event::{Event, LeMetaEvent};
+pub use event::{AdvertisingReport, Event, ExtendedAdvertisingReport, LeMetaEvent};
 pub use packet::{AclDataPacket, CustomPacket, IsoDataPacket, SynchronousDataPacket};
 
 use core::fmt;
