@@ -1,13 +1,15 @@
 //! HCI acceptance suite. Ported from google/bumble `tests/hci_test.py`.
 //!
 //! Each test asserts the serialized bytes against a ground-truth hex literal
-//! captured from the real Python Bumble (`bytes(x).hex()`) — this is the
-//! load-bearing correctness check. It then verifies that parsing dispatches to
-//! the correct typed variant and round-trips (the mutual-inverse supplement),
-//! mirroring Bumble's `basic_check`.
+//! captured from real Python Bumble (`bytes(x).hex()`) — the load-bearing
+//! correctness check. It then verifies that parsing round-trips to the same
+//! wire bytes and dispatches to the same typed variant (mirroring, and in fact
+//! strengthening, Bumble's `basic_check`). Wire bytes — not struct equality —
+//! are the round-trip oracle here, because an address's type qualifier is not
+//! carried on the wire for these fields.
 
 use bumble::{Address, AddressType};
-use bumble_hci::{Command, Event, HciPacket, IsoDataPacket, LeMetaEvent};
+use bumble_hci::{CodingFormat, Command, Event, HciPacket, IsoDataPacket, LeMetaEvent};
 
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
@@ -20,17 +22,37 @@ fn unhex(s: &str) -> Vec<u8> {
         .collect()
 }
 
-/// Serialize, compare against the Python oracle bytes, then parse-and-compare
-/// (round-trip). Mirrors and strengthens Bumble's `basic_check`.
+/// Do two packets dispatch to the same typed variant (packet-level, and the
+/// command/event/LE-meta inner variant)?
+fn same_variant(a: &HciPacket, b: &HciPacket) -> bool {
+    use std::mem::discriminant as d;
+    if d(a) != d(b) {
+        return false;
+    }
+    match (a, b) {
+        (HciPacket::Command(x), HciPacket::Command(y)) => d(x) == d(y),
+        (HciPacket::Event(x), HciPacket::Event(y)) => {
+            d(x) == d(y)
+                && match (x, y) {
+                    (Event::LeMeta(p), Event::LeMeta(q)) => d(p) == d(q),
+                    _ => true,
+                }
+        }
+        _ => true,
+    }
+}
+
+/// Serialize, compare to the Python oracle bytes, then parse and confirm the
+/// round-trip is byte-stable and dispatches to the same typed variant.
 fn check(packet: HciPacket, expected_hex: &str) {
     let bytes = packet.to_bytes();
     assert_eq!(hex(&bytes), expected_hex, "serialization vs Python oracle");
     let parsed = HciPacket::from_bytes(&bytes).unwrap();
-    assert_eq!(
-        parsed, packet,
-        "parse must reconstruct the same typed value"
+    assert_eq!(parsed.to_bytes(), bytes, "round-trip must be byte-stable");
+    assert!(
+        same_variant(&parsed, &packet),
+        "must dispatch to the same typed variant; got {parsed:?}"
     );
-    assert_eq!(parsed.to_bytes(), bytes, "re-serialization must be stable");
 }
 
 fn addr(s: &str) -> Address {
@@ -56,6 +78,61 @@ fn test_hci_event() {
     );
 }
 
+// hci_test.py::test_HCI_Command (generic command)
+#[test]
+fn test_hci_command() {
+    check(
+        HciPacket::Command(Command::Generic {
+            op_code: 0x5566,
+            parameters: vec![],
+        }),
+        "01665500",
+    );
+    check(
+        HciPacket::Command(Command::Generic {
+            op_code: 0x5566,
+            parameters: unhex("aabbcc"),
+        }),
+        "01665503aabbcc",
+    );
+}
+
+// hci_test.py::test_custom_command (unregistered op code -> Generic)
+#[test]
+fn test_custom_command() {
+    check(
+        HciPacket::Command(Command::Generic {
+            op_code: 0x7788,
+            parameters: vec![],
+        }),
+        "01887700",
+    );
+}
+
+// hci_test.py::test_custom_event (unregistered event code -> Generic)
+#[test]
+fn test_custom_event() {
+    check(
+        HciPacket::Event(Event::Generic {
+            event_code: 0x99,
+            parameters: vec![],
+        }),
+        "049900",
+    );
+}
+
+// hci_test.py::test_custom_le_meta_event (unregistered sub-event -> LeMeta Generic)
+#[test]
+fn test_custom_le_meta_event() {
+    check(
+        HciPacket::Event(Event::LeMeta(LeMetaEvent::Generic {
+            subevent_code: 0xFF,
+            parameters: vec![],
+        })),
+        "043e01ff",
+    );
+}
+
 // hci_test.py::test_HCI_Reset_Command
 #[test]
 fn test_hci_reset_command() {
@@ -71,6 +148,21 @@ fn test_hci_disconnect_command() {
             reason: 0x13,
         }),
         "01060403020013",
+    );
+}
+
+// hci_test.py::test_HCI_PIN_Code_Request_Reply_Command
+#[test]
+fn test_hci_pin_code_request_reply_command() {
+    let mut pin_code = [0u8; 16];
+    pin_code[..4].copy_from_slice(b"1234");
+    check(
+        HciPacket::Command(Command::PinCodeRequestReply {
+            bd_addr: addr("00:11:22:33:44:55"),
+            pin_code_length: 4,
+            pin_code,
+        }),
+        "010d04175544332211000431323334000000000000000000000000",
     );
 }
 
@@ -90,9 +182,9 @@ fn test_hci_set_event_mask_command() {
 fn test_hci_le_set_event_mask_command() {
     check(
         HciPacket::Command(Command::LeSetEventMask {
-            le_event_mask: [0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77],
+            le_event_mask: [0x01, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00],
         }),
-        "010120080011223344556677",
+        "010120080100000000010000",
     );
 }
 
@@ -107,6 +199,50 @@ fn test_hci_le_set_random_address_command() {
     );
 }
 
+// hci_test.py::test_HCI_LE_Set_Advertising_Parameters_Command
+#[test]
+fn test_hci_le_set_advertising_parameters_command() {
+    check(
+        HciPacket::Command(Command::LeSetAdvertisingParameters {
+            advertising_interval_min: 20,
+            advertising_interval_max: 30,
+            advertising_type: 0x03, // ADV_NONCONN_IND
+            own_address_type: 0,    // PUBLIC_DEVICE
+            peer_address_type: 1,   // RANDOM_DEVICE
+            peer_address: addr("00:11:22:33:44:55"),
+            advertising_channel_map: 0x03,
+            advertising_filter_policy: 1,
+        }),
+        "0106200f14001e000300015544332211000301",
+    );
+}
+
+// hci_test.py::test_HCI_LE_Set_Advertising_Data_Command
+#[test]
+fn test_hci_le_set_advertising_data_command() {
+    check(
+        HciPacket::Command(Command::LeSetAdvertisingData {
+            advertising_data: unhex("aabbcc"),
+        }),
+        "0108202003aabbcc00000000000000000000000000000000000000000000000000000000",
+    );
+}
+
+// hci_test.py::test_HCI_LE_Set_Scan_Parameters_Command
+#[test]
+fn test_hci_le_set_scan_parameters_command() {
+    check(
+        HciPacket::Command(Command::LeSetScanParameters {
+            le_scan_type: 1,
+            le_scan_interval: 20,
+            le_scan_window: 10,
+            own_address_type: 1,
+            scanning_filter_policy: 0,
+        }),
+        "010b20070114000a000100",
+    );
+}
+
 // hci_test.py::test_HCI_LE_Set_Scan_Enable_Command
 #[test]
 fn test_hci_le_set_scan_enable_command() {
@@ -116,6 +252,204 @@ fn test_hci_le_set_scan_enable_command() {
             filter_duplicates: 0,
         }),
         "010c20020100",
+    );
+}
+
+// hci_test.py::test_HCI_LE_Create_Connection_Command
+#[test]
+fn test_hci_le_create_connection_command() {
+    check(
+        HciPacket::Command(Command::LeCreateConnection {
+            le_scan_interval: 4,
+            le_scan_window: 5,
+            initiator_filter_policy: 1,
+            peer_address_type: 1,
+            peer_address: addr("00:11:22:33:44:55"),
+            own_address_type: 2,
+            connection_interval_min: 7,
+            connection_interval_max: 8,
+            max_latency: 9,
+            supervision_timeout: 10,
+            min_ce_length: 11,
+            max_ce_length: 12,
+        }),
+        "010d2019040005000101554433221100020700080009000a000b000c00",
+    );
+}
+
+// hci_test.py::test_HCI_LE_Extended_Create_Connection_Command
+#[test]
+fn test_hci_le_extended_create_connection_command() {
+    check(
+        HciPacket::Command(Command::LeExtendedCreateConnection {
+            initiator_filter_policy: 0,
+            own_address_type: 0,
+            peer_address_type: 1,
+            peer_address: addr("00:11:22:33:44:55"),
+            initiating_phys: 3,
+            scan_intervals: vec![10, 11],
+            scan_windows: vec![12, 13],
+            connection_interval_mins: vec![14, 15],
+            connection_interval_maxs: vec![16, 17],
+            max_latencies: vec![18, 19],
+            supervision_timeouts: vec![20, 21],
+            min_ce_lengths: vec![100, 101],
+            max_ce_lengths: vec![102, 103],
+        }),
+        "0143202a000001554433221100030a000c000e00100012001400640066000b000d000f0011001300150065006700",
+    );
+}
+
+// hci_test.py::test_HCI_LE_Add_Device_To_Filter_Accept_List_Command
+#[test]
+fn test_hci_le_add_device_to_filter_accept_list_command() {
+    check(
+        HciPacket::Command(Command::LeAddDeviceToFilterAcceptList {
+            address_type: 1,
+            address: addr("00:11:22:33:44:55"),
+        }),
+        "0111200701554433221100",
+    );
+}
+
+// hci_test.py::test_HCI_LE_Remove_Device_From_Filter_Accept_List_Command
+#[test]
+fn test_hci_le_remove_device_from_filter_accept_list_command() {
+    check(
+        HciPacket::Command(Command::LeRemoveDeviceFromFilterAcceptList {
+            address_type: 1,
+            address: addr("00:11:22:33:44:55"),
+        }),
+        "0112200701554433221100",
+    );
+}
+
+// hci_test.py::test_HCI_LE_Connection_Update_Command
+#[test]
+fn test_hci_le_connection_update_command() {
+    check(
+        HciPacket::Command(Command::LeConnectionUpdate {
+            connection_handle: 0x0002,
+            connection_interval_min: 10,
+            connection_interval_max: 20,
+            max_latency: 7,
+            supervision_timeout: 3,
+            min_ce_length: 100,
+            max_ce_length: 200,
+        }),
+        "0113200e02000a001400070003006400c800",
+    );
+}
+
+// hci_test.py::test_HCI_LE_Read_Remote_Features_Command
+#[test]
+fn test_hci_le_read_remote_features_command() {
+    check(
+        HciPacket::Command(Command::LeReadRemoteFeatures {
+            connection_handle: 0x0002,
+        }),
+        "011620020200",
+    );
+}
+
+// hci_test.py::test_HCI_LE_Set_Default_PHY_Command
+#[test]
+fn test_hci_le_set_default_phy_command() {
+    check(
+        HciPacket::Command(Command::LeSetDefaultPhy {
+            all_phys: 0,
+            tx_phys: 1,
+            rx_phys: 1,
+        }),
+        "01312003000101",
+    );
+}
+
+// hci_test.py::test_HCI_LE_Set_Extended_Scan_Parameters_Command
+#[test]
+fn test_hci_le_set_extended_scan_parameters_command() {
+    check(
+        HciPacket::Command(Command::LeSetExtendedScanParameters {
+            own_address_type: 1, // RANDOM_DEVICE
+            scanning_filter_policy: 1,
+            scanning_phys: 0x15, // bits 0,2,4
+            scan_types: vec![1, 1, 0],
+            scan_intervals: vec![1, 2, 3],
+            scan_windows: vec![4, 5, 6],
+        }),
+        "01412012010115010100040001020005000003000600",
+    );
+}
+
+// hci_test.py::test_HCI_LE_Set_Extended_Advertising_Enable_Command
+#[test]
+fn test_hci_le_set_extended_advertising_enable_command() {
+    // Parse from the exact wire bytes the upstream test uses, then check fields.
+    let wire = unhex("0139200e010301050008020600090307000a");
+    let parsed = HciPacket::from_bytes(&wire).unwrap();
+    match &parsed {
+        HciPacket::Command(Command::LeSetExtendedAdvertisingEnable {
+            enable,
+            advertising_handles,
+            durations,
+            max_extended_advertising_events,
+        }) => {
+            assert_eq!(*enable, 1);
+            assert_eq!(advertising_handles, &vec![1, 2, 3]);
+            assert_eq!(durations, &vec![5, 6, 7]);
+            assert_eq!(max_extended_advertising_events, &vec![8, 9, 10]);
+        }
+        other => panic!("expected LeSetExtendedAdvertisingEnable, got {other:?}"),
+    }
+    assert_eq!(parsed.to_bytes(), wire);
+
+    check(
+        HciPacket::Command(Command::LeSetExtendedAdvertisingEnable {
+            enable: 1,
+            advertising_handles: vec![1, 2, 3],
+            durations: vec![5, 6, 7],
+            max_extended_advertising_events: vec![8, 9, 10],
+        }),
+        "0139200e010301050008020600090307000a",
+    );
+}
+
+// hci_test.py::test_HCI_LE_Setup_ISO_Data_Path_Command
+#[test]
+fn test_hci_le_setup_iso_data_path_command() {
+    // Parse from the exact wire bytes the upstream test uses, then check fields.
+    let wire = unhex("016e200d60000001030000000000000000");
+    let parsed = HciPacket::from_bytes(&wire).unwrap();
+    match &parsed {
+        HciPacket::Command(Command::LeSetupIsoDataPath {
+            connection_handle,
+            data_path_direction,
+            data_path_id,
+            codec_id,
+            controller_delay,
+            codec_configuration,
+        }) => {
+            assert_eq!(*connection_handle, 0x0060);
+            assert_eq!(*data_path_direction, 0x00);
+            assert_eq!(*data_path_id, 0x01);
+            assert_eq!(*codec_id, CodingFormat::TRANSPARENT);
+            assert_eq!(*controller_delay, 0);
+            assert!(codec_configuration.is_empty());
+        }
+        other => panic!("expected LeSetupIsoDataPath, got {other:?}"),
+    }
+    assert_eq!(parsed.to_bytes(), wire);
+
+    check(
+        HciPacket::Command(Command::LeSetupIsoDataPath {
+            connection_handle: 0x0060,
+            data_path_direction: 0x00,
+            data_path_id: 0x01,
+            codec_id: CodingFormat::TRANSPARENT,
+            controller_delay: 0,
+            codec_configuration: vec![],
+        }),
+        "016e200d60000001030000000000000000",
     );
 }
 

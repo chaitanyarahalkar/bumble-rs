@@ -32,7 +32,7 @@ pub mod packet;
 
 pub use bumble::{Address, AddressType};
 pub use codes::*;
-pub use command::Command;
+pub use command::{CodingFormat, Command};
 pub use event::{Event, LeMetaEvent};
 pub use packet::{AclDataPacket, CustomPacket, IsoDataPacket, SynchronousDataPacket};
 
@@ -135,6 +135,19 @@ impl<'a> Reader<'a> {
         self.need(2)?;
         let v = u16::from_le_bytes([self.data[self.pos], self.data[self.pos + 1]]);
         self.pos += 2;
+        Ok(v)
+    }
+
+    /// Read a 3-byte little-endian integer into a `u32`.
+    pub fn u24_le(&mut self) -> Result<u32> {
+        self.need(3)?;
+        let v = u32::from_le_bytes([
+            self.data[self.pos],
+            self.data[self.pos + 1],
+            self.data[self.pos + 2],
+            0,
+        ]);
+        self.pos += 3;
         Ok(v)
     }
 
