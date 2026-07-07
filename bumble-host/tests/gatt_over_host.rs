@@ -203,6 +203,32 @@ fn gatt_discovery_and_read_end_to_end() {
 }
 
 #[test]
+fn server_notification_reaches_client() {
+    let mut link = LocalLink::new();
+    let central_id = link.add_controller(Controller::new("C", addr("00:00:00:00:00:01")));
+    let peripheral_id = link.add_controller(Controller::new("P", addr("00:00:00:00:00:02")));
+
+    let mut devices = [
+        Device::new(central_id),
+        Device::with_server(peripheral_id, AttServer::new()),
+    ];
+    connect(&mut link, central_id, peripheral_id);
+    pump(&mut link, &mut devices);
+
+    // Peripheral (index 1) notifies; central (index 0) receives it.
+    assert!(devices[1].notify(&mut link, 0x0025, vec![0xDE, 0xAD]));
+    pump(&mut link, &mut devices);
+
+    assert_eq!(
+        devices[0].take_inbox(),
+        vec![AttPdu::HandleValueNotification {
+            attribute_handle: 0x0025,
+            attribute_value: vec![0xDE, 0xAD],
+        }]
+    );
+}
+
+#[test]
 fn reading_missing_attribute_returns_error() {
     let mut link = LocalLink::new();
     let central_id = link.add_controller(Controller::new("C", addr("00:00:00:00:00:01")));

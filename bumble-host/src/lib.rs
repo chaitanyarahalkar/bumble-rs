@@ -95,6 +95,18 @@ impl Device {
         link.send_acl_data(self.controller_id, handle, &frame)
     }
 
+    /// Send an unsolicited Handle Value Notification for `value_handle` to the
+    /// peer (server → client). The peer collects it from its inbox.
+    pub fn notify(&mut self, link: &mut LocalLink, value_handle: u16, value: Vec<u8>) -> bool {
+        self.send_att(
+            link,
+            &AttPdu::HandleValueNotification {
+                attribute_handle: value_handle,
+                attribute_value: value,
+            },
+        )
+    }
+
     /// Drain and process this device's controller events. Returns `true` if any
     /// event was consumed (used by [`pump`] to detect quiescence).
     pub fn poll(&mut self, link: &mut LocalLink) -> bool {
