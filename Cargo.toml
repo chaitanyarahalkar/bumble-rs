@@ -8,5 +8,6 @@ members = [
     "bumble-crypto",
     "bumble-gatt",
     "bumble-host",
+    "bumble-smp",
 ]
 resolver = "2"

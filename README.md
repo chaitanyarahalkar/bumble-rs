@@ -25,10 +25,12 @@ crate whose behavior is verified against the upstream Python.
 | 11. GATT server model + primary discovery (service/characteristic) | `bumble-gatt` | ✅ 7/7 tests green |
 | 12. GATT notifications (server → client) | `bumble-host` | ✅ |
 | 13. LE disconnection (Disconnect → Disconnection Complete both sides) | `bumble-controller` | ✅ |
-| 14+. GATT descriptors, SMP pairing flow, classic (RFCOMM/SDP/A2DP…) | — | planned |
+| 14. SMP PDU codec + LE Legacy pairing (wires in `bumble-crypto`) | `bumble-smp` | ✅ 2/2 tests green |
+| 15+. LE Secure Connections pairing, GATT descriptors, classic (RFCOMM/SDP/A2DP…) | — | planned |
 
 The LE lifecycle is now complete end-to-end through library APIs: **connect →
-discover → read/write → notify → disconnect** between two virtual devices.
+discover → read/write → notify → disconnect** between two virtual devices — and
+**every crate is integrated**, with `bumble-crypto` now driving SMP pairing.
 
 Slice 2 covers the HCI **framing foundation**, every command exercised by
 `hci_test.py::run_test_commands` (fixed-layout, address, mask, and the per-entry
@@ -245,6 +247,19 @@ handle from the declaration), then read the value — `"bumble-rs"` — by that
 discovered handle. This is real GATT discovery, not raw fixed handles. Slice 5
 gained the ATT `Read_By_Type`/`Read_By_Group_Type` response PDUs to support it.
 
+## Slice 14 — what's here
+
+The SMP layer in [`bumble-smp`](bumble-smp/) — the slice that wires the
+previously standalone `bumble-crypto` into a real protocol:
+
+- **`SmpPdu`** — the Security Manager PDUs (Pairing Request/Response/Confirm/
+  Random/Failed) over L2CAP CID `0x0006`, oracle-pinned against Python.
+- **`legacy_confirm` / `legacy_stk`** — the LE Legacy pairing `c1`/`s1`
+  computations, wrapping `bumble-crypto`. The test pins the confirm value to the
+  published Bluetooth-spec `c1` vector and derives a matching Short Term Key.
+
+With this, all nine crates participate in the composition.
+
 ## Acceptance
 
 The port's contract is the upstream Python test suite, ported 1:1:
@@ -303,7 +318,9 @@ bumble-rs/
 │   └── tests/end_to_end.rs    # attribute write/read across the full stack
 ├── bumble-host/               # slice-10 Host/Device glue crate
 │   ├── src/lib.rs
-│   └── tests/gatt_over_host.rs # write/read via the Device API (glue in the library)
+│   └── tests/gatt_over_host.rs # full LE lifecycle via the Device API
+├── bumble-smp/                # slice-14 SMP codec + legacy pairing crate
+│   └── src/lib.rs             # wires bumble-crypto (c1/s1) into pairing
 └── docs/superpowers/          # design specs + implementation plans
 ```
 

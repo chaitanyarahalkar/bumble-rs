@@ -1,0 +1,10 @@
+[package]
+name = "bumble-smp"
+version = "0.1.0"
+edition = "2021"
+description = "Rust port of google/bumble SMP — PDU codec + legacy pairing (slice 14, wiring in bumble-crypto)"
+license = "Apache-2.0"
+
+[dependencies]
+bumble = { path = "../bumble" }
+bumble-crypto = { path = "../bumble-crypto" }
