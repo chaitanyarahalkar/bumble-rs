@@ -48,6 +48,87 @@ remaining 4 are the vendor-event factory (a runtime-registration pattern) and
 three parametrized tests that iterate Python's class registry — neither has an
 analog in an enum-based port, so they're intentionally out of scope.
 
+## Porting status vs. `google/bumble`
+
+A module-by-module tracker of the upstream Python (`bumble/`) against this port.
+The [Status](#status) table above tracks the *slices* built so far; this table
+tracks *coverage of the source*.
+
+**Legend:** ✅ ported (complete for this project's scope) · 🟡 partial (a
+representative subset — more of the module remains) · ⬜ not started.
+
+Because the port targets the **LE core**, most touched modules are partial by
+design; the notes say what's covered vs. deferred. LOC is the upstream module
+size, to convey remaining surface.
+
+### Core & utilities
+| Upstream (LOC) | Rust crate | Status | Notes |
+|---|---|---|---|
+| `core.py` (2.1k), `data_types.py` (1.0k) | `bumble` | 🟡 | `Uuid`, `Address`, `Appearance`, `ClassOfDevice`, `AdvertisingData` (raw TLV). Deferred: the typed `DataType` subclass hierarchy and many enums. |
+| `company_ids.py` (3.3k) | — | ⬜ | Vendor-ID lookup table. |
+| `utils.py` (0.5k) | (spread) | 🟡 | Open-enum/flag semantics reimplemented idiomatically; `crc_16` lives in `bumble-l2cap`. Not a 1:1 port. |
+| `keys.py` (0.4k) | — | ⬜ | Key store / bonding persistence. |
+| `colors`, `logging`, `snoop`, `helpers`, `decoder` | — | ⬜ | Logging / debug / packet-trace tooling. |
+
+### HCI, controller & link
+| Upstream (LOC) | Rust crate | Status | Notes |
+|---|---|---|---|
+| `hci.py` (8.3k) | `bumble-hci` | 🟡 | Framing + ~22 commands, key events (incl. LE meta, Command Complete + typed return params, Disconnection Complete), and ACL/SCO/ISO packets. The full ~700-entry command/event catalog is not ported. |
+| `controller.py` (2.8k) | `bumble-controller` | 🟡 | LE advertising/scanning, connection establishment, ACL routing, disconnection. Deferred: CIS/ISO, encryption, extended advertising sets, classic. |
+| `link.py` (0.15k) | `bumble-controller` | 🟡 | In-process **synchronous** `LocalLink`. Deferred: LL control PDUs, LMP routing, async scheduling. |
+| `ll.py` (0.2k) | `bumble-controller` | 🟡 | Advertising/connection PDUs modeled as in-process structs, not serialized LL PDUs. |
+| `host.py` (2.1k) | `bumble-host` | 🟡 | `Device` glue (ATT↔L2CAP↔ACL sequencing + pairing transport). Not the full host feature set. |
+| `device.py` (7.0k) | `bumble-host` | 🟡 | Minimal `Device`/`pump`; the high-level device API (advertising/scanning/connection orchestration, GATT client, listeners) is not ported. |
+| `lmp.py` (0.4k) | — | ⬜ | Classic Link Manager Protocol. |
+
+### L2CAP
+| Upstream (LOC) | Rust crate | Status | Notes |
+|---|---|---|---|
+| `l2cap.py` (3.1k) | `bumble-l2cap` | 🟡 | PDU + signaling frames + FCS. Deferred: channel manager, fragmentation/reassembly, credit-based flow-control runtime. |
+
+### ATT / GATT
+| Upstream (LOC) | Rust crate | Status | Notes |
+|---|---|---|---|
+| `att.py` (1.1k) | `bumble-att` | 🟡 | Representative PDUs incl. discovery. Deferred: Find_Information, prepared/queued & signed writes, indications. |
+| `gatt.py` (0.6k), `gatt_server.py` (1.2k) | `bumble-gatt` | 🟡 | Attribute DB, service/characteristic model, primary discovery, read/write/notify. Deferred: descriptors/CCCD subscriptions, included services. |
+| `gatt_client.py` (1.2k), `gatt_adapters.py` (0.4k) | — | ⬜ | No client abstraction; discovery is driven request-by-request in tests. |
+
+### Security (SMP + crypto)
+| Upstream (LOC) | Rust crate | Status | Notes |
+|---|---|---|---|
+| `crypto/` | `bumble-crypto` | ✅ | All SMP **symmetric** security functions — `e`, AES-CMAC, `c1`, `s1`, `f4`/`f5`/`f6`, `g2`, `h6`/`h7`, `ah` — spec/RFC-4493 vector-verified. Deferred: ECC P-256 (`EccKey`) and RNG. |
+| `smp.py` (2.0k), `pairing.py` (0.3k) | `bumble-smp` | 🟡 | PDU codec + LE Legacy (JustWorks) pairing run over the link. Deferred: full pairing state machine, LE Secure Connections, key distribution, MITM/OOB, passkey. |
+
+### Transports & drivers
+| Upstream | Rust crate | Status | Notes |
+|---|---|---|---|
+| `transport/*` — USB, UART/serial, TCP, WebSocket, UDP, PTY, android-netsim, vhci, … | — | ⬜ | The link is in-process only; no real transports (so no talking to real hardware or netsim yet). |
+| `drivers/*` — Intel, Realtek | — | ⬜ | Vendor controller firmware/init. |
+
+### Classic Bluetooth (BR/EDR)
+| Upstream (LOC) | Rust crate | Status | Notes |
+|---|---|---|---|
+| `rfcomm.py` (1.2k) | — | ⬜ | Serial port emulation. |
+| `sdp.py` (1.4k) | — | ⬜ | Service Discovery Protocol. |
+| `hfp.py` (2.1k), `at.py` (0.1k) | — | ⬜ | Hands-Free Profile. |
+| `hid.py` (0.6k) | — | ⬜ | Human Interface Device. |
+| `a2dp` (1.0k), `avdtp` (2.4k), `avrcp` (2.9k), `avc` (0.5k), `avctp` (0.3k), `rtp` (0.1k), `codecs` (0.5k) | — | ⬜ | A/V distribution + remote control + audio. |
+
+### Profiles & apps
+| Upstream | Rust crate | Status | Notes |
+|---|---|---|---|
+| `profiles/*` — GAP, Battery, Device Info, Heart Rate, ASHA, LE Audio (BAP/PACS/ASCS/…), HAP, CSIP, … (24 modules) | — | ⬜ | None implemented. The GATT layer can express them, but no profile is built on it. |
+| `bridge.py`, `pandora/`, apps | — | ⬜ | Test harnesses / apps — out of scope. |
+
+### Roughly where that leaves things
+
+Fully or substantially covered for the **LE core data + security path**: core
+types, HCI framing, L2CAP/ATT/GATT/SMP codecs, the SMP crypto toolbox, and a
+controller/link/host that runs the LE lifecycle end-to-end. Everything else —
+the exhaustive HCI catalog, the full device/host/GATT-client abstractions, LE
+Secure Connections, real transports, and **all of Classic Bluetooth and the
+profiles** — is the large majority of the ~82k upstream lines and remains to do.
+
 ## Slice 1 — what's here
 
 The shared primitives every higher Bluetooth layer depends on, ported to
