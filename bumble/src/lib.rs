@@ -16,6 +16,7 @@ pub mod address;
 pub mod advertising_data;
 pub mod appearance;
 pub mod class_of_device;
+pub mod company_ids;
 pub mod data_types;
 pub mod uuid;
 
@@ -23,6 +24,7 @@ pub use address::{Address, AddressType};
 pub use advertising_data::AdvertisingData;
 pub use appearance::{Appearance, Category};
 pub use class_of_device::{ClassOfDevice, MajorDeviceClass, MajorServiceClasses};
+pub use company_ids::company_name;
 pub use data_types::DataType;
 pub use uuid::Uuid;
 
