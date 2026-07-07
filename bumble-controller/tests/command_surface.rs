@@ -62,14 +62,14 @@ fn data_command_is_acknowledged() {
 
 #[test]
 fn status_command_gets_command_status() {
-    // Remote_Name_Request (0x0419): a Status-category command handled only via
-    // the surface table (no functional handler), so it gets a Command Status.
+    // Read_Remote_Extended_Features (0x041C): a Status-category command with NO
+    // functional handler, so it must go through the surface-table Status
+    // fallback and yield a Command Status. (Remote_Name_Request would instead
+    // hit its own explicit handler, so it can't exercise the fallback.)
     let mut c = ctrl();
-    c.handle_command(Command::RemoteNameRequest {
-        bd_addr: Address::parse("AA:BB:CC:DD:EE:FF", AddressType::PUBLIC_DEVICE).unwrap(),
-        page_scan_repetition_mode: 0,
-        reserved: 0,
-        clock_offset: 0,
+    c.handle_command(Command::ReadRemoteExtendedFeatures {
+        connection_handle: 0x0001,
+        page_number: 0,
     });
     match one_reply(&mut c) {
         HciPacket::Event(Event::CommandStatus {
@@ -78,7 +78,7 @@ fn status_command_gets_command_status() {
             ..
         }) => {
             assert_eq!(status, 0);
-            assert_eq!(command_opcode, 0x0419);
+            assert_eq!(command_opcode, 0x041C);
         }
         other => panic!("expected Command Status, got {other:?}"),
     }
