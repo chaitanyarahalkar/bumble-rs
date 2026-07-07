@@ -23,9 +23,16 @@
 //! (slice 7), ACL data routing between connected controllers (slice 8, via
 //! [`LocalLink::send_acl_data`]), and disconnection (slice 13, via
 //! [`LocalLink::disconnect`], emitting Disconnection Complete on both sides).
+//! Also handled locally: the read commands (`Read_BD_ADDR`, `Read_Local_Name`,
+//! `LE_Read_Buffer_Size`, `LE_Read_Local_Supported_Features`, `LE_Rand`) and the
+//! per-connection `LE_Set_Data_Length` / `LE_Set_PHY` requests, which report
+//! back through `LE_Data_Length_Change` / `LE_PHY_Update_Complete`.
 //!
 //! Deferred to later slices: LL control PDUs, extended advertising sets,
-//! CIS/ISO, encryption, and classic/LMP — the bulk of Bumble's `controller.py`.
+//! CIS/ISO, encryption (`LE_Enable_Encryption` / LTK exchange), remote-version
+//! exchange, and classic/LMP — the bulk of Bumble's `controller.py`. The HCI
+//! *codec* for those (in `bumble-hci`) is oracle-pinned and complete; only the
+//! controller-side *behavior* is deferred.
 
 use bumble::{Address, AddressType};
 use bumble_hci::codes::*;
@@ -54,6 +61,20 @@ const CONNECTION_INTERVAL: u16 = 10;
 const PERIPHERAL_LATENCY: u16 = 0;
 const SUPERVISION_TIMEOUT: u16 = 10;
 const CENTRAL_CLOCK_ACCURACY: u8 = 7;
+
+/// HCI "Unknown Connection Identifier" error, returned for commands that
+/// reference a connection handle this controller does not know.
+const UNKNOWN_CONNECTION_IDENTIFIER_ERROR: u8 = 0x02;
+/// LE ACL data buffer parameters reported by `LE_Read_Buffer_Size` — fixed
+/// placeholders for this in-process controller.
+const LE_ACL_DATA_PACKET_LENGTH: u16 = 27;
+const TOTAL_NUM_LE_ACL_DATA_PACKETS: u8 = 64;
+/// The LE features bitmap reported by `LE_Read_Local_Supported_Features`. All
+/// zero: this controller implements no optional LE features (an honest report,
+/// since encryption, extended advertising, etc. are deferred).
+const LOCAL_LE_FEATURES: [u8; 8] = [0; 8];
+/// PHY value for LE 1M, reported when no specific PHY was requested.
+const LE_1M_PHY: u8 = 1;
 
 /// An established LE connection on a controller.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -96,6 +117,9 @@ pub struct Controller {
     connections: Vec<Connection>,
     initiating: Option<PendingConnection>,
     next_handle: u16,
+    /// Monotonic counter backing `LE_Rand` — the software controller has no
+    /// entropy source, so it returns a deterministic, ever-changing value.
+    rand_counter: u64,
     host_queue: Vec<HciPacket>,
 }
 
@@ -113,6 +137,7 @@ impl Controller {
             connections: Vec::new(),
             initiating: None,
             next_handle: 1,
+            rand_counter: 0,
             host_queue: Vec::new(),
         }
     }
@@ -181,7 +206,124 @@ impl Controller {
                 self.scanning_enabled = le_scan_enable != 0;
                 self.ack(op_code, HCI_SUCCESS);
             }
+            Command::ReadBdAddr => {
+                self.complete(
+                    op_code,
+                    ReturnParameters::ReadBdAddr {
+                        status: HCI_SUCCESS,
+                        bd_addr: self.public_address.clone(),
+                    },
+                );
+            }
+            Command::ReadLocalName => {
+                // The local name is a fixed 248-byte, null-padded field.
+                let mut local_name = self.name.as_bytes().to_vec();
+                local_name.resize(248, 0);
+                self.complete(
+                    op_code,
+                    ReturnParameters::ReadLocalName {
+                        status: HCI_SUCCESS,
+                        local_name,
+                    },
+                );
+            }
+            Command::LeReadBufferSize => {
+                self.complete(
+                    op_code,
+                    ReturnParameters::LeReadBufferSize {
+                        status: HCI_SUCCESS,
+                        le_acl_data_packet_length: LE_ACL_DATA_PACKET_LENGTH,
+                        total_num_le_acl_data_packets: TOTAL_NUM_LE_ACL_DATA_PACKETS,
+                    },
+                );
+            }
+            Command::LeReadLocalSupportedFeatures => {
+                // No typed return-parameter variant exists for this command; the
+                // controller returns status + the 8-byte LE features bitmap.
+                let mut data = vec![HCI_SUCCESS];
+                data.extend_from_slice(&LOCAL_LE_FEATURES);
+                self.complete(op_code, ReturnParameters::Raw { data });
+            }
+            Command::LeRand => {
+                // Deterministic stand-in for a hardware RNG (see `rand_counter`).
+                let value = self.rand_counter.to_le_bytes();
+                self.rand_counter += 1;
+                let mut data = vec![HCI_SUCCESS];
+                data.extend_from_slice(&value);
+                self.complete(op_code, ReturnParameters::Raw { data });
+            }
+            Command::LeSetDataLength {
+                connection_handle,
+                tx_octets,
+                tx_time,
+            } => self.handle_set_data_length(op_code, connection_handle, tx_octets, tx_time),
+            Command::LeSetPhy {
+                connection_handle,
+                all_phys,
+                tx_phys,
+                rx_phys,
+                ..
+            } => self.handle_set_phy(connection_handle, all_phys, tx_phys, rx_phys),
             _ => self.ack(op_code, UNKNOWN_HCI_COMMAND_ERROR),
+        }
+    }
+
+    /// `LE_Set_Data_Length`: acknowledge with the connection handle, then (on a
+    /// known connection) report the negotiated lengths via an
+    /// [`LeMetaEvent::DataLengthChange`]. The controller mirrors the requested
+    /// TX limits onto RX, matching a peer with identical capability.
+    fn handle_set_data_length(
+        &mut self,
+        op_code: u16,
+        connection_handle: u16,
+        tx_octets: u16,
+        tx_time: u16,
+    ) {
+        let known = self.connection_by_handle(connection_handle).is_some();
+        let status = if known {
+            HCI_SUCCESS
+        } else {
+            UNKNOWN_CONNECTION_IDENTIFIER_ERROR
+        };
+        // Command Complete carries status + connection handle (no typed variant).
+        let mut data = vec![status];
+        data.extend_from_slice(&connection_handle.to_le_bytes());
+        self.complete(op_code, ReturnParameters::Raw { data });
+
+        if known {
+            self.host_queue.push(HciPacket::Event(Event::LeMeta(
+                LeMetaEvent::DataLengthChange {
+                    connection_handle,
+                    max_tx_octets: tx_octets,
+                    max_tx_time: tx_time,
+                    max_rx_octets: tx_octets,
+                    max_rx_time: tx_time,
+                },
+            )));
+        }
+    }
+
+    /// `LE_Set_PHY`: acknowledge with a Command Status, then (on a known
+    /// connection) report the resolved PHYs via an
+    /// [`LeMetaEvent::PhyUpdateComplete`].
+    fn handle_set_phy(&mut self, connection_handle: u16, all_phys: u8, tx_phys: u8, rx_phys: u8) {
+        self.host_queue.push(HciPacket::Event(Event::CommandStatus {
+            status: HCI_SUCCESS,
+            num_hci_command_packets: 1,
+            command_opcode: HCI_LE_SET_PHY_COMMAND,
+        }));
+        if self.connection_by_handle(connection_handle).is_some() {
+            // Bit 0 of all_phys = "no TX preference"; bit 1 = "no RX preference".
+            let tx_phy = resolve_phy(all_phys & 0x01 != 0, tx_phys);
+            let rx_phy = resolve_phy(all_phys & 0x02 != 0, rx_phys);
+            self.host_queue.push(HciPacket::Event(Event::LeMeta(
+                LeMetaEvent::PhyUpdateComplete {
+                    status: HCI_SUCCESS,
+                    connection_handle,
+                    tx_phy,
+                    rx_phy,
+                },
+            )));
         }
     }
 
@@ -366,12 +508,29 @@ impl Controller {
     }
 
     fn ack(&mut self, command_opcode: u16, status: u8) {
+        self.complete(command_opcode, ReturnParameters::Status { status });
+    }
+
+    /// Queue a Command Complete carrying the given return parameters.
+    fn complete(&mut self, command_opcode: u16, return_parameters: ReturnParameters) {
         self.host_queue
             .push(HciPacket::Event(Event::CommandComplete {
                 num_hci_command_packets: 1,
                 command_opcode,
-                return_parameters: ReturnParameters::Status { status },
+                return_parameters,
             }));
+    }
+}
+
+/// Resolve a PHY *value* (1 = LE 1M, 2 = LE 2M, 3 = LE Coded) from an
+/// `LE_Set_PHY` preference. With no preference (or an empty mask) the
+/// controller keeps LE 1M; otherwise it picks the lowest-numbered PHY the host
+/// allows.
+fn resolve_phy(no_preference: bool, phys_mask: u8) -> u8 {
+    if no_preference || phys_mask == 0 {
+        LE_1M_PHY
+    } else {
+        (phys_mask.trailing_zeros() as u8) + 1
     }
 }
 

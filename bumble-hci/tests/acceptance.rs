@@ -728,6 +728,150 @@ fn test_hci_le_read_remote_features_complete_event() {
     );
 }
 
+// --- Slice: widened HCI command coverage (connection / encryption / PHY) ---
+
+fn arr<const N: usize>(hex: &str) -> [u8; N] {
+    let v = unhex(hex);
+    let mut a = [0u8; N];
+    a.copy_from_slice(&v);
+    a
+}
+
+#[test]
+fn test_no_param_commands() {
+    check(HciPacket::Command(Command::ReadBdAddr), "01091000");
+    check(HciPacket::Command(Command::ReadLocalName), "01140c00");
+    check(HciPacket::Command(Command::LeReadBufferSize), "01022000");
+    check(
+        HciPacket::Command(Command::LeReadLocalSupportedFeatures),
+        "01032000",
+    );
+    check(HciPacket::Command(Command::LeRand), "01182000");
+}
+
+#[test]
+fn test_connection_mgmt_commands() {
+    check(
+        HciPacket::Command(Command::ReadRemoteVersionInformation {
+            connection_handle: 0x0002,
+        }),
+        "011d04020200",
+    );
+    check(
+        HciPacket::Command(Command::LeSetDataLength {
+            connection_handle: 0x0002,
+            tx_octets: 251,
+            tx_time: 2120,
+        }),
+        "012220060200fb004808",
+    );
+    check(
+        HciPacket::Command(Command::LeSetPhy {
+            connection_handle: 0x0002,
+            all_phys: 0,
+            tx_phys: 1,
+            rx_phys: 1,
+            phy_options: 0,
+        }),
+        "0132200702000001010000",
+    );
+}
+
+#[test]
+fn test_encryption_commands() {
+    check(
+        HciPacket::Command(Command::LeEnableEncryption {
+            connection_handle: 0x0002,
+            random_number: arr("1122334455667788"),
+            encrypted_diversifier: 0x1234,
+            long_term_key: arr("000102030405060708090a0b0c0d0e0f"),
+        }),
+        "0119201c020011223344556677883412000102030405060708090a0b0c0d0e0f",
+    );
+    check(
+        HciPacket::Command(Command::LeLongTermKeyRequestReply {
+            connection_handle: 0x0002,
+            long_term_key: arr("000102030405060708090a0b0c0d0e0f"),
+        }),
+        "011a20120200000102030405060708090a0b0c0d0e0f",
+    );
+    check(
+        HciPacket::Command(Command::LeLongTermKeyRequestNegativeReply {
+            connection_handle: 0x0002,
+        }),
+        "011b20020200",
+    );
+}
+
+#[test]
+fn test_encryption_and_version_events() {
+    check(
+        HciPacket::Event(Event::EncryptionChange {
+            status: 0,
+            connection_handle: 0x0002,
+            encryption_enabled: 1,
+        }),
+        "04080400020001",
+    );
+    check(
+        HciPacket::Event(Event::ReadRemoteVersionInformationComplete {
+            status: 0,
+            connection_handle: 0x0002,
+            version: 0x0C,
+            manufacturer_name: 0x000F,
+            subversion: 0x1234,
+        }),
+        "040c080002000c0f003412",
+    );
+}
+
+#[test]
+fn test_more_le_meta_events() {
+    check(
+        HciPacket::Event(Event::LeMeta(LeMetaEvent::LongTermKeyRequest {
+            connection_handle: 0x0002,
+            random_number: arr("1122334455667788"),
+            encryption_diversifier: 0x1234,
+        })),
+        "043e0d05020011223344556677883412",
+    );
+    check(
+        HciPacket::Event(Event::LeMeta(LeMetaEvent::DataLengthChange {
+            connection_handle: 0x0002,
+            max_tx_octets: 251,
+            max_tx_time: 2120,
+            max_rx_octets: 251,
+            max_rx_time: 2120,
+        })),
+        "043e0b070200fb004808fb004808",
+    );
+    check(
+        HciPacket::Event(Event::LeMeta(LeMetaEvent::PhyUpdateComplete {
+            status: 0,
+            connection_handle: 0x0002,
+            tx_phy: 1,
+            rx_phy: 1,
+        })),
+        "043e060c0002000101",
+    );
+    check(
+        HciPacket::Event(Event::LeMeta(LeMetaEvent::EnhancedConnectionComplete {
+            status: 0,
+            connection_handle: 1,
+            role: 1,
+            peer_address_type: 1,
+            peer_address: addr("00:11:22:33:44:55"),
+            local_resolvable_private_address: addr("00:00:00:00:00:00"),
+            peer_resolvable_private_address: addr("00:00:00:00:00:00"),
+            connection_interval: 3,
+            peripheral_latency: 4,
+            supervision_timeout: 5,
+            central_clock_accuracy: 6,
+        })),
+        "043e1f0a000100010155443322110000000000000000000000000003000400050006",
+    );
+}
+
 // hci_test.py::test_custom
 #[test]
 fn test_custom() {

@@ -175,6 +175,39 @@ pub enum Command {
     ReadLocalVersionInformation,
     ReadLocalSupportedCommands,
     ReadLocalSupportedFeatures,
+    ReadLocalName,
+    ReadBdAddr,
+    ReadRemoteVersionInformation {
+        connection_handle: u16,
+    },
+    LeReadBufferSize,
+    LeReadLocalSupportedFeatures,
+    LeRand,
+    LeSetDataLength {
+        connection_handle: u16,
+        tx_octets: u16,
+        tx_time: u16,
+    },
+    LeSetPhy {
+        connection_handle: u16,
+        all_phys: u8,
+        tx_phys: u8,
+        rx_phys: u8,
+        phy_options: u16,
+    },
+    LeEnableEncryption {
+        connection_handle: u16,
+        random_number: [u8; 8],
+        encrypted_diversifier: u16,
+        long_term_key: [u8; 16],
+    },
+    LeLongTermKeyRequestReply {
+        connection_handle: u16,
+        long_term_key: [u8; 16],
+    },
+    LeLongTermKeyRequestNegativeReply {
+        connection_handle: u16,
+    },
     /// Any command not decoded by this slice: raw op code + parameters.
     Generic {
         op_code: u16,
@@ -226,6 +259,21 @@ impl Command {
             Command::ReadLocalVersionInformation => HCI_READ_LOCAL_VERSION_INFORMATION_COMMAND,
             Command::ReadLocalSupportedCommands => HCI_READ_LOCAL_SUPPORTED_COMMANDS_COMMAND,
             Command::ReadLocalSupportedFeatures => HCI_READ_LOCAL_SUPPORTED_FEATURES_COMMAND,
+            Command::ReadLocalName => HCI_READ_LOCAL_NAME_COMMAND,
+            Command::ReadBdAddr => HCI_READ_BD_ADDR_COMMAND,
+            Command::ReadRemoteVersionInformation { .. } => {
+                HCI_READ_REMOTE_VERSION_INFORMATION_COMMAND
+            }
+            Command::LeReadBufferSize => HCI_LE_READ_BUFFER_SIZE_COMMAND,
+            Command::LeReadLocalSupportedFeatures => HCI_LE_READ_LOCAL_SUPPORTED_FEATURES_COMMAND,
+            Command::LeRand => HCI_LE_RAND_COMMAND,
+            Command::LeSetDataLength { .. } => HCI_LE_SET_DATA_LENGTH_COMMAND,
+            Command::LeSetPhy { .. } => HCI_LE_SET_PHY_COMMAND,
+            Command::LeEnableEncryption { .. } => HCI_LE_ENABLE_ENCRYPTION_COMMAND,
+            Command::LeLongTermKeyRequestReply { .. } => HCI_LE_LONG_TERM_KEY_REQUEST_REPLY_COMMAND,
+            Command::LeLongTermKeyRequestNegativeReply { .. } => {
+                HCI_LE_LONG_TERM_KEY_REQUEST_NEGATIVE_REPLY_COMMAND
+            }
             Command::Generic { op_code, .. } => *op_code,
         }
     }
@@ -237,7 +285,58 @@ impl Command {
             Command::Reset
             | Command::ReadLocalVersionInformation
             | Command::ReadLocalSupportedCommands
-            | Command::ReadLocalSupportedFeatures => {}
+            | Command::ReadLocalSupportedFeatures
+            | Command::ReadLocalName
+            | Command::ReadBdAddr
+            | Command::LeReadBufferSize
+            | Command::LeReadLocalSupportedFeatures
+            | Command::LeRand => {}
+            Command::ReadRemoteVersionInformation { connection_handle } => {
+                push_u16(&mut p, *connection_handle)
+            }
+            Command::LeSetDataLength {
+                connection_handle,
+                tx_octets,
+                tx_time,
+            } => {
+                push_u16(&mut p, *connection_handle);
+                push_u16(&mut p, *tx_octets);
+                push_u16(&mut p, *tx_time);
+            }
+            Command::LeSetPhy {
+                connection_handle,
+                all_phys,
+                tx_phys,
+                rx_phys,
+                phy_options,
+            } => {
+                push_u16(&mut p, *connection_handle);
+                p.push(*all_phys);
+                p.push(*tx_phys);
+                p.push(*rx_phys);
+                push_u16(&mut p, *phy_options);
+            }
+            Command::LeEnableEncryption {
+                connection_handle,
+                random_number,
+                encrypted_diversifier,
+                long_term_key,
+            } => {
+                push_u16(&mut p, *connection_handle);
+                p.extend_from_slice(random_number);
+                push_u16(&mut p, *encrypted_diversifier);
+                p.extend_from_slice(long_term_key);
+            }
+            Command::LeLongTermKeyRequestReply {
+                connection_handle,
+                long_term_key,
+            } => {
+                push_u16(&mut p, *connection_handle);
+                p.extend_from_slice(long_term_key);
+            }
+            Command::LeLongTermKeyRequestNegativeReply { connection_handle } => {
+                push_u16(&mut p, *connection_handle)
+            }
             Command::Disconnect {
                 connection_handle,
                 reason,
@@ -690,6 +789,41 @@ impl Command {
                     codec_id,
                     controller_delay,
                     codec_configuration,
+                }
+            }
+            HCI_READ_LOCAL_NAME_COMMAND => Command::ReadLocalName,
+            HCI_READ_BD_ADDR_COMMAND => Command::ReadBdAddr,
+            HCI_LE_READ_BUFFER_SIZE_COMMAND => Command::LeReadBufferSize,
+            HCI_LE_READ_LOCAL_SUPPORTED_FEATURES_COMMAND => Command::LeReadLocalSupportedFeatures,
+            HCI_LE_RAND_COMMAND => Command::LeRand,
+            HCI_READ_REMOTE_VERSION_INFORMATION_COMMAND => Command::ReadRemoteVersionInformation {
+                connection_handle: r.u16_le()?,
+            },
+            HCI_LE_SET_DATA_LENGTH_COMMAND => Command::LeSetDataLength {
+                connection_handle: r.u16_le()?,
+                tx_octets: r.u16_le()?,
+                tx_time: r.u16_le()?,
+            },
+            HCI_LE_SET_PHY_COMMAND => Command::LeSetPhy {
+                connection_handle: r.u16_le()?,
+                all_phys: r.u8()?,
+                tx_phys: r.u8()?,
+                rx_phys: r.u8()?,
+                phy_options: r.u16_le()?,
+            },
+            HCI_LE_ENABLE_ENCRYPTION_COMMAND => Command::LeEnableEncryption {
+                connection_handle: r.u16_le()?,
+                random_number: r.array::<8>()?,
+                encrypted_diversifier: r.u16_le()?,
+                long_term_key: r.array::<16>()?,
+            },
+            HCI_LE_LONG_TERM_KEY_REQUEST_REPLY_COMMAND => Command::LeLongTermKeyRequestReply {
+                connection_handle: r.u16_le()?,
+                long_term_key: r.array::<16>()?,
+            },
+            HCI_LE_LONG_TERM_KEY_REQUEST_NEGATIVE_REPLY_COMMAND => {
+                Command::LeLongTermKeyRequestNegativeReply {
+                    connection_handle: r.u16_le()?,
                 }
             }
             _ => Command::Generic {
