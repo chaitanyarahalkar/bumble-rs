@@ -17,8 +17,8 @@ crate whose behavior is verified against the upstream Python.
 | Slice | Crate | Status |
 |-------|-------|--------|
 | 1. Core types & advertising data | `bumble` | ✅ complete — 16/16 tests green |
-| 2. HCI packet codec (framing + commands + events + return params) | `bumble-hci` | ✅ 43/43 tests green |
-| 3+7. Software controller + virtual link (advertising + LE connections) | `bumble-controller` | ✅ 6/6 tests green |
+| 2. HCI packet codec (framing + commands + events + return params) | `bumble-hci` | ✅ 49/49 tests green |
+| 3+7. Software controller + virtual link (advertising + LE connections + read/PHY/data-length commands) | `bumble-controller` | ✅ 17/17 tests green |
 | 4. L2CAP frame codec (PDU + signaling frames + FCS) | `bumble-l2cap` | ✅ 8/8 tests green |
 | 5. ATT protocol PDU codec | `bumble-att` | ✅ 8/8 tests green |
 | 6. SMP cryptographic toolbox | `bumble-crypto` | ✅ 10/10 vectors green |
@@ -39,14 +39,21 @@ discover → read/write → notify → disconnect** between two virtual devices 
 Slice 2 covers the HCI **framing foundation**, every command exercised by
 `hci_test.py::run_test_commands` (fixed-layout, address, mask, and the per-entry
 array commands like Extended_Create_Connection), the generic command/event
-fallbacks, the LE events (Command_Status, Number_Of_Completed_Packets, four LE
-meta events, and both Advertising Report events), and **Command_Complete with a
-typed return-parameters model** (LE_Read_Buffer_Size, Read_BD_ADDR,
-Read_Local_Name, Read_Local_Supported_Codecs + V2, and the status-based
-short-response fallback). Of `hci_test.py`'s ~46 tests, 42 are ported. The
-remaining 4 are the vendor-event factory (a runtime-registration pattern) and
-three parametrized tests that iterate Python's class registry — neither has an
-analog in an enum-based port, so they're intentionally out of scope.
+fallbacks, the LE meta events (Connection Complete/Enhanced, Connection Update
+Complete, Read Remote Features Complete, LTK Request, Data Length Change, PHY
+Update Complete, both Advertising Report events), the connection-lifecycle
+events (Disconnection Complete, Encryption Change, Read Remote Version
+Information Complete, Command_Status, Number_Of_Completed_Packets), and
+**Command_Complete with a typed return-parameters model** (LE_Read_Buffer_Size,
+Read_BD_ADDR, Read_Local_Name, Read_Local_Supported_Codecs + V2, and the
+status-based short-response fallback). The subsequent "HCI, controller & link"
+pass widened the typed command set to ~33 (read commands, data-length/PHY,
+encryption + LTK exchange, remote-version), each **byte-pinned against oracle
+hex captured from real Python Bumble**. Of `hci_test.py`'s ~46 tests, 42 are
+ported. The remaining 4 are the vendor-event factory (a runtime-registration
+pattern) and three parametrized tests that iterate Python's class registry —
+neither has an analog in an enum-based port, so they're intentionally out of
+scope.
 
 ## Porting status vs. `google/bumble`
 
@@ -70,11 +77,11 @@ size, to convey remaining surface.
 | `utils.py` (0.5k) | `bumble::util` (+ spread) | ✅ | Generic helpers (`bit_flags_to_strings`, `name_or_number`); `crc_16` lives in `bumble-l2cap`; the open-enum/flag pattern is realized as newtypes throughout. The asyncio event infra (`EventEmitter`/`AsyncRunner`/`FlowControlAsyncPipe`) is **N/A** for this synchronous port. |
 | `colors`, `logging`, `helpers`, `snoop`, `decoder` | — | N/A | Debug/logging tooling with idiomatic Rust equivalents rather than library surface: `colors` (ANSI), `logging` (→ `log`/`tracing`), `helpers.PacketTracer` (debug trace), `snoop` (BTSnoop/pcap capture). `decoder.py` is a **G.722 audio codec** — it belongs with the audio subsystem, not core. |
 
-### HCI, controller & link
+### HCI, controller & link — 🟡 LE core ported (classic/LMP + full device API deferred)
 | Upstream (LOC) | Rust crate | Status | Notes |
 |---|---|---|---|
-| `hci.py` (8.3k) | `bumble-hci` | 🟡 | Framing + ~22 commands, key events (incl. LE meta, Command Complete + typed return params, Disconnection Complete), and ACL/SCO/ISO packets. The full ~700-entry command/event catalog is not ported. |
-| `controller.py` (2.8k) | `bumble-controller` | 🟡 | LE advertising/scanning, connection establishment, ACL routing, disconnection. Deferred: CIS/ISO, encryption, extended advertising sets, classic. |
+| `hci.py` (8.3k) | `bumble-hci` | 🟡 | Framing + ~33 commands (advertising/scanning, connection, read commands, data-length/PHY, encryption + LTK exchange, remote-version), key events (incl. LE meta — Connection Complete/Enhanced, LTK Request, Data Length Change, PHY Update Complete —, Encryption Change, Command Complete + typed return params, Disconnection Complete), and ACL/SCO/ISO packets. **Every command and event round-trips byte-exact against oracle bytes captured from real Python Bumble.** The full ~700-entry command/event catalog is not ported; the open-enum tail preserves unmodeled opcodes losslessly. |
+| `controller.py` (2.8k) | `bumble-controller` | 🟡 | LE advertising/scanning, connection establishment, ACL routing, disconnection, the read commands (`Read_BD_ADDR`, `Read_Local_Name`, `LE_Read_Buffer_Size`, `LE_Read_Local_Supported_Features`, `LE_Rand`) and per-connection `LE_Set_Data_Length`/`LE_Set_PHY` (with their follow-up meta events). A **behavioral simulation with placeholder values** (as upstream's `controller.py` also is) — *not* oracle-pinned like the HCI codec. Deferred at the controller: CIS/ISO, encryption/LTK behavior, remote-version exchange, extended advertising sets, classic. |
 | `link.py` (0.15k) | `bumble-controller` | 🟡 | In-process **synchronous** `LocalLink`. Deferred: LL control PDUs, LMP routing, async scheduling. |
 | `ll.py` (0.2k) | `bumble-controller` | 🟡 | Advertising/connection PDUs modeled as in-process structs, not serialized LL PDUs. |
 | `host.py` (2.1k) | `bumble-host` | 🟡 | `Device` glue (ATT↔L2CAP↔ACL sequencing + pairing transport). Not the full host feature set. |

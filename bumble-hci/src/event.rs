@@ -18,6 +18,18 @@ pub enum Event {
         connection_handle: u16,
         reason: u8,
     },
+    EncryptionChange {
+        status: u8,
+        connection_handle: u16,
+        encryption_enabled: u8,
+    },
+    ReadRemoteVersionInformationComplete {
+        status: u8,
+        connection_handle: u16,
+        version: u8,
+        manufacturer_name: u16,
+        subversion: u16,
+    },
     CommandComplete {
         num_hci_command_packets: u8,
         command_opcode: u16,
@@ -97,6 +109,37 @@ pub enum LeMetaEvent {
         connection_handle: u16,
         le_features: [u8; 8],
     },
+    EnhancedConnectionComplete {
+        status: u8,
+        connection_handle: u16,
+        role: u8,
+        peer_address_type: u8,
+        peer_address: Address,
+        local_resolvable_private_address: Address,
+        peer_resolvable_private_address: Address,
+        connection_interval: u16,
+        peripheral_latency: u16,
+        supervision_timeout: u16,
+        central_clock_accuracy: u8,
+    },
+    LongTermKeyRequest {
+        connection_handle: u16,
+        random_number: [u8; 8],
+        encryption_diversifier: u16,
+    },
+    DataLengthChange {
+        connection_handle: u16,
+        max_tx_octets: u16,
+        max_tx_time: u16,
+        max_rx_octets: u16,
+        max_rx_time: u16,
+    },
+    PhyUpdateComplete {
+        status: u8,
+        connection_handle: u16,
+        tx_phy: u8,
+        rx_phy: u8,
+    },
     AdvertisingReport {
         reports: Vec<AdvertisingReport>,
     },
@@ -115,6 +158,10 @@ impl Event {
     pub fn event_code(&self) -> u8 {
         match self {
             Event::DisconnectionComplete { .. } => HCI_DISCONNECTION_COMPLETE_EVENT,
+            Event::EncryptionChange { .. } => HCI_ENCRYPTION_CHANGE_EVENT,
+            Event::ReadRemoteVersionInformationComplete { .. } => {
+                HCI_READ_REMOTE_VERSION_INFORMATION_COMPLETE_EVENT
+            }
             Event::CommandComplete { .. } => HCI_COMMAND_COMPLETE_EVENT,
             Event::CommandStatus { .. } => HCI_COMMAND_STATUS_EVENT,
             Event::NumberOfCompletedPackets { .. } => HCI_NUMBER_OF_COMPLETED_PACKETS_EVENT,
@@ -135,6 +182,32 @@ impl Event {
                 p.push(*status);
                 p.extend_from_slice(&connection_handle.to_le_bytes());
                 p.push(*reason);
+                p
+            }
+            Event::EncryptionChange {
+                status,
+                connection_handle,
+                encryption_enabled,
+            } => {
+                let mut p = Vec::with_capacity(4);
+                p.push(*status);
+                p.extend_from_slice(&connection_handle.to_le_bytes());
+                p.push(*encryption_enabled);
+                p
+            }
+            Event::ReadRemoteVersionInformationComplete {
+                status,
+                connection_handle,
+                version,
+                manufacturer_name,
+                subversion,
+            } => {
+                let mut p = Vec::with_capacity(8);
+                p.push(*status);
+                p.extend_from_slice(&connection_handle.to_le_bytes());
+                p.push(*version);
+                p.extend_from_slice(&manufacturer_name.to_le_bytes());
+                p.extend_from_slice(&subversion.to_le_bytes());
                 p
             }
             Event::CommandComplete {
@@ -224,6 +297,20 @@ impl Event {
                 connection_handle: r.u16_le()?,
                 reason: r.u8()?,
             },
+            HCI_ENCRYPTION_CHANGE_EVENT => Event::EncryptionChange {
+                status: r.u8()?,
+                connection_handle: r.u16_le()?,
+                encryption_enabled: r.u8()?,
+            },
+            HCI_READ_REMOTE_VERSION_INFORMATION_COMPLETE_EVENT => {
+                Event::ReadRemoteVersionInformationComplete {
+                    status: r.u8()?,
+                    connection_handle: r.u16_le()?,
+                    version: r.u8()?,
+                    manufacturer_name: r.u16_le()?,
+                    subversion: r.u16_le()?,
+                }
+            }
             HCI_COMMAND_COMPLETE_EVENT => {
                 let num_hci_command_packets = r.u8()?;
                 let command_opcode = r.u16_le()?;
@@ -273,6 +360,12 @@ impl LeMetaEvent {
             LeMetaEvent::ReadRemoteFeaturesComplete { .. } => {
                 HCI_LE_READ_REMOTE_FEATURES_COMPLETE_EVENT
             }
+            LeMetaEvent::EnhancedConnectionComplete { .. } => {
+                HCI_LE_ENHANCED_CONNECTION_COMPLETE_EVENT
+            }
+            LeMetaEvent::LongTermKeyRequest { .. } => HCI_LE_LONG_TERM_KEY_REQUEST_EVENT,
+            LeMetaEvent::DataLengthChange { .. } => HCI_LE_DATA_LENGTH_CHANGE_EVENT,
+            LeMetaEvent::PhyUpdateComplete { .. } => HCI_LE_PHY_UPDATE_COMPLETE_EVENT,
             LeMetaEvent::AdvertisingReport { .. } => HCI_LE_ADVERTISING_REPORT_EVENT,
             LeMetaEvent::ExtendedAdvertisingReport { .. } => {
                 HCI_LE_EXTENDED_ADVERTISING_REPORT_EVENT
@@ -334,6 +427,64 @@ impl LeMetaEvent {
                 p.push(*status);
                 p.extend_from_slice(&connection_handle.to_le_bytes());
                 p.extend_from_slice(le_features);
+            }
+            LeMetaEvent::EnhancedConnectionComplete {
+                status,
+                connection_handle,
+                role,
+                peer_address_type,
+                peer_address,
+                local_resolvable_private_address,
+                peer_resolvable_private_address,
+                connection_interval,
+                peripheral_latency,
+                supervision_timeout,
+                central_clock_accuracy,
+            } => {
+                p.push(*status);
+                p.extend_from_slice(&connection_handle.to_le_bytes());
+                p.push(*role);
+                p.push(*peer_address_type);
+                p.extend_from_slice(peer_address.address_bytes());
+                p.extend_from_slice(local_resolvable_private_address.address_bytes());
+                p.extend_from_slice(peer_resolvable_private_address.address_bytes());
+                p.extend_from_slice(&connection_interval.to_le_bytes());
+                p.extend_from_slice(&peripheral_latency.to_le_bytes());
+                p.extend_from_slice(&supervision_timeout.to_le_bytes());
+                p.push(*central_clock_accuracy);
+            }
+            LeMetaEvent::LongTermKeyRequest {
+                connection_handle,
+                random_number,
+                encryption_diversifier,
+            } => {
+                p.extend_from_slice(&connection_handle.to_le_bytes());
+                p.extend_from_slice(random_number);
+                p.extend_from_slice(&encryption_diversifier.to_le_bytes());
+            }
+            LeMetaEvent::DataLengthChange {
+                connection_handle,
+                max_tx_octets,
+                max_tx_time,
+                max_rx_octets,
+                max_rx_time,
+            } => {
+                p.extend_from_slice(&connection_handle.to_le_bytes());
+                p.extend_from_slice(&max_tx_octets.to_le_bytes());
+                p.extend_from_slice(&max_tx_time.to_le_bytes());
+                p.extend_from_slice(&max_rx_octets.to_le_bytes());
+                p.extend_from_slice(&max_rx_time.to_le_bytes());
+            }
+            LeMetaEvent::PhyUpdateComplete {
+                status,
+                connection_handle,
+                tx_phy,
+                rx_phy,
+            } => {
+                p.push(*status);
+                p.extend_from_slice(&connection_handle.to_le_bytes());
+                p.push(*tx_phy);
+                p.push(*rx_phy);
             }
             LeMetaEvent::AdvertisingReport { reports } => {
                 p.push(reports.len() as u8);
@@ -402,6 +553,45 @@ impl LeMetaEvent {
                 status: r.u8()?,
                 connection_handle: r.u16_le()?,
                 le_features: r.array::<8>()?,
+            },
+            HCI_LE_ENHANCED_CONNECTION_COMPLETE_EVENT => {
+                let addr = |r: &mut Reader| -> Result<Address> {
+                    Ok(Address::from_bytes(
+                        r.array::<6>()?,
+                        AddressType::RANDOM_DEVICE,
+                    ))
+                };
+                LeMetaEvent::EnhancedConnectionComplete {
+                    status: r.u8()?,
+                    connection_handle: r.u16_le()?,
+                    role: r.u8()?,
+                    peer_address_type: r.u8()?,
+                    peer_address: addr(&mut r)?,
+                    local_resolvable_private_address: addr(&mut r)?,
+                    peer_resolvable_private_address: addr(&mut r)?,
+                    connection_interval: r.u16_le()?,
+                    peripheral_latency: r.u16_le()?,
+                    supervision_timeout: r.u16_le()?,
+                    central_clock_accuracy: r.u8()?,
+                }
+            }
+            HCI_LE_LONG_TERM_KEY_REQUEST_EVENT => LeMetaEvent::LongTermKeyRequest {
+                connection_handle: r.u16_le()?,
+                random_number: r.array::<8>()?,
+                encryption_diversifier: r.u16_le()?,
+            },
+            HCI_LE_DATA_LENGTH_CHANGE_EVENT => LeMetaEvent::DataLengthChange {
+                connection_handle: r.u16_le()?,
+                max_tx_octets: r.u16_le()?,
+                max_tx_time: r.u16_le()?,
+                max_rx_octets: r.u16_le()?,
+                max_rx_time: r.u16_le()?,
+            },
+            HCI_LE_PHY_UPDATE_COMPLETE_EVENT => LeMetaEvent::PhyUpdateComplete {
+                status: r.u8()?,
+                connection_handle: r.u16_le()?,
+                tx_phy: r.u8()?,
+                rx_phy: r.u8()?,
             },
             HCI_LE_ADVERTISING_REPORT_EVENT => {
                 let num_reports = r.u8()? as usize;
