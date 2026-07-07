@@ -28,11 +28,29 @@
 //! per-connection `LE_Set_Data_Length` / `LE_Set_PHY` requests, which report
 //! back through `LE_Data_Length_Change` / `LE_PHY_Update_Complete`.
 //!
-//! Deferred to later slices: LL control PDUs, extended advertising sets,
-//! CIS/ISO, encryption (`LE_Enable_Encryption` / LTK exchange), remote-version
-//! exchange, and classic/LMP — the bulk of Bumble's `controller.py`. The HCI
-//! *codec* for those (in `bumble-hci`) is oracle-pinned and complete; only the
-//! controller-side *behavior* is deferred.
+//! ## Full command surface
+//!
+//! Every command upstream's `controller.py` handles gets a well-formed reply of
+//! the matching HCI shape, driven by the generated [`command_surface`] table:
+//! configuration/"set" commands are acknowledged with Command Complete + SUCCESS
+//! (upstream stores state and returns SUCCESS; the in-process sim has no state to
+//! store, so it simply acknowledges), read commands the sim can't model are
+//! acknowledged SUCCESS without a synthesized payload, and operations that
+//! complete via a later event (connect, encryption start, remote-features…) are
+//! answered with Command Status. A command upstream *also* doesn't handle gets
+//! the spec-correct "Unknown HCI Command" — an honest report, not a fake success.
+//!
+//! ## Deferred (behavioral simulation, not the codec)
+//!
+//! The full LL/state-machine *behavior* behind many of those acknowledgements is
+//! not simulated: LL control PDUs, extended/periodic advertising sets, CIS/ISO,
+//! encryption (`LE_Enable_Encryption` / LTK exchange), remote-version exchange,
+//! and classic/LMP. The HCI *codec* for all of them (in `bumble-hci`) is complete
+//! and oracle-pinned; what remains is controller-side behavior, which — unlike
+//! the codec — has no ground-truth oracle to pin against (upstream's controller
+//! is itself a simulation with placeholder values).
+
+pub mod command_surface;
 
 use bumble::{Address, AddressType};
 use bumble_hci::codes::*;
@@ -264,7 +282,17 @@ impl Controller {
                 rx_phys,
                 ..
             } => self.handle_set_phy(connection_handle, all_phys, tx_phys, rx_phys),
-            _ => self.ack(op_code, UNKNOWN_HCI_COMMAND_ERROR),
+            // Any command not modelled functionally above: reply with the same
+            // response *shape* upstream `controller.py` uses for it (see
+            // [`command_surface`]). A command upstream also doesn't handle gets
+            // the spec-correct "Unknown HCI Command".
+            _ => match command_surface::response_kind(op_code) {
+                Some(command_surface::Resp::StatusOnly) | Some(command_surface::Resp::Data) => {
+                    self.ack(op_code, HCI_SUCCESS)
+                }
+                Some(command_surface::Resp::Status) => self.command_status(op_code, HCI_SUCCESS),
+                None => self.ack(op_code, UNKNOWN_HCI_COMMAND_ERROR),
+            },
         }
     }
 
@@ -509,6 +537,16 @@ impl Controller {
 
     fn ack(&mut self, command_opcode: u16, status: u8) {
         self.complete(command_opcode, ReturnParameters::Status { status });
+    }
+
+    /// Queue a Command Status acknowledgement (for commands that complete via a
+    /// later event).
+    fn command_status(&mut self, command_opcode: u16, status: u8) {
+        self.host_queue.push(HciPacket::Event(Event::CommandStatus {
+            status,
+            num_hci_command_packets: 1,
+            command_opcode,
+        }));
     }
 
     /// Queue a Command Complete carrying the given return parameters.

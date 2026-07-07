@@ -43,3 +43,18 @@ cargo test -p bumble-hci                # verify oracle-pinned tests pass
 
 `HCIGEN_OUT` defaults to this directory; output paths are resolved relative to
 the script (the `bumble-hci` crate root).
+
+## `gen_events.py` and `gen_surface.py`
+
+- **`gen_events.py`** mirrors `gen_commands.py` for the event catalog — it emits
+  `src/event.rs` (the `Event` / `LeMetaEvent` enums), regenerates the full
+  `src/codes.rs` (command opcodes + event/sub-event codes), and
+  `tests/generated_events.rs`. Run it after `gen_commands.py`. Four events are
+  hand-written and embedded from `event_embed.json` (rebuilt by `make_embed.py`):
+  `Command_Complete` (typed `ReturnParameters`) and the two nested-report
+  advertising events.
+- **`gen_surface.py`** reads upstream `controller.py`'s `on_hci_*_command`
+  handlers, categorizes each by response shape (Command Complete status-only /
+  data / Command Status), and emits `bumble-controller/src/command_surface.rs` —
+  the table the software controller uses to reply to the full command surface.
+  Set `BUMBLE_SRC` to the upstream checkout (default `/tmp/bumble-scope`).
