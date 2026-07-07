@@ -6,11 +6,11 @@ description = "Rust port of google/bumble GATT — a minimal ATT attribute serve
 license = "Apache-2.0"
 
 [dependencies]
+bumble = { path = "../bumble" }
 bumble-att = { path = "../bumble-att" }
 
 [dev-dependencies]
 # The end-to-end test drives the server over the full stack.
-bumble = { path = "../bumble" }
 bumble-hci = { path = "../bumble-hci" }
 bumble-l2cap = { path = "../bumble-l2cap" }
 bumble-controller = { path = "../bumble-controller" }

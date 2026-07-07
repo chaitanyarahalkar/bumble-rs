@@ -101,6 +101,40 @@ fn test_handle_value_notification() {
 }
 
 #[test]
+fn test_read_by_type_request() {
+    check(
+        AttPdu::ReadByTypeRequest {
+            starting_handle: 0x0001,
+            ending_handle: 0xFFFF,
+            attribute_type: Uuid::from_16_bits(0x2803),
+        },
+        "080100ffff0328",
+    );
+}
+
+#[test]
+fn test_read_by_type_response() {
+    check(
+        AttPdu::ReadByTypeResponse {
+            length: 7,
+            attribute_data_list: unhex("26000a2700002a"),
+        },
+        "090726000a2700002a",
+    );
+}
+
+#[test]
+fn test_read_by_group_type_response() {
+    check(
+        AttPdu::ReadByGroupTypeResponse {
+            length: 6,
+            attribute_data_list: unhex("010005000a18"),
+        },
+        "1106010005000a18",
+    );
+}
+
+#[test]
 fn test_generic_unknown_opcode() {
     let bytes = unhex("ff010203");
     let parsed = AttPdu::from_bytes(&bytes).unwrap();

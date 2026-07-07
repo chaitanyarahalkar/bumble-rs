@@ -8,12 +8,12 @@
 //! ## Scope
 //!
 //! Implemented: Error_Response, Exchange_MTU_Request/Response, Read_Request/
-//! Response, Read_By_Group_Type_Request, Write_Request/Response, and
-//! Handle_Value_Notification, with an [`AttPdu::Generic`] fallback.
+//! Response, Read_By_Type_Request/Response, Read_By_Group_Type_Request/Response,
+//! Write_Request/Response, and Handle_Value_Notification, with an
+//! [`AttPdu::Generic`] fallback.
 //!
-//! Deferred: the remaining ATT PDUs (Find_Information, Read_By_Type_Response
-//! grouping, prepared/queued writes, signed writes, indications) and the GATT
-//! client/server layers built on top.
+//! Deferred: the remaining ATT PDUs (Find_Information, prepared/queued writes,
+//! signed writes, indications).
 
 use bumble::Uuid;
 use core::fmt;
@@ -23,9 +23,12 @@ pub mod codes {
     pub const ATT_ERROR_RESPONSE: u8 = 0x01;
     pub const ATT_EXCHANGE_MTU_REQUEST: u8 = 0x02;
     pub const ATT_EXCHANGE_MTU_RESPONSE: u8 = 0x03;
+    pub const ATT_READ_BY_TYPE_REQUEST: u8 = 0x08;
+    pub const ATT_READ_BY_TYPE_RESPONSE: u8 = 0x09;
     pub const ATT_READ_REQUEST: u8 = 0x0A;
     pub const ATT_READ_RESPONSE: u8 = 0x0B;
     pub const ATT_READ_BY_GROUP_TYPE_REQUEST: u8 = 0x10;
+    pub const ATT_READ_BY_GROUP_TYPE_RESPONSE: u8 = 0x11;
     pub const ATT_WRITE_REQUEST: u8 = 0x12;
     pub const ATT_WRITE_RESPONSE: u8 = 0x13;
     pub const ATT_HANDLE_VALUE_NOTIFICATION: u8 = 0x1B;
@@ -73,10 +76,27 @@ pub enum AttPdu {
     ReadResponse {
         attribute_value: Vec<u8>,
     },
+    ReadByTypeRequest {
+        starting_handle: u16,
+        ending_handle: u16,
+        attribute_type: Uuid,
+    },
+    /// `attribute_data_list` is a sequence of `length`-byte entries, each
+    /// `[handle(2), value(length-2)]`.
+    ReadByTypeResponse {
+        length: u8,
+        attribute_data_list: Vec<u8>,
+    },
     ReadByGroupTypeRequest {
         starting_handle: u16,
         ending_handle: u16,
         attribute_group_type: Uuid,
+    },
+    /// `attribute_data_list` is a sequence of `length`-byte entries, each
+    /// `[handle(2), end_group_handle(2), value(length-4)]`.
+    ReadByGroupTypeResponse {
+        length: u8,
+        attribute_data_list: Vec<u8>,
     },
     WriteRequest {
         attribute_handle: u16,
@@ -114,7 +134,10 @@ impl AttPdu {
             AttPdu::ExchangeMtuResponse { .. } => codes::ATT_EXCHANGE_MTU_RESPONSE,
             AttPdu::ReadRequest { .. } => codes::ATT_READ_REQUEST,
             AttPdu::ReadResponse { .. } => codes::ATT_READ_RESPONSE,
+            AttPdu::ReadByTypeRequest { .. } => codes::ATT_READ_BY_TYPE_REQUEST,
+            AttPdu::ReadByTypeResponse { .. } => codes::ATT_READ_BY_TYPE_RESPONSE,
             AttPdu::ReadByGroupTypeRequest { .. } => codes::ATT_READ_BY_GROUP_TYPE_REQUEST,
+            AttPdu::ReadByGroupTypeResponse { .. } => codes::ATT_READ_BY_GROUP_TYPE_RESPONSE,
             AttPdu::WriteRequest { .. } => codes::ATT_WRITE_REQUEST,
             AttPdu::WriteResponse => codes::ATT_WRITE_RESPONSE,
             AttPdu::HandleValueNotification { .. } => codes::ATT_HANDLE_VALUE_NOTIFICATION,
@@ -139,6 +162,22 @@ impl AttPdu {
             AttPdu::ExchangeMtuResponse { server_rx_mtu } => push_u16(&mut p, *server_rx_mtu),
             AttPdu::ReadRequest { attribute_handle } => push_u16(&mut p, *attribute_handle),
             AttPdu::ReadResponse { attribute_value } => p.extend_from_slice(attribute_value),
+            AttPdu::ReadByTypeRequest {
+                starting_handle,
+                ending_handle,
+                attribute_type,
+            } => {
+                push_u16(&mut p, *starting_handle);
+                push_u16(&mut p, *ending_handle);
+                p.extend_from_slice(&attribute_type.to_bytes(false));
+            }
+            AttPdu::ReadByTypeResponse {
+                length,
+                attribute_data_list,
+            } => {
+                p.push(*length);
+                p.extend_from_slice(attribute_data_list);
+            }
             AttPdu::ReadByGroupTypeRequest {
                 starting_handle,
                 ending_handle,
@@ -147,6 +186,13 @@ impl AttPdu {
                 push_u16(&mut p, *starting_handle);
                 push_u16(&mut p, *ending_handle);
                 p.extend_from_slice(&attribute_group_type.to_bytes(false));
+            }
+            AttPdu::ReadByGroupTypeResponse {
+                length,
+                attribute_data_list,
+            } => {
+                p.push(*length);
+                p.extend_from_slice(attribute_data_list);
             }
             AttPdu::WriteRequest {
                 attribute_handle,
@@ -204,6 +250,21 @@ impl AttPdu {
             codes::ATT_READ_RESPONSE => AttPdu::ReadResponse {
                 attribute_value: payload.to_vec(),
             },
+            codes::ATT_READ_BY_TYPE_REQUEST => {
+                let attribute_type = Uuid::from_bytes(payload.get(4..).unwrap_or(&[]))
+                    .map_err(|e| Error::InvalidPacket(format!("bad type UUID: {e}")))?;
+                AttPdu::ReadByTypeRequest {
+                    starting_handle: le16(payload, 0)?,
+                    ending_handle: le16(payload, 2)?,
+                    attribute_type,
+                }
+            }
+            codes::ATT_READ_BY_TYPE_RESPONSE => AttPdu::ReadByTypeResponse {
+                length: *payload.first().ok_or_else(|| {
+                    Error::InvalidPacket("truncated Read_By_Type_Response".into())
+                })?,
+                attribute_data_list: payload.get(1..).unwrap_or(&[]).to_vec(),
+            },
             codes::ATT_READ_BY_GROUP_TYPE_REQUEST => {
                 let attribute_group_type = Uuid::from_bytes(payload.get(4..).unwrap_or(&[]))
                     .map_err(|e| Error::InvalidPacket(format!("bad group type UUID: {e}")))?;
@@ -213,6 +274,12 @@ impl AttPdu {
                     attribute_group_type,
                 }
             }
+            codes::ATT_READ_BY_GROUP_TYPE_RESPONSE => AttPdu::ReadByGroupTypeResponse {
+                length: *payload.first().ok_or_else(|| {
+                    Error::InvalidPacket("truncated Read_By_Group_Type_Response".into())
+                })?,
+                attribute_data_list: payload.get(1..).unwrap_or(&[]).to_vec(),
+            },
             codes::ATT_WRITE_REQUEST => AttPdu::WriteRequest {
                 attribute_handle: le16(payload, 0)?,
                 attribute_value: payload.get(2..).unwrap_or(&[]).to_vec(),

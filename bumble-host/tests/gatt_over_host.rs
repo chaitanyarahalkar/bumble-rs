@@ -3,10 +3,13 @@
 //! test. The test only does connection setup and high-level ATT operations;
 //! [`pump`] drives the exchange.
 
-use bumble::{Address, AddressType};
+use bumble::{Address, AddressType, Uuid};
 use bumble_att::AttPdu;
 use bumble_controller::{Controller, LocalLink};
-use bumble_gatt::AttServer;
+use bumble_gatt::{
+    AttServer, Characteristic, GattServer, Service, GATT_CHARACTERISTIC_UUID,
+    GATT_PRIMARY_SERVICE_UUID,
+};
 use bumble_hci::Command;
 use bumble_host::{pump, Device};
 
@@ -101,10 +104,101 @@ fn characteristic_write_read_via_device_api() {
         }]
     );
 
-    // The server actually stored the written value.
+    // The read-back above already proves the server stored the written value.
+    assert!(devices[1].has_server());
+}
+
+/// Only respond to the caller's single request and return the one inbox PDU.
+fn request(link: &mut LocalLink, devices: &mut [Device], client: usize, pdu: AttPdu) -> AttPdu {
+    assert!(devices[client].send_att(link, &pdu));
+    pump(link, devices);
+    let mut inbox = devices[client].take_inbox();
+    assert_eq!(inbox.len(), 1, "expected exactly one response");
+    inbox.pop().unwrap()
+}
+
+#[test]
+fn gatt_discovery_and_read_end_to_end() {
+    let mut link = LocalLink::new();
+    let central_id = link.add_controller(Controller::new("C", addr("00:00:00:00:00:01")));
+    let peripheral_id = link.add_controller(Controller::new("P", addr("00:00:00:00:00:02")));
+
+    // Peripheral hosts a Device Information service with a Device Name char.
+    let server = GattServer::new(vec![Service {
+        uuid: Uuid::from_16_bits(0x180A),
+        characteristics: vec![Characteristic {
+            uuid: Uuid::from_16_bits(0x2A00),
+            properties: 0x02,
+            value: b"bumble-rs".to_vec(),
+        }],
+    }]);
+
+    let mut devices = [
+        Device::new(central_id),
+        Device::with_server(peripheral_id, server),
+    ];
+    connect(&mut link, central_id, peripheral_id);
+    pump(&mut link, &mut devices);
+
+    // 1. Discover primary services (Read By Group Type, 0x2800).
+    let services = request(
+        &mut link,
+        &mut devices,
+        0,
+        AttPdu::ReadByGroupTypeRequest {
+            starting_handle: 0x0001,
+            ending_handle: 0xFFFF,
+            attribute_group_type: Uuid::from_16_bits(GATT_PRIMARY_SERVICE_UUID),
+        },
+    );
+    let (svc_start, svc_end) = match services {
+        AttPdu::ReadByGroupTypeResponse {
+            attribute_data_list,
+            ..
+        } => (
+            u16::from_le_bytes([attribute_data_list[0], attribute_data_list[1]]),
+            u16::from_le_bytes([attribute_data_list[2], attribute_data_list[3]]),
+        ),
+        other => panic!("expected group type response, got {other:?}"),
+    };
+    assert_eq!(svc_start, 0x0001);
+
+    // 2. Discover characteristics within the service (Read By Type, 0x2803).
+    let chars = request(
+        &mut link,
+        &mut devices,
+        0,
+        AttPdu::ReadByTypeRequest {
+            starting_handle: svc_start,
+            ending_handle: svc_end,
+            attribute_type: Uuid::from_16_bits(GATT_CHARACTERISTIC_UUID),
+        },
+    );
+    let value_handle = match chars {
+        AttPdu::ReadByTypeResponse {
+            attribute_data_list,
+            ..
+        } => {
+            // entry = [decl_handle(2), properties(1), value_handle(2), uuid...]
+            u16::from_le_bytes([attribute_data_list[3], attribute_data_list[4]])
+        }
+        other => panic!("expected type response, got {other:?}"),
+    };
+
+    // 3. Read the characteristic value by its discovered handle.
+    let value = request(
+        &mut link,
+        &mut devices,
+        0,
+        AttPdu::ReadRequest {
+            attribute_handle: value_handle,
+        },
+    );
     assert_eq!(
-        devices[1].server().unwrap().attribute(0x0025),
-        Some(&[0xBB, 0xCC][..])
+        value,
+        AttPdu::ReadResponse {
+            attribute_value: b"bumble-rs".to_vec()
+        }
     );
 }
 

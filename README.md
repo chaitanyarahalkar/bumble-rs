@@ -21,8 +21,9 @@ crate whose behavior is verified against the upstream Python.
 | 7. LE connection establishment (in the controller) | `bumble-controller` | ✅ (see slice 3+7) |
 | 8. ACL data path (ATT-over-L2CAP-over-ACL, cross-layer) | `bumble-controller` | ✅ 8/8 controller tests |
 | 9. Minimal GATT/ATT server (end-to-end attribute read/write) | `bumble-gatt` | ✅ 5/5 tests green |
-| 10. Host/Device glue (ATT↔L2CAP↔ACL sequencing as a library API) | `bumble-host` | ✅ 2/2 tests green |
-| 11+. GATT discovery, notifications, profiles, classic (RFCOMM/SDP/A2DP…) | — | planned |
+| 10. Host/Device glue (ATT↔L2CAP↔ACL sequencing as a library API) | `bumble-host` | ✅ 3/3 tests green |
+| 11. GATT server model + primary discovery (service/characteristic) | `bumble-gatt` | ✅ 7/7 tests green |
+| 12+. GATT notifications, descriptors, profiles, classic (RFCOMM/SDP/A2DP…) | — | planned |
 
 Slice 2 covers the HCI **framing foundation**, every command exercised by
 `hci_test.py::run_test_commands` (fixed-layout, address, mask, and the per-entry
@@ -217,6 +218,25 @@ sequencing lives entirely in `Device`.
 Deferred: L2CAP fragmentation/reassembly across multiple ACL packets (each ATT
 PDU is assumed to fit one packet), the LE signaling channel, and multiple
 connections per device.
+
+## Slice 11 — what's here
+
+A real GATT layer in [`bumble-gatt`](bumble-gatt/), on top of the slice-9
+`AttServer`:
+
+- **`GattServer`** — takes a set of `Service`s (each with `Characteristic`s) and
+  builds the standard attribute database: a Primary Service declaration, then
+  per characteristic a declaration attribute and its value attribute, with
+  sequential handles. It answers **primary discovery** — Read_By_Group_Type for
+  services and Read_By_Type for characteristics — plus reads and writes.
+- **`AttRequestHandler`** trait — both `AttServer` and `GattServer` implement it,
+  so a `bumble-host` `Device` can be given either.
+
+The end-to-end test does a genuine GATT client flow over the full stack:
+discover the primary service, discover its characteristic (learning the value
+handle from the declaration), then read the value — `"bumble-rs"` — by that
+discovered handle. This is real GATT discovery, not raw fixed handles. Slice 5
+gained the ATT `Read_By_Type`/`Read_By_Group_Type` response PDUs to support it.
 
 ## Acceptance
 

@@ -19,14 +19,15 @@
 //!
 //! ## Scope
 //!
-//! ATT traffic over the fixed ATT CID only. Deferred: L2CAP fragmentation and
-//! reassembly across multiple ACL packets (each ATT PDU is assumed to fit one
-//! ACL packet), the LE signaling channel, GATT discovery, and multiple
+//! ATT traffic over the fixed ATT CID only (including GATT discovery requests,
+//! which are just ATT requests answered by a server-role handler). Deferred:
+//! L2CAP fragmentation and reassembly across multiple ACL packets (each ATT PDU
+//! is assumed to fit one ACL packet), the LE signaling channel, and multiple
 //! simultaneous connections per device.
 
 use bumble_att::AttPdu;
 use bumble_controller::LocalLink;
-use bumble_gatt::AttServer;
+use bumble_gatt::AttRequestHandler;
 use bumble_hci::{Event, HciPacket, LeMetaEvent};
 use bumble_l2cap::L2capPdu;
 
@@ -35,10 +36,9 @@ pub const ATT_CID: u16 = 0x0004;
 
 /// A host attached to a controller on a [`LocalLink`]. Owns the
 /// ATT↔L2CAP↔ACL sequencing.
-#[derive(Debug)]
 pub struct Device {
     controller_id: usize,
-    server: Option<AttServer>,
+    server: Option<Box<dyn AttRequestHandler>>,
     connection_handle: Option<u16>,
     inbox: Vec<AttPdu>,
 }
@@ -54,11 +54,12 @@ impl Device {
         }
     }
 
-    /// A device that also answers ATT requests from the given server.
-    pub fn with_server(controller_id: usize, server: AttServer) -> Device {
+    /// A device that also answers ATT requests using the given handler
+    /// (an [`bumble_gatt::AttServer`] or a full [`bumble_gatt::GattServer`]).
+    pub fn with_server(controller_id: usize, server: impl AttRequestHandler + 'static) -> Device {
         Device {
             controller_id,
-            server: Some(server),
+            server: Some(Box::new(server)),
             connection_handle: None,
             inbox: Vec::new(),
         }
@@ -73,9 +74,9 @@ impl Device {
         self.connection_handle
     }
 
-    /// The attribute server, if this device has one.
-    pub fn server(&self) -> Option<&AttServer> {
-        self.server.as_ref()
+    /// `true` if this device has an attribute server (server role).
+    pub fn has_server(&self) -> bool {
+        self.server.is_some()
     }
 
     /// Remove and return the ATT PDUs received so far that were not handled by
@@ -132,7 +133,7 @@ impl Device {
         // client (this device's user) to collect.
         if is_request(&pdu) {
             if let Some(server) = &mut self.server {
-                let response = server.on_request(&pdu);
+                let response = server.handle_request(&pdu);
                 let frame = L2capPdu::new(ATT_CID, response.to_bytes()).to_bytes(false);
                 link.send_acl_data(self.controller_id, handle, &frame);
                 return;
@@ -148,6 +149,7 @@ fn is_request(pdu: &AttPdu) -> bool {
         pdu,
         AttPdu::ExchangeMtuRequest { .. }
             | AttPdu::ReadRequest { .. }
+            | AttPdu::ReadByTypeRequest { .. }
             | AttPdu::ReadByGroupTypeRequest { .. }
             | AttPdu::WriteRequest { .. }
     )
