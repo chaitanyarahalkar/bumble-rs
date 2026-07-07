@@ -40,17 +40,30 @@
 //! answered with Command Status. A command upstream *also* doesn't handle gets
 //! the spec-correct "Unknown HCI Command" — an honest report, not a fake success.
 //!
+//! ## LL control-PDU exchange
+//!
+//! Two deep-behavior flows are simulated via Link-Layer control PDUs
+//! ([`ll::ControlPdu`]) exchanged between controllers and routed by
+//! [`LocalLink::pump_ll`], mirroring upstream `controller.py`:
+//!
+//! - **Encryption start** (`LE_Enable_Encryption`): the central sends an
+//!   `EncReq` and encrypts its side; the peripheral encrypts on receiving it, so
+//!   both hosts see an `Encryption Change` (as upstream, without the full LTK
+//!   handshake — the key is carried but not yet verified).
+//! - **Remote features** (`LE_Read_Remote_Features`): a `FeatureReq` /
+//!   `FeatureRsp` round trip completes with an `LE_Read_Remote_Features_Complete`.
+//!
 //! ## Deferred (behavioral simulation, not the codec)
 //!
-//! The full LL/state-machine *behavior* behind many of those acknowledgements is
-//! not simulated: LL control PDUs, extended/periodic advertising sets, CIS/ISO,
-//! encryption (`LE_Enable_Encryption` / LTK exchange), remote-version exchange,
-//! and classic/LMP. The HCI *codec* for all of them (in `bumble-hci`) is complete
-//! and oracle-pinned; what remains is controller-side behavior, which — unlike
-//! the codec — has no ground-truth oracle to pin against (upstream's controller
-//! is itself a simulation with placeholder values).
+//! The remaining deep behavior is not simulated: LTK verification, extended/
+//! periodic advertising sets, CIS/ISO, remote-version exchange, and classic/LMP.
+//! The HCI *codec* for all of them (in `bumble-hci`) is complete and
+//! oracle-pinned; what remains is controller-side behavior, which — unlike the
+//! codec — has no ground-truth oracle to pin against (upstream's controller is
+//! itself a simulation with placeholder values).
 
 pub mod command_surface;
+pub mod ll;
 
 use bumble::{Address, AddressType};
 use bumble_hci::codes::*;
@@ -68,6 +81,8 @@ const ADDRESS_TYPE_RANDOM: u8 = 1;
 const DEFAULT_RSSI: i8 = -40;
 /// HCI "Unknown HCI Command" error, returned for commands this slice ignores.
 const UNKNOWN_HCI_COMMAND_ERROR: u8 = 0x01;
+/// HCI "Invalid HCI Command Parameters" error (e.g. an unknown connection handle).
+const INVALID_COMMAND_PARAMETERS: u8 = 0x12;
 /// LE connection role: central (initiator).
 pub const ROLE_CENTRAL: u8 = 0x00;
 /// LE connection role: peripheral (advertiser).
@@ -139,6 +154,9 @@ pub struct Controller {
     /// entropy source, so it returns a deterministic, ever-changing value.
     rand_counter: u64,
     host_queue: Vec<HciPacket>,
+    /// LL control PDUs waiting to be delivered to a peer controller, as
+    /// `(sender_self_address, receiver_peer_address, pdu)`. Drained by the link.
+    outbound_ll: Vec<(Address, Address, ll::ControlPdu)>,
 }
 
 impl Controller {
@@ -157,6 +175,7 @@ impl Controller {
             next_handle: 1,
             rand_counter: 0,
             host_queue: Vec::new(),
+            outbound_ll: Vec::new(),
         }
     }
 
@@ -282,6 +301,20 @@ impl Controller {
                 rx_phys,
                 ..
             } => self.handle_set_phy(connection_handle, all_phys, tx_phys, rx_phys),
+            Command::LeEnableEncryption {
+                connection_handle,
+                random_number,
+                encrypted_diversifier,
+                long_term_key,
+            } => self.handle_enable_encryption(
+                connection_handle,
+                random_number,
+                encrypted_diversifier,
+                long_term_key,
+            ),
+            Command::LeReadRemoteFeatures { connection_handle } => {
+                self.handle_read_remote_features(connection_handle)
+            }
             // Any command not modelled functionally above: reply with the same
             // response *shape* upstream `controller.py` uses for it (see
             // [`command_surface`]). A command upstream also doesn't handle gets
@@ -352,6 +385,126 @@ impl Controller {
                     rx_phy,
                 },
             )));
+        }
+    }
+
+    /// `LE_Enable_Encryption` (central): acknowledge with Command Status, send an
+    /// `EncReq` LL PDU to the peer, and start encryption on this side. The peer
+    /// starts encryption when it receives the `EncReq` (see [`on_ll_control_pdu`]).
+    /// This mirrors upstream `controller.py`, which completes encryption without
+    /// the full LTK handshake (the LTK is carried but not yet verified).
+    ///
+    /// [`on_ll_control_pdu`]: Controller::on_ll_control_pdu
+    fn handle_enable_encryption(
+        &mut self,
+        connection_handle: u16,
+        random_number: [u8; 8],
+        encrypted_diversifier: u16,
+        long_term_key: [u8; 16],
+    ) {
+        let Some(conn) = self.connection_by_handle(connection_handle) else {
+            return self
+                .command_status(HCI_LE_ENABLE_ENCRYPTION_COMMAND, INVALID_COMMAND_PARAMETERS);
+        };
+        let (self_addr, peer_addr) = (conn.self_address.clone(), conn.peer_address.clone());
+        self.queue_ll(
+            self_addr,
+            peer_addr,
+            ll::ControlPdu::EncReq {
+                rand: random_number,
+                ediv: encrypted_diversifier,
+                ltk: long_term_key,
+            },
+        );
+        self.command_status(HCI_LE_ENABLE_ENCRYPTION_COMMAND, HCI_SUCCESS);
+        self.on_le_encrypted(connection_handle);
+    }
+
+    /// `LE_Read_Remote_Features`: acknowledge with Command Status, then send a
+    /// feature-request LL PDU to the peer. The peer answers with a `FeatureRsp`,
+    /// which this controller turns into an `LE_Read_Remote_Features_Complete`
+    /// event (see [`on_ll_control_pdu`](Controller::on_ll_control_pdu)).
+    fn handle_read_remote_features(&mut self, connection_handle: u16) {
+        let Some(conn) = self.connection_by_handle(connection_handle) else {
+            return self.command_status(
+                HCI_LE_READ_REMOTE_FEATURES_COMMAND,
+                INVALID_COMMAND_PARAMETERS,
+            );
+        };
+        let (self_addr, peer_addr, role) = (
+            conn.self_address.clone(),
+            conn.peer_address.clone(),
+            conn.role,
+        );
+        self.command_status(HCI_LE_READ_REMOTE_FEATURES_COMMAND, HCI_SUCCESS);
+        let req = if role == ROLE_CENTRAL {
+            ll::ControlPdu::FeatureReq {
+                feature_set: LOCAL_LE_FEATURES,
+            }
+        } else {
+            ll::ControlPdu::PeripheralFeatureReq {
+                feature_set: LOCAL_LE_FEATURES,
+            }
+        };
+        self.queue_ll(self_addr, peer_addr, req);
+    }
+
+    /// Emit an `Encryption Change` (enabled) for a connection.
+    fn on_le_encrypted(&mut self, connection_handle: u16) {
+        self.host_queue
+            .push(HciPacket::Event(Event::EncryptionChange {
+                status: HCI_SUCCESS,
+                connection_handle,
+                encryption_enabled: 1,
+            }));
+    }
+
+    /// Queue an LL control PDU for delivery to the peer at `peer_addr`.
+    fn queue_ll(&mut self, self_addr: Address, peer_addr: Address, pdu: ll::ControlPdu) {
+        self.outbound_ll.push((self_addr, peer_addr, pdu));
+    }
+
+    /// Remove and return the LL control PDUs queued for peers, as
+    /// `(sender_self_address, receiver_peer_address, pdu)`.
+    fn take_outbound_ll(&mut self) -> Vec<(Address, Address, ll::ControlPdu)> {
+        std::mem::take(&mut self.outbound_ll)
+    }
+
+    /// Handle an LL control PDU received from the peer at `sender_address`,
+    /// mirroring upstream `controller.py::on_ll_control_pdu`.
+    fn on_ll_control_pdu(&mut self, sender_address: &Address, pdu: ll::ControlPdu) {
+        let Some(conn) = self
+            .connections
+            .iter()
+            .find(|c| c.peer_address == *sender_address)
+        else {
+            return;
+        };
+        let (self_addr, handle) = (conn.self_address.clone(), conn.handle);
+        match pdu {
+            ll::ControlPdu::EncReq { .. } => self.on_le_encrypted(handle),
+            ll::ControlPdu::FeatureReq { .. } | ll::ControlPdu::PeripheralFeatureReq { .. } => {
+                self.queue_ll(
+                    self_addr,
+                    sender_address.clone(),
+                    ll::ControlPdu::FeatureRsp {
+                        feature_set: LOCAL_LE_FEATURES,
+                    },
+                );
+            }
+            ll::ControlPdu::FeatureRsp { feature_set } => {
+                self.host_queue.push(HciPacket::Event(Event::LeMeta(
+                    LeMetaEvent::ReadRemoteFeaturesComplete {
+                        status: HCI_SUCCESS,
+                        connection_handle: handle,
+                        le_features: feature_set,
+                    },
+                )));
+            }
+            ll::ControlPdu::TerminateInd { error_code } => {
+                let peer = sender_address.clone();
+                self.on_peer_disconnect(&self_addr, &peer, error_code);
+            }
         }
     }
 
@@ -623,6 +776,34 @@ impl LocalLink {
             for (i, controller) in self.controllers.iter_mut().enumerate() {
                 if i != sender {
                     controller.on_advertising_pdu(&pdu);
+                }
+            }
+        }
+    }
+
+    /// Route queued LL control PDUs between controllers until none remain.
+    ///
+    /// A single PDU can provoke a reply (e.g. `FeatureReq` → `FeatureRsp`), so
+    /// this drains-and-delivers in rounds until the exchange is quiescent. The
+    /// round count is bounded to guard against a pathological feedback loop.
+    pub fn pump_ll(&mut self) {
+        for _ in 0..16 {
+            let mut pending: Vec<(Address, Address, ll::ControlPdu)> = Vec::new();
+            for c in &mut self.controllers {
+                pending.extend(c.take_outbound_ll());
+            }
+            if pending.is_empty() {
+                return;
+            }
+            for (sender_addr, receiver_addr, pdu) in pending {
+                // The receiver is the controller holding a connection whose own
+                // address is the PDU's destination and whose peer is the sender.
+                if let Some(dst) = self.controllers.iter_mut().find(|c| {
+                    c.connections().iter().any(|cx| {
+                        cx.self_address == receiver_addr && cx.peer_address == sender_addr
+                    })
+                }) {
+                    dst.on_ll_control_pdu(&sender_addr, pdu);
                 }
             }
         }

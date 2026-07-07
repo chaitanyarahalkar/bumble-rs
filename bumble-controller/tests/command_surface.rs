@@ -62,11 +62,14 @@ fn data_command_is_acknowledged() {
 
 #[test]
 fn status_command_gets_command_status() {
-    // LE_Read_Remote_Features (0x2016): an operation that completes via a later
-    // event, so upstream replies with Command Status (not Command Complete).
+    // Remote_Name_Request (0x0419): a Status-category command handled only via
+    // the surface table (no functional handler), so it gets a Command Status.
     let mut c = ctrl();
-    c.handle_command(Command::LeReadRemoteFeatures {
-        connection_handle: 0x0001,
+    c.handle_command(Command::RemoteNameRequest {
+        bd_addr: Address::parse("AA:BB:CC:DD:EE:FF", AddressType::PUBLIC_DEVICE).unwrap(),
+        page_scan_repetition_mode: 0,
+        reserved: 0,
+        clock_offset: 0,
     });
     match one_reply(&mut c) {
         HciPacket::Event(Event::CommandStatus {
@@ -75,7 +78,7 @@ fn status_command_gets_command_status() {
             ..
         }) => {
             assert_eq!(status, 0);
-            assert_eq!(command_opcode, 0x2016);
+            assert_eq!(command_opcode, 0x0419);
         }
         other => panic!("expected Command Status, got {other:?}"),
     }
