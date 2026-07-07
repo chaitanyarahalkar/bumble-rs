@@ -1,9 +1,15 @@
 [package]
 name = "bumble-gatt"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
 description = "Rust port of google/bumble GATT — a minimal ATT attribute server (slice 9)"
-license = "Apache-2.0"
 
 [dependencies]
 bumble = { path = "../bumble" }

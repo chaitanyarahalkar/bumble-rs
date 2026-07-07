@@ -1,5 +1,9 @@
 # bumble-rs
 
+[![CI](https://github.com/block/bumble-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/block/bumble-rs/actions/workflows/ci.yml)
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+![MSRV](https://img.shields.io/badge/MSRV-1.87-blue)
+
 An incremental Rust port of [`google/bumble`](https://github.com/google/bumble),
 the Python Bluetooth stack.
 
@@ -330,6 +334,22 @@ bumble-rs/
 └── docs/superpowers/          # design specs + implementation plans
 ```
 
+## Contributing
+
+Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for the
+build/test bar and the ground-truth verification philosophy, and
+[CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md). To report a vulnerability, see
+[SECURITY.md](SECURITY.md).
+
+```bash
+cargo test --workspace                     # all tests
+cargo clippy --workspace --all-targets -- -D warnings
+cargo fmt --all -- --check
+```
+
 ## License
 
-Apache-2.0, matching upstream Bumble.
+Licensed under the [Apache License, Version 2.0](LICENSE), matching upstream
+Bumble. See [NOTICE](NOTICE) for attribution. Unless you explicitly state
+otherwise, any contribution you submit shall be licensed as above, without
+additional terms.

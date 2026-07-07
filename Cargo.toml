@@ -11,3 +11,17 @@ members = [
     "bumble-smp",
 ]
 resolver = "2"
+
+# Metadata shared by every crate in the workspace. Individual crates inherit
+# these with `<field>.workspace = true` and set only their own `name` and
+# `description`.
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.87"
+license = "Apache-2.0"
+authors = ["The bumble-rs contributors"]
+repository = "https://github.com/block/bumble-rs"
+homepage = "https://github.com/block/bumble-rs"
+keywords = ["bluetooth", "ble", "hci", "gatt"]
+categories = ["network-programming", "encoding"]

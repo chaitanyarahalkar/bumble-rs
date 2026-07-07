@@ -11,7 +11,7 @@
 //! - learns its connection handle from the LE Connection Complete event,
 //! - sends ATT PDUs on the ATT channel with [`Device::send_att`],
 //! - on [`Device::poll`], processes inbound ACL: an optional server-role
-//!   [`AttServer`] answers requests automatically; other ATT PDUs (responses /
+//!   [`bumble_gatt::AttServer`] answers requests automatically; other ATT PDUs (responses /
 //!   notifications) are queued for the client to collect.
 //!
 //! [`pump`] drives a set of devices to quiescence, which is all the

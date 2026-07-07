@@ -1,0 +1,10 @@
+bumble-rs
+Copyright 2026 The bumble-rs contributors
+
+This product is an independent Rust port of parts of Google's Bumble
+Bluetooth stack (https://github.com/google/bumble), which is licensed under
+the Apache License, Version 2.0. Wire formats, constants, and cryptographic
+test vectors are derived from that project and from the Bluetooth Core
+Specification.
+
+Licensed under the Apache License, Version 2.0 (see the LICENSE file).
