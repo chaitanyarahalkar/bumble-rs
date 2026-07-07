@@ -69,9 +69,24 @@ impl Device {
         self.controller_id
     }
 
-    /// The connection handle, once connected.
+    /// The connection handle, once connected (and `None` after disconnection).
     pub fn connection_handle(&self) -> Option<u16> {
         self.connection_handle
+    }
+
+    /// `true` while a connection is established.
+    pub fn is_connected(&self) -> bool {
+        self.connection_handle.is_some()
+    }
+
+    /// Disconnect the current connection with the given reason. Both this device
+    /// and the peer receive a Disconnection Complete (processed on the next
+    /// [`pump`]).
+    pub fn disconnect(&mut self, link: &mut LocalLink, reason: u8) -> bool {
+        let Some(handle) = self.connection_handle else {
+            return false;
+        };
+        link.disconnect(self.controller_id, handle, reason)
     }
 
     /// `true` if this device has an attribute server (server role).
@@ -122,6 +137,9 @@ impl Device {
                     ..
                 })) => {
                     self.connection_handle = Some(connection_handle);
+                }
+                HciPacket::Event(Event::DisconnectionComplete { .. }) => {
+                    self.connection_handle = None;
                 }
                 HciPacket::AclData(acl) => self.on_acl(link, acl.connection_handle, &acl.data),
                 _ => {}

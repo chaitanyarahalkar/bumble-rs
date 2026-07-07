@@ -590,6 +590,19 @@ fn test_read_local_supported_codecs_v2_command_complete() {
     }
 }
 
+// HCI_Disconnection_Complete_Event (used by the slice-13 disconnect flow)
+#[test]
+fn test_hci_disconnection_complete_event() {
+    check(
+        HciPacket::Event(Event::DisconnectionComplete {
+            status: 0,
+            connection_handle: 0x0002,
+            reason: 0x13,
+        }),
+        "04050400020013",
+    );
+}
+
 // hci_test.py::test_HCI_Command_Status_Event
 #[test]
 fn test_hci_command_status_event() {

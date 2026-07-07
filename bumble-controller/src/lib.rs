@@ -19,16 +19,13 @@
 //!
 //! ## Scope
 //!
-//! Implemented: `Reset`, `LE_Set_Random_Address`, `LE_Set_Advertising_Data`,
-//! `LE_Set_Advertising_Enable`, `LE_Set_Scan_Enable`, and `LE_Create_Connection`,
-//! producing the resulting Command Complete / Command Status acknowledgements,
-//! LE Advertising Report events, and — via [`LocalLink::establish_connections`]
-//! — LE Connection Complete events on both the central and the peripheral
-//! (slice 7).
+//! Implemented: the LE advertising/scanning commands and `LE_Create_Connection`
+//! (slice 7), ACL data routing between connected controllers (slice 8, via
+//! [`LocalLink::send_acl_data`]), and disconnection (slice 13, via
+//! [`LocalLink::disconnect`], emitting Disconnection Complete on both sides).
 //!
-//! Deferred to later slices: ACL data, LL control PDUs, disconnection, extended
-//! advertising sets, CIS/ISO, encryption, and classic/LMP — the bulk of
-//! Bumble's `controller.py`.
+//! Deferred to later slices: LL control PDUs, extended advertising sets,
+//! CIS/ISO, encryption, and classic/LMP — the bulk of Bumble's `controller.py`.
 
 use bumble::{Address, AddressType};
 use bumble_hci::codes::*;
@@ -307,6 +304,51 @@ impl Controller {
         self.advertising_enabled = false;
     }
 
+    /// Handle a host-initiated `HCI_Disconnect`: acknowledge with a Command
+    /// Status, emit a Disconnection Complete, and drop the connection. Returns
+    /// the `(self_address, peer_address)` of the dropped connection so the link
+    /// can notify the peer, or `None` if no such connection existed.
+    pub fn request_disconnect(&mut self, handle: u16, reason: u8) -> Option<(Address, Address)> {
+        let index = self.connections.iter().position(|c| c.handle == handle)?;
+        let connection = self.connections.remove(index);
+        self.host_queue.push(HciPacket::Event(Event::CommandStatus {
+            status: HCI_SUCCESS,
+            num_hci_command_packets: 1,
+            command_opcode: HCI_DISCONNECT_COMMAND,
+        }));
+        self.host_queue
+            .push(HciPacket::Event(Event::DisconnectionComplete {
+                status: HCI_SUCCESS,
+                connection_handle: handle,
+                reason,
+            }));
+        Some((connection.self_address, connection.peer_address))
+    }
+
+    /// Notify this controller that the peer dropped the connection identified by
+    /// (this controller's) `self_address`/`peer_address`. Emits a Disconnection
+    /// Complete and drops the connection.
+    pub fn on_peer_disconnect(
+        &mut self,
+        self_address: &Address,
+        peer_address: &Address,
+        reason: u8,
+    ) {
+        if let Some(index) = self
+            .connections
+            .iter()
+            .position(|c| c.self_address == *self_address && c.peer_address == *peer_address)
+        {
+            let connection = self.connections.remove(index);
+            self.host_queue
+                .push(HciPacket::Event(Event::DisconnectionComplete {
+                    status: HCI_SUCCESS,
+                    connection_handle: connection.handle,
+                    reason,
+                }));
+        }
+    }
+
     /// Deliver received ACL data to the host as an HCI ACL Data packet on the
     /// given connection handle.
     fn deliver_acl(&mut self, connection_handle: u16, data: &[u8]) {
@@ -450,5 +492,29 @@ impl LocalLink {
         } else {
             false
         }
+    }
+
+    /// Disconnect the connection `connection_handle` on controller `from`,
+    /// notifying both sides with a Disconnection Complete. Returns `true` if the
+    /// connection existed.
+    pub fn disconnect(&mut self, from: usize, connection_handle: u16, reason: u8) -> bool {
+        let Some((self_address, peer_address)) =
+            self.controllers[from].request_disconnect(connection_handle, reason)
+        else {
+            return false;
+        };
+
+        // Notify the peer (its endpoints are the mirror of ours).
+        let peer = self.controllers.iter().enumerate().position(|(i, ctrl)| {
+            i != from
+                && ctrl
+                    .connections()
+                    .iter()
+                    .any(|c| c.self_address == peer_address && c.peer_address == self_address)
+        });
+        if let Some(i) = peer {
+            self.controllers[i].on_peer_disconnect(&peer_address, &self_address, reason);
+        }
+        true
     }
 }

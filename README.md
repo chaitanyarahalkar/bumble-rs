@@ -23,7 +23,12 @@ crate whose behavior is verified against the upstream Python.
 | 9. Minimal GATT/ATT server (end-to-end attribute read/write) | `bumble-gatt` | ✅ 5/5 tests green |
 | 10. Host/Device glue (ATT↔L2CAP↔ACL sequencing as a library API) | `bumble-host` | ✅ 3/3 tests green |
 | 11. GATT server model + primary discovery (service/characteristic) | `bumble-gatt` | ✅ 7/7 tests green |
-| 12+. GATT notifications, descriptors, profiles, classic (RFCOMM/SDP/A2DP…) | — | planned |
+| 12. GATT notifications (server → client) | `bumble-host` | ✅ |
+| 13. LE disconnection (Disconnect → Disconnection Complete both sides) | `bumble-controller` | ✅ |
+| 14+. GATT descriptors, SMP pairing flow, classic (RFCOMM/SDP/A2DP…) | — | planned |
+
+The LE lifecycle is now complete end-to-end through library APIs: **connect →
+discover → read/write → notify → disconnect** between two virtual devices.
 
 Slice 2 covers the HCI **framing foundation**, every command exercised by
 `hci_test.py::run_test_commands` (fixed-layout, address, mask, and the per-entry

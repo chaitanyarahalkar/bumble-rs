@@ -229,6 +229,37 @@ fn server_notification_reaches_client() {
 }
 
 #[test]
+fn disconnection_clears_both_sides() {
+    let mut link = LocalLink::new();
+    let central_id = link.add_controller(Controller::new("C", addr("00:00:00:00:00:01")));
+    let peripheral_id = link.add_controller(Controller::new("P", addr("00:00:00:00:00:02")));
+
+    let mut devices = [
+        Device::new(central_id),
+        Device::with_server(peripheral_id, AttServer::new()),
+    ];
+    connect(&mut link, central_id, peripheral_id);
+    pump(&mut link, &mut devices);
+    assert!(devices[0].is_connected() && devices[1].is_connected());
+
+    // Central disconnects (reason 0x13 = remote user terminated connection).
+    assert!(devices[0].disconnect(&mut link, 0x13));
+    pump(&mut link, &mut devices);
+
+    // Both sides observe the disconnection.
+    assert!(!devices[0].is_connected());
+    assert!(!devices[1].is_connected());
+
+    // Sending on a closed connection now fails.
+    assert!(!devices[0].send_att(
+        &mut link,
+        &AttPdu::ReadRequest {
+            attribute_handle: 1
+        }
+    ));
+}
+
+#[test]
 fn reading_missing_attribute_returns_error() {
     let mut link = LocalLink::new();
     let central_id = link.add_controller(Controller::new("C", addr("00:00:00:00:00:01")));

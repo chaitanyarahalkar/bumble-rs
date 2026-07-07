@@ -13,6 +13,11 @@ use bumble::{Address, AddressType};
 /// preserves raw parameters for event codes this slice does not decode.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Event {
+    DisconnectionComplete {
+        status: u8,
+        connection_handle: u16,
+        reason: u8,
+    },
     CommandComplete {
         num_hci_command_packets: u8,
         command_opcode: u16,
@@ -109,6 +114,7 @@ impl Event {
     /// The 8-bit event code.
     pub fn event_code(&self) -> u8 {
         match self {
+            Event::DisconnectionComplete { .. } => HCI_DISCONNECTION_COMPLETE_EVENT,
             Event::CommandComplete { .. } => HCI_COMMAND_COMPLETE_EVENT,
             Event::CommandStatus { .. } => HCI_COMMAND_STATUS_EVENT,
             Event::NumberOfCompletedPackets { .. } => HCI_NUMBER_OF_COMPLETED_PACKETS_EVENT,
@@ -120,6 +126,17 @@ impl Event {
     /// The serialized event parameters (without the packet/event-code header).
     pub fn parameters(&self) -> Vec<u8> {
         match self {
+            Event::DisconnectionComplete {
+                status,
+                connection_handle,
+                reason,
+            } => {
+                let mut p = Vec::with_capacity(4);
+                p.push(*status);
+                p.extend_from_slice(&connection_handle.to_le_bytes());
+                p.push(*reason);
+                p
+            }
             Event::CommandComplete {
                 num_hci_command_packets,
                 command_opcode,
@@ -202,6 +219,11 @@ impl Event {
 
         let mut r = Reader::new(parameters, 0);
         Ok(match event_code {
+            HCI_DISCONNECTION_COMPLETE_EVENT => Event::DisconnectionComplete {
+                status: r.u8()?,
+                connection_handle: r.u16_le()?,
+                reason: r.u8()?,
+            },
             HCI_COMMAND_COMPLETE_EVENT => {
                 let num_hci_command_packets = r.u8()?;
                 let command_opcode = r.u16_le()?;
