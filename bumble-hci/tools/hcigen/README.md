@@ -29,6 +29,17 @@ are hand-written and embedded verbatim in the generator, because their array
 element count comes from a PHY bitmask rather than a leading count byte, so they
 are not derivable from the declarative field spec.
 
+## Oracle coverage caveats
+
+The self-check uses upstream's own serializer as ground truth, so a codec
+misclassification surfaces as a length/content mismatch. Two things the current
+distinct-value samples don't fully exercise (both low-risk, noted for honesty):
+
+- **Array fields are sampled at one element.** Per-element layout is verified
+  byte-exact; the count-loop itself is only run for count=1.
+- **`CodingFormat`'s sample is `02 00 00 00 00`** (CVSD), so `company_id` vs
+  `vendor_specific_codec_id` ordering isn't position-revealing — both are zero.
+
 ## Regenerating
 
 Requires a Python environment with `bumble` importable:
