@@ -259,6 +259,115 @@ fn disconnection_clears_both_sides() {
     ));
 }
 
+/// The full LE lifecycle in one scenario: connect → discover → write → read →
+/// notify → disconnect, entirely through the library's `Device` API.
+#[test]
+fn full_le_lifecycle() {
+    let mut link = LocalLink::new();
+    let central_id = link.add_controller(Controller::new("C", addr("00:00:00:00:00:01")));
+    let peripheral_id = link.add_controller(Controller::new("P", addr("00:00:00:00:00:02")));
+
+    let server = GattServer::new(vec![Service {
+        uuid: Uuid::from_16_bits(0x180F), // Battery Service
+        characteristics: vec![Characteristic {
+            uuid: Uuid::from_16_bits(0x2A19), // Battery Level
+            properties: 0x0A,                 // READ | WRITE
+            value: vec![100],
+        }],
+    }]);
+    let mut devices = [
+        Device::new(central_id),
+        Device::with_server(peripheral_id, server),
+    ];
+
+    // Connect.
+    connect(&mut link, central_id, peripheral_id);
+    pump(&mut link, &mut devices);
+    assert!(devices[0].is_connected() && devices[1].is_connected());
+
+    // Discover the service and its characteristic value handle.
+    let svc = request(
+        &mut link,
+        &mut devices,
+        0,
+        AttPdu::ReadByGroupTypeRequest {
+            starting_handle: 0x0001,
+            ending_handle: 0xFFFF,
+            attribute_group_type: Uuid::from_16_bits(GATT_PRIMARY_SERVICE_UUID),
+        },
+    );
+    let (svc_start, svc_end) = match svc {
+        AttPdu::ReadByGroupTypeResponse {
+            attribute_data_list,
+            ..
+        } => (
+            u16::from_le_bytes([attribute_data_list[0], attribute_data_list[1]]),
+            u16::from_le_bytes([attribute_data_list[2], attribute_data_list[3]]),
+        ),
+        other => panic!("expected group response, got {other:?}"),
+    };
+    let chars = request(
+        &mut link,
+        &mut devices,
+        0,
+        AttPdu::ReadByTypeRequest {
+            starting_handle: svc_start,
+            ending_handle: svc_end,
+            attribute_type: Uuid::from_16_bits(GATT_CHARACTERISTIC_UUID),
+        },
+    );
+    let value_handle = match chars {
+        AttPdu::ReadByTypeResponse {
+            attribute_data_list,
+            ..
+        } => u16::from_le_bytes([attribute_data_list[3], attribute_data_list[4]]),
+        other => panic!("expected type response, got {other:?}"),
+    };
+
+    // Write, then read back.
+    assert_eq!(
+        request(
+            &mut link,
+            &mut devices,
+            0,
+            AttPdu::WriteRequest {
+                attribute_handle: value_handle,
+                attribute_value: vec![42],
+            },
+        ),
+        AttPdu::WriteResponse
+    );
+    assert_eq!(
+        request(
+            &mut link,
+            &mut devices,
+            0,
+            AttPdu::ReadRequest {
+                attribute_handle: value_handle,
+            },
+        ),
+        AttPdu::ReadResponse {
+            attribute_value: vec![42]
+        }
+    );
+
+    // Server notifies the client.
+    assert!(devices[1].notify(&mut link, value_handle, vec![7]));
+    pump(&mut link, &mut devices);
+    assert_eq!(
+        devices[0].take_inbox(),
+        vec![AttPdu::HandleValueNotification {
+            attribute_handle: value_handle,
+            attribute_value: vec![7],
+        }]
+    );
+
+    // Disconnect.
+    assert!(devices[0].disconnect(&mut link, 0x13));
+    pump(&mut link, &mut devices);
+    assert!(!devices[0].is_connected() && !devices[1].is_connected());
+}
+
 #[test]
 fn reading_missing_attribute_returns_error() {
     let mut link = LocalLink::new();

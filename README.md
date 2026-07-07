@@ -218,7 +218,9 @@ wiring:
 
 The acceptance test does the same attribute write/read as slice 9, but the test
 now only performs connection setup and high-level `send_att` calls — the layer
-sequencing lives entirely in `Device`.
+sequencing lives entirely in `Device`. A `full_le_lifecycle` test exercises the
+whole flow in one scenario — **connect → discover → write → read → notify →
+disconnect** — through the `Device` API.
 
 Deferred: L2CAP fragmentation/reassembly across multiple ACL packets (each ATT
 PDU is assumed to fit one packet), the LE signaling channel, and multiple
