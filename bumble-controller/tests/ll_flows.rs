@@ -151,6 +151,101 @@ fn le_read_remote_features_completes() {
     assert!(link.drain_host_events(peripheral).is_empty());
 }
 
+/// The connection handle of the single CIS Established event, if present.
+fn cis_established_handle(events: &[HciPacket]) -> Option<u16> {
+    events.iter().find_map(|e| match e {
+        HciPacket::Event(Event::LeMeta(LeMetaEvent::CisEstablished {
+            status: 0,
+            connection_handle,
+            ..
+        })) => Some(*connection_handle),
+        _ => None,
+    })
+}
+
+#[test]
+fn le_cis_establishment_end_to_end() {
+    let (mut link, central, peripheral) = connected();
+    let acl_handle = handle_of(&link, central);
+
+    // Central sets up a CIG with one CIS; the reply carries the CIS handle.
+    link.handle_command(
+        central,
+        Command::LeSetCigParameters {
+            cig_id: 1,
+            sdu_interval_c_to_p: 10000,
+            sdu_interval_p_to_c: 10000,
+            worst_case_sca: 0,
+            packing: 0,
+            framing: 0,
+            max_transport_latency_c_to_p: 10,
+            max_transport_latency_p_to_c: 10,
+            cis_id: vec![2],
+            max_sdu_c_to_p: vec![120],
+            max_sdu_p_to_c: vec![120],
+            phy_c_to_p: vec![1],
+            phy_p_to_c: vec![1],
+            rtn_c_to_p: vec![3],
+            rtn_p_to_c: vec![3],
+        },
+    );
+    let cig_reply = link.drain_host_events(central);
+    let cis_handle = match &cig_reply[0] {
+        HciPacket::Event(Event::CommandComplete {
+            return_parameters: bumble_hci::ReturnParameters::Raw { data },
+            ..
+        }) => u16::from_le_bytes([data[3], data[4]]), // [status, cig_id, num, handle_lo, handle_hi]
+        other => panic!("expected CIG params reply, got {other:?}"),
+    };
+
+    // Central creates the CIS over its ACL connection -> CisReq to the peripheral.
+    link.handle_command(
+        central,
+        Command::LeCreateCis {
+            cis_connection_handle: vec![cis_handle],
+            acl_connection_handle: vec![acl_handle],
+        },
+    );
+    let _ = link.drain_host_events(central); // Command Status
+    link.pump_ll();
+
+    // Peripheral's host sees an LE CIS Request; grab the peripheral CIS handle.
+    let req = link.drain_host_events(peripheral);
+    let peripheral_cis_handle = req
+        .iter()
+        .find_map(|e| match e {
+            HciPacket::Event(Event::LeMeta(LeMetaEvent::CisRequest {
+                cis_connection_handle,
+                cig_id: 1,
+                cis_id: 2,
+                ..
+            })) => Some(*cis_connection_handle),
+            _ => None,
+        })
+        .expect("peripheral must receive an LE CIS Request");
+
+    // Peripheral accepts -> CisRsp -> central established -> CisInd -> peripheral established.
+    link.handle_command(
+        peripheral,
+        Command::LeAcceptCisRequest {
+            connection_handle: peripheral_cis_handle,
+        },
+    );
+    let _ = link.drain_host_events(peripheral); // Command Status
+    link.pump_ll();
+
+    assert_eq!(
+        cis_established_handle(&link.drain_host_events(central)),
+        Some(cis_handle),
+        "central must see CIS Established for its CIS handle"
+    );
+    assert_eq!(
+        cis_established_handle(&link.drain_host_events(peripheral)),
+        Some(peripheral_cis_handle),
+        "peripheral must see CIS Established for its CIS handle"
+    );
+}
+
 #[test]
 fn encryption_on_unknown_handle_is_rejected() {
     let (mut link, central, _peripheral) = connected();

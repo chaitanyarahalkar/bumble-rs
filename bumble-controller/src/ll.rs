@@ -23,6 +23,12 @@ pub enum ControlPdu {
     PeripheralFeatureReq { feature_set: [u8; 8] },
     /// Feature-exchange response.
     FeatureRsp { feature_set: [u8; 8] },
+    /// Connected-isochronous-stream request (central → peripheral).
+    CisReq { cig_id: u8, cis_id: u8 },
+    /// Connected-isochronous-stream response (peripheral → central).
+    CisRsp { cig_id: u8, cis_id: u8 },
+    /// Connected-isochronous-stream indication (central → peripheral).
+    CisInd { cig_id: u8, cis_id: u8 },
     /// Connection termination.
     TerminateInd { error_code: u8 },
 }

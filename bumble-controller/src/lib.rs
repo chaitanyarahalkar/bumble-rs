@@ -52,15 +52,20 @@
 //!   handshake — the key is carried but not yet verified).
 //! - **Remote features** (`LE_Read_Remote_Features`): a `FeatureReq` /
 //!   `FeatureRsp` round trip completes with an `LE_Read_Remote_Features_Complete`.
+//! - **CIS establishment** (LE Audio): `LE_Set_CIG_Parameters` allocates CIS
+//!   handles; `LE_Create_CIS` sends a `CisReq`; the peripheral raises an
+//!   `LE CIS Request`, and on `LE_Accept_CIS_Request` a `CisRsp`/`CisInd`
+//!   exchange yields `LE CIS Established` on both sides (timing params are
+//!   placeholders, as upstream).
 //!
 //! ## Deferred (behavioral simulation, not the codec)
 //!
 //! The remaining deep behavior is not simulated: LTK verification, extended/
-//! periodic advertising sets, CIS/ISO, remote-version exchange, and classic/LMP.
-//! The HCI *codec* for all of them (in `bumble-hci`) is complete and
-//! oracle-pinned; what remains is controller-side behavior, which — unlike the
-//! codec — has no ground-truth oracle to pin against (upstream's controller is
-//! itself a simulation with placeholder values).
+//! periodic advertising sets, ISO data-path streaming, remote-version exchange,
+//! and classic/LMP. The HCI *codec* for all of them (in `bumble-hci`) is complete
+//! and oracle-pinned; what remains is controller-side behavior, which — unlike
+//! the codec — has no ground-truth oracle to pin against (upstream's controller
+//! is itself a simulation with placeholder values).
 
 pub mod command_surface;
 pub mod ll;
@@ -119,6 +124,19 @@ pub struct Connection {
     pub peer_address: Address,
 }
 
+/// A Connected Isochronous Stream (CIS) link, established over an ACL connection
+/// (LE Audio). Mirrors upstream `controller.py::CisLink`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct CisLink {
+    cig_id: u8,
+    cis_id: u8,
+    /// The CIS connection handle (distinct from the ACL handle).
+    handle: u16,
+    /// The endpoints of the ACL connection carrying this CIS.
+    acl_self: Address,
+    acl_peer: Address,
+}
+
 /// A pending outgoing connection recorded by `LE_Create_Connection`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct PendingConnection {
@@ -157,6 +175,10 @@ pub struct Controller {
     /// LL control PDUs waiting to be delivered to a peer controller, as
     /// `(sender_self_address, receiver_peer_address, pdu)`. Drained by the link.
     outbound_ll: Vec<(Address, Address, ll::ControlPdu)>,
+    /// CIS links created as the central (by `LE_Set_CIG_Parameters`).
+    central_cis_links: Vec<CisLink>,
+    /// CIS links pending/accepted as the peripheral (from an incoming `CisReq`).
+    peripheral_cis_links: Vec<CisLink>,
 }
 
 impl Controller {
@@ -176,6 +198,8 @@ impl Controller {
             rand_counter: 0,
             host_queue: Vec::new(),
             outbound_ll: Vec::new(),
+            central_cis_links: Vec::new(),
+            peripheral_cis_links: Vec::new(),
         }
     }
 
@@ -315,6 +339,16 @@ impl Controller {
             Command::LeReadRemoteFeatures { connection_handle } => {
                 self.handle_read_remote_features(connection_handle)
             }
+            Command::LeSetCigParameters { cig_id, cis_id, .. } => {
+                self.handle_set_cig_parameters(cig_id, &cis_id)
+            }
+            Command::LeCreateCis {
+                cis_connection_handle,
+                acl_connection_handle,
+            } => self.handle_create_cis(&cis_connection_handle, &acl_connection_handle),
+            Command::LeAcceptCisRequest { connection_handle } => {
+                self.handle_accept_cis_request(connection_handle)
+            }
             // Any command not modelled functionally above: reply with the same
             // response *shape* upstream `controller.py` uses for it (see
             // [`command_surface`]). A command upstream also doesn't handle gets
@@ -449,6 +483,150 @@ impl Controller {
         self.queue_ll(self_addr, peer_addr, req);
     }
 
+    /// `LE_Set_CIG_Parameters` (central): allocate a CIS connection handle per
+    /// requested `cis_id`, record a central CIS link, and return the CIG id and
+    /// allocated handles. The ACL endpoints are bound later by `LE_Create_CIS`.
+    fn handle_set_cig_parameters(&mut self, cig_id: u8, cis_ids: &[u8]) {
+        self.central_cis_links.retain(|l| l.cig_id != cig_id);
+        let unset = Address::from_bytes([0; 6], AddressType::RANDOM_DEVICE);
+        let mut handles = Vec::with_capacity(cis_ids.len());
+        for &cis_id in cis_ids {
+            let handle = self.allocate_handle();
+            handles.push(handle);
+            self.central_cis_links.push(CisLink {
+                cig_id,
+                cis_id,
+                handle,
+                acl_self: unset.clone(),
+                acl_peer: unset.clone(),
+            });
+        }
+        // Return parameters: status, cig_id, num_cis, then each handle (u16 LE).
+        let mut data = vec![HCI_SUCCESS, cig_id, handles.len() as u8];
+        for h in &handles {
+            data.extend_from_slice(&h.to_le_bytes());
+        }
+        self.complete(
+            HCI_LE_SET_CIG_PARAMETERS_COMMAND,
+            ReturnParameters::Raw { data },
+        );
+    }
+
+    /// `LE_Create_CIS` (central): bind each CIS to its ACL connection and send a
+    /// `CisReq` to the peer. Acknowledged with Command Status.
+    fn handle_create_cis(&mut self, cis_handles: &[u16], acl_handles: &[u16]) {
+        for (&cis_handle, &acl_handle) in cis_handles.iter().zip(acl_handles) {
+            let Some(conn) = self.connection_by_handle(acl_handle) else {
+                return self.command_status(HCI_LE_CREATE_CIS_COMMAND, INVALID_COMMAND_PARAMETERS);
+            };
+            let (acl_self, acl_peer) = (conn.self_address.clone(), conn.peer_address.clone());
+            let Some(link) = self
+                .central_cis_links
+                .iter_mut()
+                .find(|l| l.handle == cis_handle)
+            else {
+                return self.command_status(HCI_LE_CREATE_CIS_COMMAND, INVALID_COMMAND_PARAMETERS);
+            };
+            link.acl_self = acl_self.clone();
+            link.acl_peer = acl_peer.clone();
+            let (cig_id, cis_id) = (link.cig_id, link.cis_id);
+            self.queue_ll(
+                acl_self,
+                acl_peer,
+                ll::ControlPdu::CisReq { cig_id, cis_id },
+            );
+        }
+        self.command_status(HCI_LE_CREATE_CIS_COMMAND, HCI_SUCCESS);
+    }
+
+    /// `LE_Accept_CIS_Request` (peripheral): send a `CisRsp` for the pending CIS
+    /// and acknowledge with Command Status.
+    fn handle_accept_cis_request(&mut self, connection_handle: u16) {
+        let Some(link) = self
+            .peripheral_cis_links
+            .iter()
+            .find(|l| l.handle == connection_handle)
+        else {
+            return self.command_status(
+                HCI_LE_ACCEPT_CIS_REQUEST_COMMAND,
+                INVALID_COMMAND_PARAMETERS,
+            );
+        };
+        let (acl_self, acl_peer, cig_id, cis_id) = (
+            link.acl_self.clone(),
+            link.acl_peer.clone(),
+            link.cig_id,
+            link.cis_id,
+        );
+        self.queue_ll(
+            acl_self,
+            acl_peer,
+            ll::ControlPdu::CisRsp { cig_id, cis_id },
+        );
+        self.command_status(HCI_LE_ACCEPT_CIS_REQUEST_COMMAND, HCI_SUCCESS);
+    }
+
+    /// Handle an incoming `CisReq` (peripheral side): record a pending CIS link
+    /// and raise an `LE CIS Request` event to the host.
+    fn on_le_cis_request(
+        &mut self,
+        acl_self: Address,
+        acl_peer: Address,
+        acl_handle: u16,
+        cig_id: u8,
+        cis_id: u8,
+    ) {
+        let handle = self.allocate_handle();
+        self.peripheral_cis_links.push(CisLink {
+            cig_id,
+            cis_id,
+            handle,
+            acl_self,
+            acl_peer,
+        });
+        self.host_queue
+            .push(HciPacket::Event(Event::LeMeta(LeMetaEvent::CisRequest {
+                acl_connection_handle: acl_handle,
+                cis_connection_handle: handle,
+                cig_id,
+                cis_id,
+            })));
+    }
+
+    /// Emit an `LE CIS Established` for the CIS identified by `(cig_id, cis_id)`.
+    /// CIS timing parameters are placeholders (as upstream — they are ignored).
+    fn on_le_cis_established(&mut self, cig_id: u8, cis_id: u8) {
+        let Some(handle) = self
+            .central_cis_links
+            .iter()
+            .chain(self.peripheral_cis_links.iter())
+            .find(|l| l.cig_id == cig_id && l.cis_id == cis_id)
+            .map(|l| l.handle)
+        else {
+            return;
+        };
+        self.host_queue.push(HciPacket::Event(Event::LeMeta(
+            LeMetaEvent::CisEstablished {
+                status: HCI_SUCCESS,
+                connection_handle: handle,
+                cig_sync_delay: 0,
+                cis_sync_delay: 0,
+                transport_latency_c_to_p: 0,
+                transport_latency_p_to_c: 0,
+                phy_c_to_p: LE_1M_PHY,
+                phy_p_to_c: LE_1M_PHY,
+                nse: 0,
+                bn_c_to_p: 0,
+                bn_p_to_c: 0,
+                ft_c_to_p: 0,
+                ft_p_to_c: 0,
+                max_pdu_c_to_p: 0,
+                max_pdu_p_to_c: 0,
+                iso_interval: 0,
+            },
+        )));
+    }
+
     /// Emit an `Encryption Change` (enabled) for a connection.
     fn on_le_encrypted(&mut self, connection_handle: u16) {
         self.host_queue
@@ -500,6 +678,20 @@ impl Controller {
                         le_features: feature_set,
                     },
                 )));
+            }
+            ll::ControlPdu::CisReq { cig_id, cis_id } => {
+                self.on_le_cis_request(self_addr, sender_address.clone(), handle, cig_id, cis_id);
+            }
+            ll::ControlPdu::CisRsp { cig_id, cis_id } => {
+                self.on_le_cis_established(cig_id, cis_id);
+                self.queue_ll(
+                    self_addr,
+                    sender_address.clone(),
+                    ll::ControlPdu::CisInd { cig_id, cis_id },
+                );
+            }
+            ll::ControlPdu::CisInd { cig_id, cis_id } => {
+                self.on_le_cis_established(cig_id, cis_id);
             }
             ll::ControlPdu::TerminateInd { error_code } => {
                 let peer = sender_address.clone();
