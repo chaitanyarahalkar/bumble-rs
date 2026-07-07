@@ -58,17 +58,30 @@
 //!   exchange yields `LE CIS Established` on both sides (timing params are
 //!   placeholders, as upstream).
 //!
+//! ## Classic (BR/EDR)
+//!
+//! A simplified classic path runs over [`lmp::ClassicPdu`] control PDUs, routed
+//! by [`LocalLink::pump_classic`] (addressed by public device address):
+//! ACL connection establishment (`Create_Connection` → `Connection Request` →
+//! `Accept_Connection_Request` → `Connection Complete` on both sides),
+//! `Remote_Name_Request` (→ `Remote Name Request Complete`), and
+//! `Read_Remote_Supported_Features` (→ the matching complete event). The LMP
+//! handshake is simplified relative to upstream (no role-switch / authentication
+//! sub-dance) — enough to reproduce the HCI event sequence a host observes.
+//!
 //! ## Deferred (behavioral simulation, not the codec)
 //!
 //! The remaining deep behavior is not simulated: LTK verification, extended/
 //! periodic advertising sets, ISO data-path streaming, remote-version exchange,
-//! and classic/LMP. The HCI *codec* for all of them (in `bumble-hci`) is complete
-//! and oracle-pinned; what remains is controller-side behavior, which — unlike
-//! the codec — has no ground-truth oracle to pin against (upstream's controller
-//! is itself a simulation with placeholder values).
+//! and the classic authentication/encryption/role-switch/SCO sub-flows. The HCI
+//! *codec* for all of them (in `bumble-hci`) is complete and oracle-pinned; what
+//! remains is controller-side behavior, which — unlike the codec — has no
+//! ground-truth oracle to pin against (upstream's controller is itself a
+//! simulation with placeholder values).
 
 pub mod command_surface;
 pub mod ll;
+pub mod lmp;
 
 use bumble::{Address, AddressType};
 use bumble_hci::codes::*;
@@ -113,6 +126,11 @@ const TOTAL_NUM_LE_ACL_DATA_PACKETS: u8 = 64;
 const LOCAL_LE_FEATURES: [u8; 8] = [0; 8];
 /// PHY value for LE 1M, reported when no specific PHY was requested.
 const LE_1M_PHY: u8 = 1;
+/// The classic LMP features bitmap reported by `Read_Remote_Supported_Features`
+/// (all zero — no optional classic features, an honest report).
+const LMP_FEATURES: [u8; 8] = [0; 8];
+/// Classic ACL link type, reported in classic Connection Complete / Request.
+const LINK_TYPE_ACL: u8 = 0x01;
 
 /// An established LE connection on a controller.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -179,6 +197,10 @@ pub struct Controller {
     central_cis_links: Vec<CisLink>,
     /// CIS links pending/accepted as the peripheral (from an incoming `CisReq`).
     peripheral_cis_links: Vec<CisLink>,
+    /// Classic (BR/EDR) ACL connections, keyed by peer address in `peer_address`.
+    classic_connections: Vec<Connection>,
+    /// Classic LMP PDUs waiting for a peer, as `(sender_public, receiver, pdu)`.
+    outbound_classic: Vec<(Address, Address, lmp::ClassicPdu)>,
 }
 
 impl Controller {
@@ -200,6 +222,8 @@ impl Controller {
             outbound_ll: Vec::new(),
             central_cis_links: Vec::new(),
             peripheral_cis_links: Vec::new(),
+            classic_connections: Vec::new(),
+            outbound_classic: Vec::new(),
         }
     }
 
@@ -348,6 +372,14 @@ impl Controller {
             } => self.handle_create_cis(&cis_connection_handle, &acl_connection_handle),
             Command::LeAcceptCisRequest { connection_handle } => {
                 self.handle_accept_cis_request(connection_handle)
+            }
+            Command::CreateConnection { bd_addr, .. } => self.handle_create_connection(bd_addr),
+            Command::AcceptConnectionRequest { bd_addr, .. } => {
+                self.handle_accept_connection_request(bd_addr)
+            }
+            Command::RemoteNameRequest { bd_addr, .. } => self.handle_remote_name_request(bd_addr),
+            Command::ReadRemoteSupportedFeatures { connection_handle } => {
+                self.handle_read_remote_supported_features(connection_handle)
             }
             // Any command not modelled functionally above: reply with the same
             // response *shape* upstream `controller.py` uses for it (see
@@ -635,6 +667,180 @@ impl Controller {
                 connection_handle,
                 encryption_enabled: 1,
             }));
+    }
+
+    // ---- Classic (BR/EDR) ----
+
+    /// `Create_Connection` (classic, central): record a pending classic
+    /// connection and page the peer with an `LmpHostConnectionReq`. Acknowledged
+    /// with Command Status; Connection Complete follows once the peer accepts.
+    fn handle_create_connection(&mut self, bd_addr: Address) {
+        self.classic_connections.push(Connection {
+            handle: 0,
+            role: ROLE_CENTRAL,
+            self_address: self.public_address.clone(),
+            peer_address: bd_addr.clone(),
+        });
+        self.command_status(HCI_CREATE_CONNECTION_COMMAND, HCI_SUCCESS);
+        let self_addr = self.public_address.clone();
+        self.queue_classic(self_addr, bd_addr, lmp::ClassicPdu::HostConnectionReq);
+    }
+
+    /// `Accept_Connection_Request` (classic, peripheral): allocate a handle, emit
+    /// Connection Complete, and signal acceptance to the peer.
+    fn handle_accept_connection_request(&mut self, bd_addr: Address) {
+        let Some(idx) = self
+            .classic_connections
+            .iter()
+            .position(|c| c.peer_address == bd_addr)
+        else {
+            return self.command_status(
+                HCI_ACCEPT_CONNECTION_REQUEST_COMMAND,
+                UNKNOWN_CONNECTION_IDENTIFIER_ERROR,
+            );
+        };
+        self.command_status(HCI_ACCEPT_CONNECTION_REQUEST_COMMAND, HCI_SUCCESS);
+        let handle = self.allocate_handle();
+        self.classic_connections[idx].handle = handle;
+        self.push_classic_connection_complete(handle, bd_addr.clone());
+        let self_addr = self.public_address.clone();
+        self.queue_classic(self_addr, bd_addr, lmp::ClassicPdu::Accepted);
+    }
+
+    /// `Remote_Name_Request` (classic): page the peer for its name.
+    fn handle_remote_name_request(&mut self, bd_addr: Address) {
+        self.command_status(HCI_REMOTE_NAME_REQUEST_COMMAND, HCI_SUCCESS);
+        let self_addr = self.public_address.clone();
+        self.queue_classic(self_addr, bd_addr, lmp::ClassicPdu::NameReq);
+    }
+
+    /// `Read_Remote_Supported_Features` (classic): request the peer's LMP features.
+    fn handle_read_remote_supported_features(&mut self, connection_handle: u16) {
+        let Some(conn) = self
+            .classic_connections
+            .iter()
+            .find(|c| c.handle == connection_handle)
+        else {
+            return self.command_status(
+                HCI_READ_REMOTE_SUPPORTED_FEATURES_COMMAND,
+                INVALID_COMMAND_PARAMETERS,
+            );
+        };
+        let (self_addr, peer_addr) = (conn.self_address.clone(), conn.peer_address.clone());
+        self.command_status(HCI_READ_REMOTE_SUPPORTED_FEATURES_COMMAND, HCI_SUCCESS);
+        self.queue_classic(self_addr, peer_addr, lmp::ClassicPdu::FeaturesReq);
+    }
+
+    fn push_classic_connection_complete(&mut self, handle: u16, bd_addr: Address) {
+        self.host_queue
+            .push(HciPacket::Event(Event::ConnectionComplete {
+                status: HCI_SUCCESS,
+                connection_handle: handle,
+                bd_addr,
+                link_type: LINK_TYPE_ACL,
+                encryption_enabled: 0,
+            }));
+    }
+
+    fn queue_classic(&mut self, self_addr: Address, peer_addr: Address, pdu: lmp::ClassicPdu) {
+        self.outbound_classic.push((self_addr, peer_addr, pdu));
+    }
+
+    fn take_outbound_classic(&mut self) -> Vec<(Address, Address, lmp::ClassicPdu)> {
+        std::mem::take(&mut self.outbound_classic)
+    }
+
+    /// Handle a classic LMP PDU received from the peer at `sender_address`.
+    fn on_classic_pdu(&mut self, sender_address: &Address, pdu: lmp::ClassicPdu) {
+        match pdu {
+            lmp::ClassicPdu::HostConnectionReq => {
+                self.classic_connections.push(Connection {
+                    handle: 0,
+                    role: ROLE_PERIPHERAL,
+                    self_address: self.public_address.clone(),
+                    peer_address: sender_address.clone(),
+                });
+                self.host_queue
+                    .push(HciPacket::Event(Event::ConnectionRequest {
+                        bd_addr: sender_address.clone(),
+                        class_of_device: 0,
+                        link_type: LINK_TYPE_ACL,
+                    }));
+            }
+            lmp::ClassicPdu::Accepted => {
+                if let Some(idx) = self
+                    .classic_connections
+                    .iter()
+                    .position(|c| c.peer_address == *sender_address && c.handle == 0)
+                {
+                    let handle = self.allocate_handle();
+                    self.classic_connections[idx].handle = handle;
+                    self.push_classic_connection_complete(handle, sender_address.clone());
+                }
+            }
+            lmp::ClassicPdu::NameReq => {
+                let mut name = self.name.as_bytes().to_vec();
+                name.resize(248, 0);
+                let self_addr = self.public_address.clone();
+                self.queue_classic(
+                    self_addr,
+                    sender_address.clone(),
+                    lmp::ClassicPdu::NameRes { name },
+                );
+            }
+            lmp::ClassicPdu::NameRes { name } => {
+                let mut remote_name = [0u8; 248];
+                let n = name.len().min(248);
+                remote_name[..n].copy_from_slice(&name[..n]);
+                self.host_queue
+                    .push(HciPacket::Event(Event::RemoteNameRequestComplete {
+                        status: HCI_SUCCESS,
+                        bd_addr: sender_address.clone(),
+                        remote_name,
+                    }));
+            }
+            lmp::ClassicPdu::FeaturesReq => {
+                let self_addr = self.public_address.clone();
+                self.queue_classic(
+                    self_addr,
+                    sender_address.clone(),
+                    lmp::ClassicPdu::FeaturesRes {
+                        features: LMP_FEATURES,
+                    },
+                );
+            }
+            lmp::ClassicPdu::FeaturesRes { features } => {
+                if let Some(conn) = self
+                    .classic_connections
+                    .iter()
+                    .find(|c| c.peer_address == *sender_address)
+                {
+                    let handle = conn.handle;
+                    self.host_queue.push(HciPacket::Event(
+                        Event::ReadRemoteSupportedFeaturesComplete {
+                            status: HCI_SUCCESS,
+                            connection_handle: handle,
+                            lmp_features: features,
+                        },
+                    ));
+                }
+            }
+            lmp::ClassicPdu::Detach { error_code } => {
+                if let Some(idx) = self
+                    .classic_connections
+                    .iter()
+                    .position(|c| c.peer_address == *sender_address)
+                {
+                    let conn = self.classic_connections.remove(idx);
+                    self.host_queue
+                        .push(HciPacket::Event(Event::DisconnectionComplete {
+                            status: HCI_SUCCESS,
+                            connection_handle: conn.handle,
+                            reason: error_code,
+                        }));
+                }
+            }
+        }
     }
 
     /// Queue an LL control PDU for delivery to the peer at `peer_addr`.
@@ -996,6 +1202,30 @@ impl LocalLink {
                     })
                 }) {
                     dst.on_ll_control_pdu(&sender_addr, pdu);
+                }
+            }
+        }
+    }
+
+    /// Route queued classic (LMP) PDUs between controllers until none remain.
+    /// Classic connections are addressed by public device address, so a PDU is
+    /// delivered to the controller whose public address is the destination.
+    pub fn pump_classic(&mut self) {
+        for _ in 0..16 {
+            let mut pending: Vec<(Address, Address, lmp::ClassicPdu)> = Vec::new();
+            for c in &mut self.controllers {
+                pending.extend(c.take_outbound_classic());
+            }
+            if pending.is_empty() {
+                return;
+            }
+            for (sender, receiver, pdu) in pending {
+                if let Some(dst) = self
+                    .controllers
+                    .iter_mut()
+                    .find(|c| *c.public_address() == receiver)
+                {
+                    dst.on_classic_pdu(&sender, pdu);
                 }
             }
         }
