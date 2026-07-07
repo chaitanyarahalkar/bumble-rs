@@ -978,41 +978,77 @@ impl Command {
             Command::AcceptConnectionRequest { .. } => HCI_ACCEPT_CONNECTION_REQUEST_COMMAND,
             Command::RejectConnectionRequest { .. } => HCI_REJECT_CONNECTION_REQUEST_COMMAND,
             Command::LinkKeyRequestReply { .. } => HCI_LINK_KEY_REQUEST_REPLY_COMMAND,
-            Command::LinkKeyRequestNegativeReply { .. } => HCI_LINK_KEY_REQUEST_NEGATIVE_REPLY_COMMAND,
+            Command::LinkKeyRequestNegativeReply { .. } => {
+                HCI_LINK_KEY_REQUEST_NEGATIVE_REPLY_COMMAND
+            }
             Command::PinCodeRequestReply { .. } => HCI_PIN_CODE_REQUEST_REPLY_COMMAND,
-            Command::PinCodeRequestNegativeReply { .. } => HCI_PIN_CODE_REQUEST_NEGATIVE_REPLY_COMMAND,
+            Command::PinCodeRequestNegativeReply { .. } => {
+                HCI_PIN_CODE_REQUEST_NEGATIVE_REPLY_COMMAND
+            }
             Command::ChangeConnectionPacketType { .. } => HCI_CHANGE_CONNECTION_PACKET_TYPE_COMMAND,
             Command::AuthenticationRequested { .. } => HCI_AUTHENTICATION_REQUESTED_COMMAND,
             Command::SetConnectionEncryption { .. } => HCI_SET_CONNECTION_ENCRYPTION_COMMAND,
             Command::RemoteNameRequest { .. } => HCI_REMOTE_NAME_REQUEST_COMMAND,
-            Command::ReadRemoteSupportedFeatures { .. } => HCI_READ_REMOTE_SUPPORTED_FEATURES_COMMAND,
+            Command::ReadRemoteSupportedFeatures { .. } => {
+                HCI_READ_REMOTE_SUPPORTED_FEATURES_COMMAND
+            }
             Command::ReadRemoteExtendedFeatures { .. } => HCI_READ_REMOTE_EXTENDED_FEATURES_COMMAND,
-            Command::ReadRemoteVersionInformation { .. } => HCI_READ_REMOTE_VERSION_INFORMATION_COMMAND,
+            Command::ReadRemoteVersionInformation { .. } => {
+                HCI_READ_REMOTE_VERSION_INFORMATION_COMMAND
+            }
             Command::ReadClockOffset { .. } => HCI_READ_CLOCK_OFFSET_COMMAND,
-            Command::AcceptSynchronousConnectionRequest { .. } => HCI_ACCEPT_SYNCHRONOUS_CONNECTION_REQUEST_COMMAND,
-            Command::RejectSynchronousConnectionRequest { .. } => HCI_REJECT_SYNCHRONOUS_CONNECTION_REQUEST_COMMAND,
+            Command::AcceptSynchronousConnectionRequest { .. } => {
+                HCI_ACCEPT_SYNCHRONOUS_CONNECTION_REQUEST_COMMAND
+            }
+            Command::RejectSynchronousConnectionRequest { .. } => {
+                HCI_REJECT_SYNCHRONOUS_CONNECTION_REQUEST_COMMAND
+            }
             Command::IoCapabilityRequestReply { .. } => HCI_IO_CAPABILITY_REQUEST_REPLY_COMMAND,
-            Command::UserConfirmationRequestReply { .. } => HCI_USER_CONFIRMATION_REQUEST_REPLY_COMMAND,
-            Command::UserConfirmationRequestNegativeReply { .. } => HCI_USER_CONFIRMATION_REQUEST_NEGATIVE_REPLY_COMMAND,
+            Command::UserConfirmationRequestReply { .. } => {
+                HCI_USER_CONFIRMATION_REQUEST_REPLY_COMMAND
+            }
+            Command::UserConfirmationRequestNegativeReply { .. } => {
+                HCI_USER_CONFIRMATION_REQUEST_NEGATIVE_REPLY_COMMAND
+            }
             Command::UserPasskeyRequestReply { .. } => HCI_USER_PASSKEY_REQUEST_REPLY_COMMAND,
-            Command::UserPasskeyRequestNegativeReply { .. } => HCI_USER_PASSKEY_REQUEST_NEGATIVE_REPLY_COMMAND,
+            Command::UserPasskeyRequestNegativeReply { .. } => {
+                HCI_USER_PASSKEY_REQUEST_NEGATIVE_REPLY_COMMAND
+            }
             Command::RemoteOobDataRequestReply { .. } => HCI_REMOTE_OOB_DATA_REQUEST_REPLY_COMMAND,
-            Command::RemoteOobDataRequestNegativeReply { .. } => HCI_REMOTE_OOB_DATA_REQUEST_NEGATIVE_REPLY_COMMAND,
-            Command::IoCapabilityRequestNegativeReply { .. } => HCI_IO_CAPABILITY_REQUEST_NEGATIVE_REPLY_COMMAND,
-            Command::EnhancedSetupSynchronousConnection { .. } => HCI_ENHANCED_SETUP_SYNCHRONOUS_CONNECTION_COMMAND,
-            Command::EnhancedAcceptSynchronousConnectionRequest { .. } => HCI_ENHANCED_ACCEPT_SYNCHRONOUS_CONNECTION_REQUEST_COMMAND,
+            Command::RemoteOobDataRequestNegativeReply { .. } => {
+                HCI_REMOTE_OOB_DATA_REQUEST_NEGATIVE_REPLY_COMMAND
+            }
+            Command::IoCapabilityRequestNegativeReply { .. } => {
+                HCI_IO_CAPABILITY_REQUEST_NEGATIVE_REPLY_COMMAND
+            }
+            Command::EnhancedSetupSynchronousConnection { .. } => {
+                HCI_ENHANCED_SETUP_SYNCHRONOUS_CONNECTION_COMMAND
+            }
+            Command::EnhancedAcceptSynchronousConnectionRequest { .. } => {
+                HCI_ENHANCED_ACCEPT_SYNCHRONOUS_CONNECTION_REQUEST_COMMAND
+            }
             Command::TruncatedPage { .. } => HCI_TRUNCATED_PAGE_COMMAND,
             Command::TruncatedPageCancel { .. } => HCI_TRUNCATED_PAGE_CANCEL_COMMAND,
-            Command::SetConnectionlessPeripheralBroadcast { .. } => HCI_SET_CONNECTIONLESS_PERIPHERAL_BROADCAST_COMMAND,
-            Command::SetConnectionlessPeripheralBroadcastReceive { .. } => HCI_SET_CONNECTIONLESS_PERIPHERAL_BROADCAST_RECEIVE_COMMAND,
+            Command::SetConnectionlessPeripheralBroadcast { .. } => {
+                HCI_SET_CONNECTIONLESS_PERIPHERAL_BROADCAST_COMMAND
+            }
+            Command::SetConnectionlessPeripheralBroadcastReceive { .. } => {
+                HCI_SET_CONNECTIONLESS_PERIPHERAL_BROADCAST_RECEIVE_COMMAND
+            }
             Command::StartSynchronizationTrain => HCI_START_SYNCHRONIZATION_TRAIN_COMMAND,
-            Command::ReceiveSynchronizationTrain { .. } => HCI_RECEIVE_SYNCHRONIZATION_TRAIN_COMMAND,
-            Command::RemoteOobExtendedDataRequestReply { .. } => HCI_REMOTE_OOB_EXTENDED_DATA_REQUEST_REPLY_COMMAND,
+            Command::ReceiveSynchronizationTrain { .. } => {
+                HCI_RECEIVE_SYNCHRONIZATION_TRAIN_COMMAND
+            }
+            Command::RemoteOobExtendedDataRequestReply { .. } => {
+                HCI_REMOTE_OOB_EXTENDED_DATA_REQUEST_REPLY_COMMAND
+            }
             Command::SniffMode { .. } => HCI_SNIFF_MODE_COMMAND,
             Command::ExitSniffMode { .. } => HCI_EXIT_SNIFF_MODE_COMMAND,
             Command::SwitchRole { .. } => HCI_SWITCH_ROLE_COMMAND,
             Command::WriteLinkPolicySettings { .. } => HCI_WRITE_LINK_POLICY_SETTINGS_COMMAND,
-            Command::WriteDefaultLinkPolicySettings { .. } => HCI_WRITE_DEFAULT_LINK_POLICY_SETTINGS_COMMAND,
+            Command::WriteDefaultLinkPolicySettings { .. } => {
+                HCI_WRITE_DEFAULT_LINK_POLICY_SETTINGS_COMMAND
+            }
             Command::SniffSubrating { .. } => HCI_SNIFF_SUBRATING_COMMAND,
             Command::SetEventMask { .. } => HCI_SET_EVENT_MASK_COMMAND,
             Command::Reset => HCI_RESET_COMMAND,
@@ -1021,7 +1057,9 @@ impl Command {
             Command::DeleteStoredLinkKey { .. } => HCI_DELETE_STORED_LINK_KEY_COMMAND,
             Command::WriteLocalName { .. } => HCI_WRITE_LOCAL_NAME_COMMAND,
             Command::ReadLocalName => HCI_READ_LOCAL_NAME_COMMAND,
-            Command::WriteConnectionAcceptTimeout { .. } => HCI_WRITE_CONNECTION_ACCEPT_TIMEOUT_COMMAND,
+            Command::WriteConnectionAcceptTimeout { .. } => {
+                HCI_WRITE_CONNECTION_ACCEPT_TIMEOUT_COMMAND
+            }
             Command::WritePageTimeout { .. } => HCI_WRITE_PAGE_TIMEOUT_COMMAND,
             Command::WriteScanEnable { .. } => HCI_WRITE_SCAN_ENABLE_COMMAND,
             Command::ReadPageScanActivity => HCI_READ_PAGE_SCAN_ACTIVITY_COMMAND,
@@ -1033,27 +1071,45 @@ impl Command {
             Command::WriteClassOfDevice { .. } => HCI_WRITE_CLASS_OF_DEVICE_COMMAND,
             Command::ReadVoiceSetting => HCI_READ_VOICE_SETTING_COMMAND,
             Command::WriteVoiceSetting { .. } => HCI_WRITE_VOICE_SETTING_COMMAND,
-            Command::ReadSynchronousFlowControlEnable => HCI_READ_SYNCHRONOUS_FLOW_CONTROL_ENABLE_COMMAND,
-            Command::WriteSynchronousFlowControlEnable { .. } => HCI_WRITE_SYNCHRONOUS_FLOW_CONTROL_ENABLE_COMMAND,
-            Command::SetControllerToHostFlowControl { .. } => HCI_SET_CONTROLLER_TO_HOST_FLOW_CONTROL_COMMAND,
+            Command::ReadSynchronousFlowControlEnable => {
+                HCI_READ_SYNCHRONOUS_FLOW_CONTROL_ENABLE_COMMAND
+            }
+            Command::WriteSynchronousFlowControlEnable { .. } => {
+                HCI_WRITE_SYNCHRONOUS_FLOW_CONTROL_ENABLE_COMMAND
+            }
+            Command::SetControllerToHostFlowControl { .. } => {
+                HCI_SET_CONTROLLER_TO_HOST_FLOW_CONTROL_COMMAND
+            }
             Command::HostBufferSize { .. } => HCI_HOST_BUFFER_SIZE_COMMAND,
-            Command::WriteLinkSupervisionTimeout { .. } => HCI_WRITE_LINK_SUPERVISION_TIMEOUT_COMMAND,
+            Command::WriteLinkSupervisionTimeout { .. } => {
+                HCI_WRITE_LINK_SUPERVISION_TIMEOUT_COMMAND
+            }
             Command::ReadNumberOfSupportedIac => HCI_READ_NUMBER_OF_SUPPORTED_IAC_COMMAND,
             Command::ReadCurrentIacLap => HCI_READ_CURRENT_IAC_LAP_COMMAND,
             Command::WriteInquiryScanType { .. } => HCI_WRITE_INQUIRY_SCAN_TYPE_COMMAND,
             Command::WriteInquiryMode { .. } => HCI_WRITE_INQUIRY_MODE_COMMAND,
             Command::ReadPageScanType => HCI_READ_PAGE_SCAN_TYPE_COMMAND,
             Command::WritePageScanType { .. } => HCI_WRITE_PAGE_SCAN_TYPE_COMMAND,
-            Command::WriteExtendedInquiryResponse { .. } => HCI_WRITE_EXTENDED_INQUIRY_RESPONSE_COMMAND,
+            Command::WriteExtendedInquiryResponse { .. } => {
+                HCI_WRITE_EXTENDED_INQUIRY_RESPONSE_COMMAND
+            }
             Command::WriteSimplePairingMode { .. } => HCI_WRITE_SIMPLE_PAIRING_MODE_COMMAND,
             Command::ReadLocalOobData => HCI_READ_LOCAL_OOB_DATA_COMMAND,
-            Command::ReadInquiryResponseTransmitPowerLevel => HCI_READ_INQUIRY_RESPONSE_TRANSMIT_POWER_LEVEL_COMMAND,
-            Command::ReadDefaultErroneousDataReporting => HCI_READ_DEFAULT_ERRONEOUS_DATA_REPORTING_COMMAND,
+            Command::ReadInquiryResponseTransmitPowerLevel => {
+                HCI_READ_INQUIRY_RESPONSE_TRANSMIT_POWER_LEVEL_COMMAND
+            }
+            Command::ReadDefaultErroneousDataReporting => {
+                HCI_READ_DEFAULT_ERRONEOUS_DATA_REPORTING_COMMAND
+            }
             Command::SetEventMaskPage2 { .. } => HCI_SET_EVENT_MASK_PAGE_2_COMMAND,
             Command::ReadLeHostSupport => HCI_READ_LE_HOST_SUPPORT_COMMAND,
             Command::WriteLeHostSupport { .. } => HCI_WRITE_LE_HOST_SUPPORT_COMMAND,
-            Command::WriteSecureConnectionsHostSupport { .. } => HCI_WRITE_SECURE_CONNECTIONS_HOST_SUPPORT_COMMAND,
-            Command::WriteAuthenticatedPayloadTimeout { .. } => HCI_WRITE_AUTHENTICATED_PAYLOAD_TIMEOUT_COMMAND,
+            Command::WriteSecureConnectionsHostSupport { .. } => {
+                HCI_WRITE_SECURE_CONNECTIONS_HOST_SUPPORT_COMMAND
+            }
+            Command::WriteAuthenticatedPayloadTimeout { .. } => {
+                HCI_WRITE_AUTHENTICATED_PAYLOAD_TIMEOUT_COMMAND
+            }
             Command::ReadLocalOobExtendedData => HCI_READ_LOCAL_OOB_EXTENDED_DATA_COMMAND,
             Command::ConfigureDataPath { .. } => HCI_CONFIGURE_DATA_PATH_COMMAND,
             Command::ReadLocalVersionInformation => HCI_READ_LOCAL_VERSION_INFORMATION_COMMAND,
@@ -1073,7 +1129,9 @@ impl Command {
             Command::LeReadLocalSupportedFeatures => HCI_LE_READ_LOCAL_SUPPORTED_FEATURES_COMMAND,
             Command::LeSetRandomAddress { .. } => HCI_LE_SET_RANDOM_ADDRESS_COMMAND,
             Command::LeSetAdvertisingParameters { .. } => HCI_LE_SET_ADVERTISING_PARAMETERS_COMMAND,
-            Command::LeReadAdvertisingPhysicalChannelTxPower => HCI_LE_READ_ADVERTISING_PHYSICAL_CHANNEL_TX_POWER_COMMAND,
+            Command::LeReadAdvertisingPhysicalChannelTxPower => {
+                HCI_LE_READ_ADVERTISING_PHYSICAL_CHANNEL_TX_POWER_COMMAND
+            }
             Command::LeSetAdvertisingData { .. } => HCI_LE_SET_ADVERTISING_DATA_COMMAND,
             Command::LeSetScanResponseData { .. } => HCI_LE_SET_SCAN_RESPONSE_DATA_COMMAND,
             Command::LeSetAdvertisingEnable { .. } => HCI_LE_SET_ADVERTISING_ENABLE_COMMAND,
@@ -1083,53 +1141,109 @@ impl Command {
             Command::LeCreateConnectionCancel => HCI_LE_CREATE_CONNECTION_CANCEL_COMMAND,
             Command::LeReadFilterAcceptListSize => HCI_LE_READ_FILTER_ACCEPT_LIST_SIZE_COMMAND,
             Command::LeClearFilterAcceptList => HCI_LE_CLEAR_FILTER_ACCEPT_LIST_COMMAND,
-            Command::LeAddDeviceToFilterAcceptList { .. } => HCI_LE_ADD_DEVICE_TO_FILTER_ACCEPT_LIST_COMMAND,
-            Command::LeRemoveDeviceFromFilterAcceptList { .. } => HCI_LE_REMOVE_DEVICE_FROM_FILTER_ACCEPT_LIST_COMMAND,
+            Command::LeAddDeviceToFilterAcceptList { .. } => {
+                HCI_LE_ADD_DEVICE_TO_FILTER_ACCEPT_LIST_COMMAND
+            }
+            Command::LeRemoveDeviceFromFilterAcceptList { .. } => {
+                HCI_LE_REMOVE_DEVICE_FROM_FILTER_ACCEPT_LIST_COMMAND
+            }
             Command::LeConnectionUpdate { .. } => HCI_LE_CONNECTION_UPDATE_COMMAND,
             Command::LeReadRemoteFeatures { .. } => HCI_LE_READ_REMOTE_FEATURES_COMMAND,
             Command::LeRand => HCI_LE_RAND_COMMAND,
             Command::LeEnableEncryption { .. } => HCI_LE_ENABLE_ENCRYPTION_COMMAND,
             Command::LeLongTermKeyRequestReply { .. } => HCI_LE_LONG_TERM_KEY_REQUEST_REPLY_COMMAND,
-            Command::LeLongTermKeyRequestNegativeReply { .. } => HCI_LE_LONG_TERM_KEY_REQUEST_NEGATIVE_REPLY_COMMAND,
+            Command::LeLongTermKeyRequestNegativeReply { .. } => {
+                HCI_LE_LONG_TERM_KEY_REQUEST_NEGATIVE_REPLY_COMMAND
+            }
             Command::LeReadSupportedStates => HCI_LE_READ_SUPPORTED_STATES_COMMAND,
-            Command::LeRemoteConnectionParameterRequestReply { .. } => HCI_LE_REMOTE_CONNECTION_PARAMETER_REQUEST_REPLY_COMMAND,
-            Command::LeRemoteConnectionParameterRequestNegativeReply { .. } => HCI_LE_REMOTE_CONNECTION_PARAMETER_REQUEST_NEGATIVE_REPLY_COMMAND,
+            Command::LeRemoteConnectionParameterRequestReply { .. } => {
+                HCI_LE_REMOTE_CONNECTION_PARAMETER_REQUEST_REPLY_COMMAND
+            }
+            Command::LeRemoteConnectionParameterRequestNegativeReply { .. } => {
+                HCI_LE_REMOTE_CONNECTION_PARAMETER_REQUEST_NEGATIVE_REPLY_COMMAND
+            }
             Command::LeSetDataLength { .. } => HCI_LE_SET_DATA_LENGTH_COMMAND,
-            Command::LeReadSuggestedDefaultDataLength => HCI_LE_READ_SUGGESTED_DEFAULT_DATA_LENGTH_COMMAND,
-            Command::LeWriteSuggestedDefaultDataLength { .. } => HCI_LE_WRITE_SUGGESTED_DEFAULT_DATA_LENGTH_COMMAND,
+            Command::LeReadSuggestedDefaultDataLength => {
+                HCI_LE_READ_SUGGESTED_DEFAULT_DATA_LENGTH_COMMAND
+            }
+            Command::LeWriteSuggestedDefaultDataLength { .. } => {
+                HCI_LE_WRITE_SUGGESTED_DEFAULT_DATA_LENGTH_COMMAND
+            }
             Command::LeReadLocalP256PublicKey => HCI_LE_READ_LOCAL_P_256_PUBLIC_KEY_COMMAND,
-            Command::LeAddDeviceToResolvingList { .. } => HCI_LE_ADD_DEVICE_TO_RESOLVING_LIST_COMMAND,
+            Command::LeAddDeviceToResolvingList { .. } => {
+                HCI_LE_ADD_DEVICE_TO_RESOLVING_LIST_COMMAND
+            }
             Command::LeClearResolvingList => HCI_LE_CLEAR_RESOLVING_LIST_COMMAND,
             Command::LeReadResolvingListSize => HCI_LE_READ_RESOLVING_LIST_SIZE_COMMAND,
-            Command::LeSetAddressResolutionEnable { .. } => HCI_LE_SET_ADDRESS_RESOLUTION_ENABLE_COMMAND,
-            Command::LeSetResolvablePrivateAddressTimeout { .. } => HCI_LE_SET_RESOLVABLE_PRIVATE_ADDRESS_TIMEOUT_COMMAND,
+            Command::LeSetAddressResolutionEnable { .. } => {
+                HCI_LE_SET_ADDRESS_RESOLUTION_ENABLE_COMMAND
+            }
+            Command::LeSetResolvablePrivateAddressTimeout { .. } => {
+                HCI_LE_SET_RESOLVABLE_PRIVATE_ADDRESS_TIMEOUT_COMMAND
+            }
             Command::LeReadMaximumDataLength => HCI_LE_READ_MAXIMUM_DATA_LENGTH_COMMAND,
             Command::LeReadPhy { .. } => HCI_LE_READ_PHY_COMMAND,
             Command::LeSetDefaultPhy { .. } => HCI_LE_SET_DEFAULT_PHY_COMMAND,
             Command::LeSetPhy { .. } => HCI_LE_SET_PHY_COMMAND,
-            Command::LeSetAdvertisingSetRandomAddress { .. } => HCI_LE_SET_ADVERTISING_SET_RANDOM_ADDRESS_COMMAND,
-            Command::LeSetExtendedAdvertisingParameters { .. } => HCI_LE_SET_EXTENDED_ADVERTISING_PARAMETERS_COMMAND,
-            Command::LeSetExtendedAdvertisingData { .. } => HCI_LE_SET_EXTENDED_ADVERTISING_DATA_COMMAND,
-            Command::LeSetExtendedScanResponseData { .. } => HCI_LE_SET_EXTENDED_SCAN_RESPONSE_DATA_COMMAND,
-            Command::LeSetExtendedAdvertisingEnable { .. } => HCI_LE_SET_EXTENDED_ADVERTISING_ENABLE_COMMAND,
-            Command::LeReadMaximumAdvertisingDataLength => HCI_LE_READ_MAXIMUM_ADVERTISING_DATA_LENGTH_COMMAND,
-            Command::LeReadNumberOfSupportedAdvertisingSets => HCI_LE_READ_NUMBER_OF_SUPPORTED_ADVERTISING_SETS_COMMAND,
+            Command::LeSetAdvertisingSetRandomAddress { .. } => {
+                HCI_LE_SET_ADVERTISING_SET_RANDOM_ADDRESS_COMMAND
+            }
+            Command::LeSetExtendedAdvertisingParameters { .. } => {
+                HCI_LE_SET_EXTENDED_ADVERTISING_PARAMETERS_COMMAND
+            }
+            Command::LeSetExtendedAdvertisingData { .. } => {
+                HCI_LE_SET_EXTENDED_ADVERTISING_DATA_COMMAND
+            }
+            Command::LeSetExtendedScanResponseData { .. } => {
+                HCI_LE_SET_EXTENDED_SCAN_RESPONSE_DATA_COMMAND
+            }
+            Command::LeSetExtendedAdvertisingEnable { .. } => {
+                HCI_LE_SET_EXTENDED_ADVERTISING_ENABLE_COMMAND
+            }
+            Command::LeReadMaximumAdvertisingDataLength => {
+                HCI_LE_READ_MAXIMUM_ADVERTISING_DATA_LENGTH_COMMAND
+            }
+            Command::LeReadNumberOfSupportedAdvertisingSets => {
+                HCI_LE_READ_NUMBER_OF_SUPPORTED_ADVERTISING_SETS_COMMAND
+            }
             Command::LeRemoveAdvertisingSet { .. } => HCI_LE_REMOVE_ADVERTISING_SET_COMMAND,
             Command::LeClearAdvertisingSets => HCI_LE_CLEAR_ADVERTISING_SETS_COMMAND,
-            Command::LeSetPeriodicAdvertisingParameters { .. } => HCI_LE_SET_PERIODIC_ADVERTISING_PARAMETERS_COMMAND,
-            Command::LeSetPeriodicAdvertisingData { .. } => HCI_LE_SET_PERIODIC_ADVERTISING_DATA_COMMAND,
-            Command::LeSetPeriodicAdvertisingEnable { .. } => HCI_LE_SET_PERIODIC_ADVERTISING_ENABLE_COMMAND,
+            Command::LeSetPeriodicAdvertisingParameters { .. } => {
+                HCI_LE_SET_PERIODIC_ADVERTISING_PARAMETERS_COMMAND
+            }
+            Command::LeSetPeriodicAdvertisingData { .. } => {
+                HCI_LE_SET_PERIODIC_ADVERTISING_DATA_COMMAND
+            }
+            Command::LeSetPeriodicAdvertisingEnable { .. } => {
+                HCI_LE_SET_PERIODIC_ADVERTISING_ENABLE_COMMAND
+            }
             Command::LeSetExtendedScanEnable { .. } => HCI_LE_SET_EXTENDED_SCAN_ENABLE_COMMAND,
-            Command::LePeriodicAdvertisingCreateSync { .. } => HCI_LE_PERIODIC_ADVERTISING_CREATE_SYNC_COMMAND,
-            Command::LePeriodicAdvertisingCreateSyncCancel => HCI_LE_PERIODIC_ADVERTISING_CREATE_SYNC_CANCEL_COMMAND,
-            Command::LePeriodicAdvertisingTerminateSync { .. } => HCI_LE_PERIODIC_ADVERTISING_TERMINATE_SYNC_COMMAND,
+            Command::LePeriodicAdvertisingCreateSync { .. } => {
+                HCI_LE_PERIODIC_ADVERTISING_CREATE_SYNC_COMMAND
+            }
+            Command::LePeriodicAdvertisingCreateSyncCancel => {
+                HCI_LE_PERIODIC_ADVERTISING_CREATE_SYNC_CANCEL_COMMAND
+            }
+            Command::LePeriodicAdvertisingTerminateSync { .. } => {
+                HCI_LE_PERIODIC_ADVERTISING_TERMINATE_SYNC_COMMAND
+            }
             Command::LeReadTransmitPower => HCI_LE_READ_TRANSMIT_POWER_COMMAND,
             Command::LeSetPrivacyMode { .. } => HCI_LE_SET_PRIVACY_MODE_COMMAND,
-            Command::LeSetPeriodicAdvertisingReceiveEnable { .. } => HCI_LE_SET_PERIODIC_ADVERTISING_RECEIVE_ENABLE_COMMAND,
-            Command::LePeriodicAdvertisingSyncTransfer { .. } => HCI_LE_PERIODIC_ADVERTISING_SYNC_TRANSFER_COMMAND,
-            Command::LePeriodicAdvertisingSetInfoTransfer { .. } => HCI_LE_PERIODIC_ADVERTISING_SET_INFO_TRANSFER_COMMAND,
-            Command::LeSetPeriodicAdvertisingSyncTransferParameters { .. } => HCI_LE_SET_PERIODIC_ADVERTISING_SYNC_TRANSFER_PARAMETERS_COMMAND,
-            Command::LeSetDefaultPeriodicAdvertisingSyncTransferParameters { .. } => HCI_LE_SET_DEFAULT_PERIODIC_ADVERTISING_SYNC_TRANSFER_PARAMETERS_COMMAND,
+            Command::LeSetPeriodicAdvertisingReceiveEnable { .. } => {
+                HCI_LE_SET_PERIODIC_ADVERTISING_RECEIVE_ENABLE_COMMAND
+            }
+            Command::LePeriodicAdvertisingSyncTransfer { .. } => {
+                HCI_LE_PERIODIC_ADVERTISING_SYNC_TRANSFER_COMMAND
+            }
+            Command::LePeriodicAdvertisingSetInfoTransfer { .. } => {
+                HCI_LE_PERIODIC_ADVERTISING_SET_INFO_TRANSFER_COMMAND
+            }
+            Command::LeSetPeriodicAdvertisingSyncTransferParameters { .. } => {
+                HCI_LE_SET_PERIODIC_ADVERTISING_SYNC_TRANSFER_PARAMETERS_COMMAND
+            }
+            Command::LeSetDefaultPeriodicAdvertisingSyncTransferParameters { .. } => {
+                HCI_LE_SET_DEFAULT_PERIODIC_ADVERTISING_SYNC_TRANSFER_PARAMETERS_COMMAND
+            }
             Command::LeReadBufferSizeV2 => HCI_LE_READ_BUFFER_SIZE_V2_COMMAND,
             Command::LeReadIsoTxSync { .. } => HCI_LE_READ_ISO_TX_SYNC_COMMAND,
             Command::LeSetCigParameters { .. } => HCI_LE_SET_CIG_PARAMETERS_COMMAND,
@@ -1146,24 +1260,40 @@ impl Command {
             Command::LeSetHostFeature { .. } => HCI_LE_SET_HOST_FEATURE_COMMAND,
             Command::LeSetDefaultSubrate { .. } => HCI_LE_SET_DEFAULT_SUBRATE_COMMAND,
             Command::LeSubrateRequest { .. } => HCI_LE_SUBRATE_REQUEST_COMMAND,
-            Command::LeCsReadLocalSupportedCapabilities => HCI_LE_CS_READ_LOCAL_SUPPORTED_CAPABILITIES_COMMAND,
-            Command::LeCsReadRemoteSupportedCapabilities { .. } => HCI_LE_CS_READ_REMOTE_SUPPORTED_CAPABILITIES_COMMAND,
-            Command::LeCsWriteCachedRemoteSupportedCapabilities { .. } => HCI_LE_CS_WRITE_CACHED_REMOTE_SUPPORTED_CAPABILITIES_COMMAND,
+            Command::LeCsReadLocalSupportedCapabilities => {
+                HCI_LE_CS_READ_LOCAL_SUPPORTED_CAPABILITIES_COMMAND
+            }
+            Command::LeCsReadRemoteSupportedCapabilities { .. } => {
+                HCI_LE_CS_READ_REMOTE_SUPPORTED_CAPABILITIES_COMMAND
+            }
+            Command::LeCsWriteCachedRemoteSupportedCapabilities { .. } => {
+                HCI_LE_CS_WRITE_CACHED_REMOTE_SUPPORTED_CAPABILITIES_COMMAND
+            }
             Command::LeCsSecurityEnable { .. } => HCI_LE_CS_SECURITY_ENABLE_COMMAND,
             Command::LeCsSetDefaultSettings { .. } => HCI_LE_CS_SET_DEFAULT_SETTINGS_COMMAND,
             Command::LeCsReadRemoteFaeTable { .. } => HCI_LE_CS_READ_REMOTE_FAE_TABLE_COMMAND,
-            Command::LeCsWriteCachedRemoteFaeTable { .. } => HCI_LE_CS_WRITE_CACHED_REMOTE_FAE_TABLE_COMMAND,
+            Command::LeCsWriteCachedRemoteFaeTable { .. } => {
+                HCI_LE_CS_WRITE_CACHED_REMOTE_FAE_TABLE_COMMAND
+            }
             Command::LeCsCreateConfig { .. } => HCI_LE_CS_CREATE_CONFIG_COMMAND,
             Command::LeCsRemoveConfig { .. } => HCI_LE_CS_REMOVE_CONFIG_COMMAND,
-            Command::LeCsSetChannelClassification { .. } => HCI_LE_CS_SET_CHANNEL_CLASSIFICATION_COMMAND,
-            Command::LeCsSetProcedureParameters { .. } => HCI_LE_CS_SET_PROCEDURE_PARAMETERS_COMMAND,
+            Command::LeCsSetChannelClassification { .. } => {
+                HCI_LE_CS_SET_CHANNEL_CLASSIFICATION_COMMAND
+            }
+            Command::LeCsSetProcedureParameters { .. } => {
+                HCI_LE_CS_SET_PROCEDURE_PARAMETERS_COMMAND
+            }
             Command::LeCsProcedureEnable { .. } => HCI_LE_CS_PROCEDURE_ENABLE_COMMAND,
             Command::LeCsTest { .. } => HCI_LE_CS_TEST_COMMAND,
             Command::LeCsTestEnd => HCI_LE_CS_TEST_END_COMMAND,
             Command::LeFrameSpaceUpdate { .. } => HCI_LE_FRAME_SPACE_UPDATE_COMMAND,
             Command::LeConnectionRateRequest { .. } => HCI_LE_CONNECTION_RATE_REQUEST_COMMAND,
-            Command::LeSetDefaultRateParameters { .. } => HCI_LE_SET_DEFAULT_RATE_PARAMETERS_COMMAND,
-            Command::LeReadMinimumSupportedConnectionInterval => HCI_LE_READ_MINIMUM_SUPPORTED_CONNECTION_INTERVAL_COMMAND,
+            Command::LeSetDefaultRateParameters { .. } => {
+                HCI_LE_SET_DEFAULT_RATE_PARAMETERS_COMMAND
+            }
+            Command::LeReadMinimumSupportedConnectionInterval => {
+                HCI_LE_READ_MINIMUM_SUPPORTED_CONNECTION_INTERVAL_COMMAND
+            }
             Command::LeSetExtendedScanParameters { .. } => {
                 HCI_LE_SET_EXTENDED_SCAN_PARAMETERS_COMMAND
             }
@@ -1177,52 +1307,52 @@ impl Command {
     pub fn parameters(&self) -> Vec<u8> {
         let mut p = Vec::new();
         match self {
-            Command::InquiryCancel 
-            | Command::StartSynchronizationTrain 
-            | Command::Reset 
-            | Command::ReadLocalName 
-            | Command::ReadPageScanActivity 
-            | Command::ReadAuthenticationEnable 
-            | Command::ReadClassOfDevice 
-            | Command::ReadVoiceSetting 
-            | Command::ReadSynchronousFlowControlEnable 
-            | Command::ReadNumberOfSupportedIac 
-            | Command::ReadCurrentIacLap 
-            | Command::ReadPageScanType 
-            | Command::ReadLocalOobData 
-            | Command::ReadInquiryResponseTransmitPowerLevel 
-            | Command::ReadDefaultErroneousDataReporting 
-            | Command::ReadLeHostSupport 
-            | Command::ReadLocalOobExtendedData 
-            | Command::ReadLocalVersionInformation 
-            | Command::ReadLocalSupportedCommands 
-            | Command::ReadLocalSupportedFeatures 
-            | Command::ReadBufferSize 
-            | Command::ReadBdAddr 
-            | Command::ReadLocalSupportedCodecs 
-            | Command::ReadLocalSupportedCodecsV2 
-            | Command::ReadLoopbackMode 
-            | Command::LeReadBufferSize 
-            | Command::LeReadLocalSupportedFeatures 
-            | Command::LeReadAdvertisingPhysicalChannelTxPower 
-            | Command::LeCreateConnectionCancel 
-            | Command::LeReadFilterAcceptListSize 
-            | Command::LeClearFilterAcceptList 
-            | Command::LeRand 
-            | Command::LeReadSupportedStates 
-            | Command::LeReadSuggestedDefaultDataLength 
-            | Command::LeReadLocalP256PublicKey 
-            | Command::LeClearResolvingList 
-            | Command::LeReadResolvingListSize 
-            | Command::LeReadMaximumDataLength 
-            | Command::LeReadMaximumAdvertisingDataLength 
-            | Command::LeReadNumberOfSupportedAdvertisingSets 
-            | Command::LeClearAdvertisingSets 
-            | Command::LePeriodicAdvertisingCreateSyncCancel 
-            | Command::LeReadTransmitPower 
-            | Command::LeReadBufferSizeV2 
-            | Command::LeCsReadLocalSupportedCapabilities 
-            | Command::LeCsTestEnd 
+            Command::InquiryCancel
+            | Command::StartSynchronizationTrain
+            | Command::Reset
+            | Command::ReadLocalName
+            | Command::ReadPageScanActivity
+            | Command::ReadAuthenticationEnable
+            | Command::ReadClassOfDevice
+            | Command::ReadVoiceSetting
+            | Command::ReadSynchronousFlowControlEnable
+            | Command::ReadNumberOfSupportedIac
+            | Command::ReadCurrentIacLap
+            | Command::ReadPageScanType
+            | Command::ReadLocalOobData
+            | Command::ReadInquiryResponseTransmitPowerLevel
+            | Command::ReadDefaultErroneousDataReporting
+            | Command::ReadLeHostSupport
+            | Command::ReadLocalOobExtendedData
+            | Command::ReadLocalVersionInformation
+            | Command::ReadLocalSupportedCommands
+            | Command::ReadLocalSupportedFeatures
+            | Command::ReadBufferSize
+            | Command::ReadBdAddr
+            | Command::ReadLocalSupportedCodecs
+            | Command::ReadLocalSupportedCodecsV2
+            | Command::ReadLoopbackMode
+            | Command::LeReadBufferSize
+            | Command::LeReadLocalSupportedFeatures
+            | Command::LeReadAdvertisingPhysicalChannelTxPower
+            | Command::LeCreateConnectionCancel
+            | Command::LeReadFilterAcceptListSize
+            | Command::LeClearFilterAcceptList
+            | Command::LeRand
+            | Command::LeReadSupportedStates
+            | Command::LeReadSuggestedDefaultDataLength
+            | Command::LeReadLocalP256PublicKey
+            | Command::LeClearResolvingList
+            | Command::LeReadResolvingListSize
+            | Command::LeReadMaximumDataLength
+            | Command::LeReadMaximumAdvertisingDataLength
+            | Command::LeReadNumberOfSupportedAdvertisingSets
+            | Command::LeClearAdvertisingSets
+            | Command::LePeriodicAdvertisingCreateSyncCancel
+            | Command::LeReadTransmitPower
+            | Command::LeReadBufferSizeV2
+            | Command::LeCsReadLocalSupportedCapabilities
+            | Command::LeCsTestEnd
             | Command::LeReadMinimumSupportedConnectionInterval => {}
             Command::Inquiry {
                 lap,
@@ -1255,35 +1385,22 @@ impl Command {
                 push_u16(&mut p, *connection_handle);
                 p.push(*reason);
             }
-            Command::CreateConnectionCancel {
-                bd_addr,
-            } => {
+            Command::CreateConnectionCancel { bd_addr } => {
                 p.extend_from_slice(bd_addr.address_bytes());
             }
-            Command::AcceptConnectionRequest {
-                bd_addr,
-                role,
-            } => {
+            Command::AcceptConnectionRequest { bd_addr, role } => {
                 p.extend_from_slice(bd_addr.address_bytes());
                 p.push(*role);
             }
-            Command::RejectConnectionRequest {
-                bd_addr,
-                reason,
-            } => {
+            Command::RejectConnectionRequest { bd_addr, reason } => {
                 p.extend_from_slice(bd_addr.address_bytes());
                 p.push(*reason);
             }
-            Command::LinkKeyRequestReply {
-                bd_addr,
-                link_key,
-            } => {
+            Command::LinkKeyRequestReply { bd_addr, link_key } => {
                 p.extend_from_slice(bd_addr.address_bytes());
                 p.extend_from_slice(link_key);
             }
-            Command::LinkKeyRequestNegativeReply {
-                bd_addr,
-            } => {
+            Command::LinkKeyRequestNegativeReply { bd_addr } => {
                 p.extend_from_slice(bd_addr.address_bytes());
             }
             Command::PinCodeRequestReply {
@@ -1295,9 +1412,7 @@ impl Command {
                 p.push(*pin_code_length);
                 p.extend_from_slice(pin_code);
             }
-            Command::PinCodeRequestNegativeReply {
-                bd_addr,
-            } => {
+            Command::PinCodeRequestNegativeReply { bd_addr } => {
                 p.extend_from_slice(bd_addr.address_bytes());
             }
             Command::ChangeConnectionPacketType {
@@ -1307,9 +1422,7 @@ impl Command {
                 push_u16(&mut p, *connection_handle);
                 push_u16(&mut p, *packet_type);
             }
-            Command::AuthenticationRequested {
-                connection_handle,
-            } => {
+            Command::AuthenticationRequested { connection_handle } => {
                 push_u16(&mut p, *connection_handle);
             }
             Command::SetConnectionEncryption {
@@ -1330,9 +1443,7 @@ impl Command {
                 p.push(*reserved);
                 push_u16(&mut p, *clock_offset);
             }
-            Command::ReadRemoteSupportedFeatures {
-                connection_handle,
-            } => {
+            Command::ReadRemoteSupportedFeatures { connection_handle } => {
                 push_u16(&mut p, *connection_handle);
             }
             Command::ReadRemoteExtendedFeatures {
@@ -1342,14 +1453,10 @@ impl Command {
                 push_u16(&mut p, *connection_handle);
                 p.push(*page_number);
             }
-            Command::ReadRemoteVersionInformation {
-                connection_handle,
-            } => {
+            Command::ReadRemoteVersionInformation { connection_handle } => {
                 push_u16(&mut p, *connection_handle);
             }
-            Command::ReadClockOffset {
-                connection_handle,
-            } => {
+            Command::ReadClockOffset { connection_handle } => {
                 push_u16(&mut p, *connection_handle);
             }
             Command::AcceptSynchronousConnectionRequest {
@@ -1369,10 +1476,7 @@ impl Command {
                 p.push(*retransmission_effort);
                 push_u16(&mut p, *packet_type);
             }
-            Command::RejectSynchronousConnectionRequest {
-                bd_addr,
-                reason,
-            } => {
+            Command::RejectSynchronousConnectionRequest { bd_addr, reason } => {
                 p.extend_from_slice(bd_addr.address_bytes());
                 p.push(*reason);
             }
@@ -1387,14 +1491,10 @@ impl Command {
                 p.push(*oob_data_present);
                 p.push(*authentication_requirements);
             }
-            Command::UserConfirmationRequestReply {
-                bd_addr,
-            } => {
+            Command::UserConfirmationRequestReply { bd_addr } => {
                 p.extend_from_slice(bd_addr.address_bytes());
             }
-            Command::UserConfirmationRequestNegativeReply {
-                bd_addr,
-            } => {
+            Command::UserConfirmationRequestNegativeReply { bd_addr } => {
                 p.extend_from_slice(bd_addr.address_bytes());
             }
             Command::UserPasskeyRequestReply {
@@ -1404,29 +1504,18 @@ impl Command {
                 p.extend_from_slice(bd_addr.address_bytes());
                 p.extend_from_slice(&numeric_value.to_le_bytes());
             }
-            Command::UserPasskeyRequestNegativeReply {
-                bd_addr,
-            } => {
+            Command::UserPasskeyRequestNegativeReply { bd_addr } => {
                 p.extend_from_slice(bd_addr.address_bytes());
             }
-            Command::RemoteOobDataRequestReply {
-                bd_addr,
-                c,
-                r,
-            } => {
+            Command::RemoteOobDataRequestReply { bd_addr, c, r } => {
                 p.extend_from_slice(bd_addr.address_bytes());
                 p.extend_from_slice(c);
                 p.extend_from_slice(r);
             }
-            Command::RemoteOobDataRequestNegativeReply {
-                bd_addr,
-            } => {
+            Command::RemoteOobDataRequestNegativeReply { bd_addr } => {
                 p.extend_from_slice(bd_addr.address_bytes());
             }
-            Command::IoCapabilityRequestNegativeReply {
-                bd_addr,
-                reason,
-            } => {
+            Command::IoCapabilityRequestNegativeReply { bd_addr, reason } => {
                 p.extend_from_slice(bd_addr.address_bytes());
                 p.push(*reason);
             }
@@ -1541,9 +1630,7 @@ impl Command {
                 p.push(*page_scan_repetition_mode);
                 push_u16(&mut p, *clock_offset);
             }
-            Command::TruncatedPageCancel {
-                bd_addr,
-            } => {
+            Command::TruncatedPageCancel { bd_addr } => {
                 p.extend_from_slice(bd_addr.address_bytes());
             }
             Command::SetConnectionlessPeripheralBroadcast {
@@ -1625,15 +1712,10 @@ impl Command {
                 push_u16(&mut p, *sniff_attempt);
                 push_u16(&mut p, *sniff_timeout);
             }
-            Command::ExitSniffMode {
-                connection_handle,
-            } => {
+            Command::ExitSniffMode { connection_handle } => {
                 push_u16(&mut p, *connection_handle);
             }
-            Command::SwitchRole {
-                bd_addr,
-                role,
-            } => {
+            Command::SwitchRole { bd_addr, role } => {
                 p.extend_from_slice(bd_addr.address_bytes());
                 p.push(*role);
             }
@@ -1660,9 +1742,7 @@ impl Command {
                 push_u16(&mut p, *minimum_remote_timeout);
                 push_u16(&mut p, *minimum_local_timeout);
             }
-            Command::SetEventMask {
-                event_mask,
-            } => {
+            Command::SetEventMask { event_mask } => {
                 p.extend_from_slice(event_mask);
             }
             Command::SetEventFilter {
@@ -1686,9 +1766,7 @@ impl Command {
                 p.extend_from_slice(bd_addr.address_bytes());
                 p.push(*delete_all_flag);
             }
-            Command::WriteLocalName {
-                local_name,
-            } => {
+            Command::WriteLocalName { local_name } => {
                 p.extend_from_slice(local_name);
             }
             Command::WriteConnectionAcceptTimeout {
@@ -1696,14 +1774,10 @@ impl Command {
             } => {
                 push_u16(&mut p, *connection_accept_timeout);
             }
-            Command::WritePageTimeout {
-                page_timeout,
-            } => {
+            Command::WritePageTimeout { page_timeout } => {
                 push_u16(&mut p, *page_timeout);
             }
-            Command::WriteScanEnable {
-                scan_enable,
-            } => {
+            Command::WriteScanEnable { scan_enable } => {
                 p.push(*scan_enable);
             }
             Command::WritePageScanActivity {
@@ -1725,14 +1799,10 @@ impl Command {
             } => {
                 p.push(*authentication_enable);
             }
-            Command::WriteClassOfDevice {
-                class_of_device,
-            } => {
+            Command::WriteClassOfDevice { class_of_device } => {
                 push_u24(&mut p, *class_of_device);
             }
-            Command::WriteVoiceSetting {
-                voice_setting,
-            } => {
+            Command::WriteVoiceSetting { voice_setting } => {
                 push_u16(&mut p, *voice_setting);
             }
             Command::WriteSynchronousFlowControlEnable {
@@ -1763,19 +1833,13 @@ impl Command {
                 push_u16(&mut p, *handle);
                 push_u16(&mut p, *link_supervision_timeout);
             }
-            Command::WriteInquiryScanType {
-                scan_type,
-            } => {
+            Command::WriteInquiryScanType { scan_type } => {
                 p.push(*scan_type);
             }
-            Command::WriteInquiryMode {
-                inquiry_mode,
-            } => {
+            Command::WriteInquiryMode { inquiry_mode } => {
                 p.push(*inquiry_mode);
             }
-            Command::WritePageScanType {
-                page_scan_type,
-            } => {
+            Command::WritePageScanType { page_scan_type } => {
                 p.push(*page_scan_type);
             }
             Command::WriteExtendedInquiryResponse {
@@ -1790,9 +1854,7 @@ impl Command {
             } => {
                 p.push(*simple_pairing_mode);
             }
-            Command::SetEventMaskPage2 {
-                event_mask_page_2,
-            } => {
+            Command::SetEventMaskPage2 { event_mask_page_2 } => {
                 p.extend_from_slice(event_mask_page_2);
             }
             Command::WriteLeHostSupport {
@@ -1823,34 +1885,22 @@ impl Command {
                 p.push(*data_path_id);
                 p.extend_from_slice(vendor_specific_config);
             }
-            Command::ReadLocalExtendedFeatures {
-                page_number,
-            } => {
+            Command::ReadLocalExtendedFeatures { page_number } => {
                 p.push(*page_number);
             }
-            Command::ReadRssi {
-                handle,
-            } => {
+            Command::ReadRssi { handle } => {
                 push_u16(&mut p, *handle);
             }
-            Command::ReadEncryptionKeySize {
-                connection_handle,
-            } => {
+            Command::ReadEncryptionKeySize { connection_handle } => {
                 push_u16(&mut p, *connection_handle);
             }
-            Command::WriteLoopbackMode {
-                loopback_mode,
-            } => {
+            Command::WriteLoopbackMode { loopback_mode } => {
                 p.push(*loopback_mode);
             }
-            Command::LeSetEventMask {
-                le_event_mask,
-            } => {
+            Command::LeSetEventMask { le_event_mask } => {
                 p.extend_from_slice(le_event_mask);
             }
-            Command::LeSetRandomAddress {
-                random_address,
-            } => {
+            Command::LeSetRandomAddress { random_address } => {
                 p.extend_from_slice(random_address.address_bytes());
             }
             Command::LeSetAdvertisingParameters {
@@ -1872,23 +1922,17 @@ impl Command {
                 p.push(*advertising_channel_map);
                 p.push(*advertising_filter_policy);
             }
-            Command::LeSetAdvertisingData {
-                advertising_data,
-            } => {
+            Command::LeSetAdvertisingData { advertising_data } => {
                 p.push(advertising_data.len() as u8);
                 p.extend_from_slice(advertising_data);
                 p.resize(1 + 31, 0);
             }
-            Command::LeSetScanResponseData {
-                scan_response_data,
-            } => {
+            Command::LeSetScanResponseData { scan_response_data } => {
                 p.push(scan_response_data.len() as u8);
                 p.extend_from_slice(scan_response_data);
                 p.resize(1 + 31, 0);
             }
-            Command::LeSetAdvertisingEnable {
-                advertising_enable,
-            } => {
+            Command::LeSetAdvertisingEnable { advertising_enable } => {
                 p.push(*advertising_enable);
             }
             Command::LeSetScanParameters {
@@ -1969,9 +2013,7 @@ impl Command {
                 push_u16(&mut p, *min_ce_length);
                 push_u16(&mut p, *max_ce_length);
             }
-            Command::LeReadRemoteFeatures {
-                connection_handle,
-            } => {
+            Command::LeReadRemoteFeatures { connection_handle } => {
                 push_u16(&mut p, *connection_handle);
             }
             Command::LeEnableEncryption {
@@ -1992,9 +2034,7 @@ impl Command {
                 push_u16(&mut p, *connection_handle);
                 p.extend_from_slice(long_term_key);
             }
-            Command::LeLongTermKeyRequestNegativeReply {
-                connection_handle,
-            } => {
+            Command::LeLongTermKeyRequestNegativeReply { connection_handle } => {
                 push_u16(&mut p, *connection_handle);
             }
             Command::LeRemoteConnectionParameterRequestReply {
@@ -2053,14 +2093,10 @@ impl Command {
             } => {
                 p.push(*address_resolution_enable);
             }
-            Command::LeSetResolvablePrivateAddressTimeout {
-                rpa_timeout,
-            } => {
+            Command::LeSetResolvablePrivateAddressTimeout { rpa_timeout } => {
                 push_u16(&mut p, *rpa_timeout);
             }
-            Command::LeReadPhy {
-                connection_handle,
-            } => {
+            Command::LeReadPhy { connection_handle } => {
                 push_u16(&mut p, *connection_handle);
             }
             Command::LeSetDefaultPhy {
@@ -2163,9 +2199,7 @@ impl Command {
                     p.push(max_extended_advertising_events[i]);
                 }
             }
-            Command::LeRemoveAdvertisingSet {
-                advertising_handle,
-            } => {
+            Command::LeRemoveAdvertisingSet { advertising_handle } => {
                 p.push(*advertising_handle);
             }
             Command::LeSetPeriodicAdvertisingParameters {
@@ -2224,9 +2258,7 @@ impl Command {
                 push_u16(&mut p, *sync_timeout);
                 p.push(*sync_cte_type);
             }
-            Command::LePeriodicAdvertisingTerminateSync {
-                sync_handle,
-            } => {
+            Command::LePeriodicAdvertisingTerminateSync { sync_handle } => {
                 push_u16(&mut p, *sync_handle);
             }
             Command::LeSetPrivacyMode {
@@ -2287,9 +2319,7 @@ impl Command {
                 push_u16(&mut p, *sync_timeout);
                 p.push(*cte_type);
             }
-            Command::LeReadIsoTxSync {
-                connection_handle,
-            } => {
+            Command::LeReadIsoTxSync { connection_handle } => {
                 push_u16(&mut p, *connection_handle);
             }
             Command::LeSetCigParameters {
@@ -2338,14 +2368,10 @@ impl Command {
                     push_u16(&mut p, acl_connection_handle[i]);
                 }
             }
-            Command::LeRemoveCig {
-                cig_id,
-            } => {
+            Command::LeRemoveCig { cig_id } => {
                 p.push(*cig_id);
             }
-            Command::LeAcceptCisRequest {
-                connection_handle,
-            } => {
+            Command::LeAcceptCisRequest { connection_handle } => {
                 push_u16(&mut p, *connection_handle);
             }
             Command::LeRejectCisRequest {
@@ -2382,10 +2408,7 @@ impl Command {
                 p.push(*encryption);
                 p.extend_from_slice(broadcast_code);
             }
-            Command::LeTerminateBig {
-                big_handle,
-                reason,
-            } => {
+            Command::LeTerminateBig { big_handle, reason } => {
                 p.push(*big_handle);
                 p.push(*reason);
             }
@@ -2409,9 +2432,7 @@ impl Command {
                     p.push(bis[i]);
                 }
             }
-            Command::LeBigTerminateSync {
-                big_handle,
-            } => {
+            Command::LeBigTerminateSync { big_handle } => {
                 p.push(*big_handle);
             }
             Command::LeSetupIsoDataPath {
@@ -2472,9 +2493,7 @@ impl Command {
                 push_u16(&mut p, *continuation_number);
                 push_u16(&mut p, *supervision_timeout);
             }
-            Command::LeCsReadRemoteSupportedCapabilities {
-                connection_handle,
-            } => {
+            Command::LeCsReadRemoteSupportedCapabilities { connection_handle } => {
                 push_u16(&mut p, *connection_handle);
             }
             Command::LeCsWriteCachedRemoteSupportedCapabilities {
@@ -2522,9 +2541,7 @@ impl Command {
                 p.push(*t_sw_time_supported);
                 p.push(*tx_snr_capability);
             }
-            Command::LeCsSecurityEnable {
-                connection_handle,
-            } => {
+            Command::LeCsSecurityEnable { connection_handle } => {
                 push_u16(&mut p, *connection_handle);
             }
             Command::LeCsSetDefaultSettings {
@@ -2538,9 +2555,7 @@ impl Command {
                 p.push(*cs_sync_antenna_selection);
                 p.push(*max_tx_power);
             }
-            Command::LeCsReadRemoteFaeTable {
-                connection_handle,
-            } => {
+            Command::LeCsReadRemoteFaeTable { connection_handle } => {
                 push_u16(&mut p, *connection_handle);
             }
             Command::LeCsWriteCachedRemoteFaeTable {
@@ -2879,39 +2894,26 @@ impl Command {
             }
             HCI_CREATE_CONNECTION_CANCEL_COMMAND => {
                 let bd_addr = addr(&mut r)?;
-                Command::CreateConnectionCancel {
-                    bd_addr,
-                }
+                Command::CreateConnectionCancel { bd_addr }
             }
             HCI_ACCEPT_CONNECTION_REQUEST_COMMAND => {
                 let bd_addr = addr(&mut r)?;
                 let role = r.u8()?;
-                Command::AcceptConnectionRequest {
-                    bd_addr,
-                    role,
-                }
+                Command::AcceptConnectionRequest { bd_addr, role }
             }
             HCI_REJECT_CONNECTION_REQUEST_COMMAND => {
                 let bd_addr = addr(&mut r)?;
                 let reason = r.u8()?;
-                Command::RejectConnectionRequest {
-                    bd_addr,
-                    reason,
-                }
+                Command::RejectConnectionRequest { bd_addr, reason }
             }
             HCI_LINK_KEY_REQUEST_REPLY_COMMAND => {
                 let bd_addr = addr(&mut r)?;
                 let link_key = r.array::<16>()?;
-                Command::LinkKeyRequestReply {
-                    bd_addr,
-                    link_key,
-                }
+                Command::LinkKeyRequestReply { bd_addr, link_key }
             }
             HCI_LINK_KEY_REQUEST_NEGATIVE_REPLY_COMMAND => {
                 let bd_addr = addr(&mut r)?;
-                Command::LinkKeyRequestNegativeReply {
-                    bd_addr,
-                }
+                Command::LinkKeyRequestNegativeReply { bd_addr }
             }
             HCI_PIN_CODE_REQUEST_REPLY_COMMAND => {
                 let bd_addr = addr(&mut r)?;
@@ -2925,9 +2927,7 @@ impl Command {
             }
             HCI_PIN_CODE_REQUEST_NEGATIVE_REPLY_COMMAND => {
                 let bd_addr = addr(&mut r)?;
-                Command::PinCodeRequestNegativeReply {
-                    bd_addr,
-                }
+                Command::PinCodeRequestNegativeReply { bd_addr }
             }
             HCI_CHANGE_CONNECTION_PACKET_TYPE_COMMAND => {
                 let connection_handle = r.u16_le()?;
@@ -2939,9 +2939,7 @@ impl Command {
             }
             HCI_AUTHENTICATION_REQUESTED_COMMAND => {
                 let connection_handle = r.u16_le()?;
-                Command::AuthenticationRequested {
-                    connection_handle,
-                }
+                Command::AuthenticationRequested { connection_handle }
             }
             HCI_SET_CONNECTION_ENCRYPTION_COMMAND => {
                 let connection_handle = r.u16_le()?;
@@ -2965,9 +2963,7 @@ impl Command {
             }
             HCI_READ_REMOTE_SUPPORTED_FEATURES_COMMAND => {
                 let connection_handle = r.u16_le()?;
-                Command::ReadRemoteSupportedFeatures {
-                    connection_handle,
-                }
+                Command::ReadRemoteSupportedFeatures { connection_handle }
             }
             HCI_READ_REMOTE_EXTENDED_FEATURES_COMMAND => {
                 let connection_handle = r.u16_le()?;
@@ -2979,15 +2975,11 @@ impl Command {
             }
             HCI_READ_REMOTE_VERSION_INFORMATION_COMMAND => {
                 let connection_handle = r.u16_le()?;
-                Command::ReadRemoteVersionInformation {
-                    connection_handle,
-                }
+                Command::ReadRemoteVersionInformation { connection_handle }
             }
             HCI_READ_CLOCK_OFFSET_COMMAND => {
                 let connection_handle = r.u16_le()?;
-                Command::ReadClockOffset {
-                    connection_handle,
-                }
+                Command::ReadClockOffset { connection_handle }
             }
             HCI_ACCEPT_SYNCHRONOUS_CONNECTION_REQUEST_COMMAND => {
                 let bd_addr = addr(&mut r)?;
@@ -3010,10 +3002,7 @@ impl Command {
             HCI_REJECT_SYNCHRONOUS_CONNECTION_REQUEST_COMMAND => {
                 let bd_addr = addr(&mut r)?;
                 let reason = r.u8()?;
-                Command::RejectSynchronousConnectionRequest {
-                    bd_addr,
-                    reason,
-                }
+                Command::RejectSynchronousConnectionRequest { bd_addr, reason }
             }
             HCI_IO_CAPABILITY_REQUEST_REPLY_COMMAND => {
                 let bd_addr = addr(&mut r)?;
@@ -3029,15 +3018,11 @@ impl Command {
             }
             HCI_USER_CONFIRMATION_REQUEST_REPLY_COMMAND => {
                 let bd_addr = addr(&mut r)?;
-                Command::UserConfirmationRequestReply {
-                    bd_addr,
-                }
+                Command::UserConfirmationRequestReply { bd_addr }
             }
             HCI_USER_CONFIRMATION_REQUEST_NEGATIVE_REPLY_COMMAND => {
                 let bd_addr = addr(&mut r)?;
-                Command::UserConfirmationRequestNegativeReply {
-                    bd_addr,
-                }
+                Command::UserConfirmationRequestNegativeReply { bd_addr }
             }
             HCI_USER_PASSKEY_REQUEST_REPLY_COMMAND => {
                 let bd_addr = addr(&mut r)?;
@@ -3049,33 +3034,22 @@ impl Command {
             }
             HCI_USER_PASSKEY_REQUEST_NEGATIVE_REPLY_COMMAND => {
                 let bd_addr = addr(&mut r)?;
-                Command::UserPasskeyRequestNegativeReply {
-                    bd_addr,
-                }
+                Command::UserPasskeyRequestNegativeReply { bd_addr }
             }
             HCI_REMOTE_OOB_DATA_REQUEST_REPLY_COMMAND => {
                 let bd_addr = addr(&mut r)?;
                 let c = r.array::<16>()?;
                 let r = r.array::<16>()?;
-                Command::RemoteOobDataRequestReply {
-                    bd_addr,
-                    c,
-                    r,
-                }
+                Command::RemoteOobDataRequestReply { bd_addr, c, r }
             }
             HCI_REMOTE_OOB_DATA_REQUEST_NEGATIVE_REPLY_COMMAND => {
                 let bd_addr = addr(&mut r)?;
-                Command::RemoteOobDataRequestNegativeReply {
-                    bd_addr,
-                }
+                Command::RemoteOobDataRequestNegativeReply { bd_addr }
             }
             HCI_IO_CAPABILITY_REQUEST_NEGATIVE_REPLY_COMMAND => {
                 let bd_addr = addr(&mut r)?;
                 let reason = r.u8()?;
-                Command::IoCapabilityRequestNegativeReply {
-                    bd_addr,
-                    reason,
-                }
+                Command::IoCapabilityRequestNegativeReply { bd_addr, reason }
             }
             HCI_ENHANCED_SETUP_SYNCHRONOUS_CONNECTION_COMMAND => {
                 let connection_handle = r.u16_le()?;
@@ -3193,9 +3167,7 @@ impl Command {
             }
             HCI_TRUNCATED_PAGE_CANCEL_COMMAND => {
                 let bd_addr = addr(&mut r)?;
-                Command::TruncatedPageCancel {
-                    bd_addr,
-                }
+                Command::TruncatedPageCancel { bd_addr }
             }
             HCI_SET_CONNECTIONLESS_PERIPHERAL_BROADCAST_COMMAND => {
                 let enable = r.u8()?;
@@ -3284,17 +3256,12 @@ impl Command {
             }
             HCI_EXIT_SNIFF_MODE_COMMAND => {
                 let connection_handle = r.u16_le()?;
-                Command::ExitSniffMode {
-                    connection_handle,
-                }
+                Command::ExitSniffMode { connection_handle }
             }
             HCI_SWITCH_ROLE_COMMAND => {
                 let bd_addr = addr(&mut r)?;
                 let role = r.u8()?;
-                Command::SwitchRole {
-                    bd_addr,
-                    role,
-                }
+                Command::SwitchRole { bd_addr, role }
             }
             HCI_WRITE_LINK_POLICY_SETTINGS_COMMAND => {
                 let connection_handle = r.u16_le()?;
@@ -3324,9 +3291,7 @@ impl Command {
             }
             HCI_SET_EVENT_MASK_COMMAND => {
                 let event_mask = r.array::<8>()?;
-                Command::SetEventMask {
-                    event_mask,
-                }
+                Command::SetEventMask { event_mask }
             }
             HCI_RESET_COMMAND => Command::Reset,
             HCI_SET_EVENT_FILTER_COMMAND => {
@@ -3355,9 +3320,7 @@ impl Command {
             }
             HCI_WRITE_LOCAL_NAME_COMMAND => {
                 let local_name = r.array::<248>()?;
-                Command::WriteLocalName {
-                    local_name,
-                }
+                Command::WriteLocalName { local_name }
             }
             HCI_READ_LOCAL_NAME_COMMAND => Command::ReadLocalName,
             HCI_WRITE_CONNECTION_ACCEPT_TIMEOUT_COMMAND => {
@@ -3368,15 +3331,11 @@ impl Command {
             }
             HCI_WRITE_PAGE_TIMEOUT_COMMAND => {
                 let page_timeout = r.u16_le()?;
-                Command::WritePageTimeout {
-                    page_timeout,
-                }
+                Command::WritePageTimeout { page_timeout }
             }
             HCI_WRITE_SCAN_ENABLE_COMMAND => {
                 let scan_enable = r.u8()?;
-                Command::WriteScanEnable {
-                    scan_enable,
-                }
+                Command::WriteScanEnable { scan_enable }
             }
             HCI_READ_PAGE_SCAN_ACTIVITY_COMMAND => Command::ReadPageScanActivity,
             HCI_WRITE_PAGE_SCAN_ACTIVITY_COMMAND => {
@@ -3405,18 +3364,16 @@ impl Command {
             HCI_READ_CLASS_OF_DEVICE_COMMAND => Command::ReadClassOfDevice,
             HCI_WRITE_CLASS_OF_DEVICE_COMMAND => {
                 let class_of_device = r.u24_le()?;
-                Command::WriteClassOfDevice {
-                    class_of_device,
-                }
+                Command::WriteClassOfDevice { class_of_device }
             }
             HCI_READ_VOICE_SETTING_COMMAND => Command::ReadVoiceSetting,
             HCI_WRITE_VOICE_SETTING_COMMAND => {
                 let voice_setting = r.u16_le()?;
-                Command::WriteVoiceSetting {
-                    voice_setting,
-                }
+                Command::WriteVoiceSetting { voice_setting }
             }
-            HCI_READ_SYNCHRONOUS_FLOW_CONTROL_ENABLE_COMMAND => Command::ReadSynchronousFlowControlEnable,
+            HCI_READ_SYNCHRONOUS_FLOW_CONTROL_ENABLE_COMMAND => {
+                Command::ReadSynchronousFlowControlEnable
+            }
             HCI_WRITE_SYNCHRONOUS_FLOW_CONTROL_ENABLE_COMMAND => {
                 let synchronous_flow_control_enable = r.u8()?;
                 Command::WriteSynchronousFlowControlEnable {
@@ -3453,22 +3410,16 @@ impl Command {
             HCI_READ_CURRENT_IAC_LAP_COMMAND => Command::ReadCurrentIacLap,
             HCI_WRITE_INQUIRY_SCAN_TYPE_COMMAND => {
                 let scan_type = r.u8()?;
-                Command::WriteInquiryScanType {
-                    scan_type,
-                }
+                Command::WriteInquiryScanType { scan_type }
             }
             HCI_WRITE_INQUIRY_MODE_COMMAND => {
                 let inquiry_mode = r.u8()?;
-                Command::WriteInquiryMode {
-                    inquiry_mode,
-                }
+                Command::WriteInquiryMode { inquiry_mode }
             }
             HCI_READ_PAGE_SCAN_TYPE_COMMAND => Command::ReadPageScanType,
             HCI_WRITE_PAGE_SCAN_TYPE_COMMAND => {
                 let page_scan_type = r.u8()?;
-                Command::WritePageScanType {
-                    page_scan_type,
-                }
+                Command::WritePageScanType { page_scan_type }
             }
             HCI_WRITE_EXTENDED_INQUIRY_RESPONSE_COMMAND => {
                 let fec_required = r.u8()?;
@@ -3485,13 +3436,15 @@ impl Command {
                 }
             }
             HCI_READ_LOCAL_OOB_DATA_COMMAND => Command::ReadLocalOobData,
-            HCI_READ_INQUIRY_RESPONSE_TRANSMIT_POWER_LEVEL_COMMAND => Command::ReadInquiryResponseTransmitPowerLevel,
-            HCI_READ_DEFAULT_ERRONEOUS_DATA_REPORTING_COMMAND => Command::ReadDefaultErroneousDataReporting,
+            HCI_READ_INQUIRY_RESPONSE_TRANSMIT_POWER_LEVEL_COMMAND => {
+                Command::ReadInquiryResponseTransmitPowerLevel
+            }
+            HCI_READ_DEFAULT_ERRONEOUS_DATA_REPORTING_COMMAND => {
+                Command::ReadDefaultErroneousDataReporting
+            }
             HCI_SET_EVENT_MASK_PAGE_2_COMMAND => {
                 let event_mask_page_2 = r.array::<8>()?;
-                Command::SetEventMaskPage2 {
-                    event_mask_page_2,
-                }
+                Command::SetEventMaskPage2 { event_mask_page_2 }
             }
             HCI_READ_LE_HOST_SUPPORT_COMMAND => Command::ReadLeHostSupport,
             HCI_WRITE_LE_HOST_SUPPORT_COMMAND => {
@@ -3532,9 +3485,7 @@ impl Command {
             HCI_READ_LOCAL_SUPPORTED_FEATURES_COMMAND => Command::ReadLocalSupportedFeatures,
             HCI_READ_LOCAL_EXTENDED_FEATURES_COMMAND => {
                 let page_number = r.u8()?;
-                Command::ReadLocalExtendedFeatures {
-                    page_number,
-                }
+                Command::ReadLocalExtendedFeatures { page_number }
             }
             HCI_READ_BUFFER_SIZE_COMMAND => Command::ReadBufferSize,
             HCI_READ_BD_ADDR_COMMAND => Command::ReadBdAddr,
@@ -3542,36 +3493,26 @@ impl Command {
             HCI_READ_LOCAL_SUPPORTED_CODECS_V2_COMMAND => Command::ReadLocalSupportedCodecsV2,
             HCI_READ_RSSI_COMMAND => {
                 let handle = r.u16_le()?;
-                Command::ReadRssi {
-                    handle,
-                }
+                Command::ReadRssi { handle }
             }
             HCI_READ_ENCRYPTION_KEY_SIZE_COMMAND => {
                 let connection_handle = r.u16_le()?;
-                Command::ReadEncryptionKeySize {
-                    connection_handle,
-                }
+                Command::ReadEncryptionKeySize { connection_handle }
             }
             HCI_READ_LOOPBACK_MODE_COMMAND => Command::ReadLoopbackMode,
             HCI_WRITE_LOOPBACK_MODE_COMMAND => {
                 let loopback_mode = r.u8()?;
-                Command::WriteLoopbackMode {
-                    loopback_mode,
-                }
+                Command::WriteLoopbackMode { loopback_mode }
             }
             HCI_LE_SET_EVENT_MASK_COMMAND => {
                 let le_event_mask = r.array::<8>()?;
-                Command::LeSetEventMask {
-                    le_event_mask,
-                }
+                Command::LeSetEventMask { le_event_mask }
             }
             HCI_LE_READ_BUFFER_SIZE_COMMAND => Command::LeReadBufferSize,
             HCI_LE_READ_LOCAL_SUPPORTED_FEATURES_COMMAND => Command::LeReadLocalSupportedFeatures,
             HCI_LE_SET_RANDOM_ADDRESS_COMMAND => {
                 let random_address = addr(&mut r)?;
-                Command::LeSetRandomAddress {
-                    random_address,
-                }
+                Command::LeSetRandomAddress { random_address }
             }
             HCI_LE_SET_ADVERTISING_PARAMETERS_COMMAND => {
                 let advertising_interval_min = r.u16_le()?;
@@ -3593,24 +3534,28 @@ impl Command {
                     advertising_filter_policy,
                 }
             }
-            HCI_LE_READ_ADVERTISING_PHYSICAL_CHANNEL_TX_POWER_COMMAND => Command::LeReadAdvertisingPhysicalChannelTxPower,
+            HCI_LE_READ_ADVERTISING_PHYSICAL_CHANNEL_TX_POWER_COMMAND => {
+                Command::LeReadAdvertisingPhysicalChannelTxPower
+            }
             HCI_LE_SET_ADVERTISING_DATA_COMMAND => {
-                let advertising_data = { let n = r.u8()? as usize; let f = r.array::<31>()?; f[..n.min(31)].to_vec() };
-                Command::LeSetAdvertisingData {
-                    advertising_data,
-                }
+                let advertising_data = {
+                    let n = r.u8()? as usize;
+                    let f = r.array::<31>()?;
+                    f[..n.min(31)].to_vec()
+                };
+                Command::LeSetAdvertisingData { advertising_data }
             }
             HCI_LE_SET_SCAN_RESPONSE_DATA_COMMAND => {
-                let scan_response_data = { let n = r.u8()? as usize; let f = r.array::<31>()?; f[..n.min(31)].to_vec() };
-                Command::LeSetScanResponseData {
-                    scan_response_data,
-                }
+                let scan_response_data = {
+                    let n = r.u8()? as usize;
+                    let f = r.array::<31>()?;
+                    f[..n.min(31)].to_vec()
+                };
+                Command::LeSetScanResponseData { scan_response_data }
             }
             HCI_LE_SET_ADVERTISING_ENABLE_COMMAND => {
                 let advertising_enable = r.u8()?;
-                Command::LeSetAdvertisingEnable {
-                    advertising_enable,
-                }
+                Command::LeSetAdvertisingEnable { advertising_enable }
             }
             HCI_LE_SET_SCAN_PARAMETERS_COMMAND => {
                 let le_scan_type = r.u8()?;
@@ -3701,9 +3646,7 @@ impl Command {
             }
             HCI_LE_READ_REMOTE_FEATURES_COMMAND => {
                 let connection_handle = r.u16_le()?;
-                Command::LeReadRemoteFeatures {
-                    connection_handle,
-                }
+                Command::LeReadRemoteFeatures { connection_handle }
             }
             HCI_LE_RAND_COMMAND => Command::LeRand,
             HCI_LE_ENABLE_ENCRYPTION_COMMAND => {
@@ -3728,9 +3671,7 @@ impl Command {
             }
             HCI_LE_LONG_TERM_KEY_REQUEST_NEGATIVE_REPLY_COMMAND => {
                 let connection_handle = r.u16_le()?;
-                Command::LeLongTermKeyRequestNegativeReply {
-                    connection_handle,
-                }
+                Command::LeLongTermKeyRequestNegativeReply { connection_handle }
             }
             HCI_LE_READ_SUPPORTED_STATES_COMMAND => Command::LeReadSupportedStates,
             HCI_LE_REMOTE_CONNECTION_PARAMETER_REQUEST_REPLY_COMMAND => {
@@ -3769,7 +3710,9 @@ impl Command {
                     tx_time,
                 }
             }
-            HCI_LE_READ_SUGGESTED_DEFAULT_DATA_LENGTH_COMMAND => Command::LeReadSuggestedDefaultDataLength,
+            HCI_LE_READ_SUGGESTED_DEFAULT_DATA_LENGTH_COMMAND => {
+                Command::LeReadSuggestedDefaultDataLength
+            }
             HCI_LE_WRITE_SUGGESTED_DEFAULT_DATA_LENGTH_COMMAND => {
                 let suggested_max_tx_octets = r.u16_le()?;
                 let suggested_max_tx_time = r.u16_le()?;
@@ -3801,16 +3744,12 @@ impl Command {
             }
             HCI_LE_SET_RESOLVABLE_PRIVATE_ADDRESS_TIMEOUT_COMMAND => {
                 let rpa_timeout = r.u16_le()?;
-                Command::LeSetResolvablePrivateAddressTimeout {
-                    rpa_timeout,
-                }
+                Command::LeSetResolvablePrivateAddressTimeout { rpa_timeout }
             }
             HCI_LE_READ_MAXIMUM_DATA_LENGTH_COMMAND => Command::LeReadMaximumDataLength,
             HCI_LE_READ_PHY_COMMAND => {
                 let connection_handle = r.u16_le()?;
-                Command::LeReadPhy {
-                    connection_handle,
-                }
+                Command::LeReadPhy { connection_handle }
             }
             HCI_LE_SET_DEFAULT_PHY_COMMAND => {
                 let all_phys = r.u8()?;
@@ -3882,7 +3821,10 @@ impl Command {
                 let advertising_handle = r.u8()?;
                 let operation = r.u8()?;
                 let fragment_preference = r.u8()?;
-                let advertising_data = { let n = r.u8()? as usize; r.take(n)?.to_vec() };
+                let advertising_data = {
+                    let n = r.u8()? as usize;
+                    r.take(n)?.to_vec()
+                };
                 Command::LeSetExtendedAdvertisingData {
                     advertising_handle,
                     operation,
@@ -3894,7 +3836,10 @@ impl Command {
                 let advertising_handle = r.u8()?;
                 let operation = r.u8()?;
                 let fragment_preference = r.u8()?;
-                let scan_response_data = { let n = r.u8()? as usize; r.take(n)?.to_vec() };
+                let scan_response_data = {
+                    let n = r.u8()? as usize;
+                    r.take(n)?.to_vec()
+                };
                 Command::LeSetExtendedScanResponseData {
                     advertising_handle,
                     operation,
@@ -3920,13 +3865,15 @@ impl Command {
                     max_extended_advertising_events,
                 }
             }
-            HCI_LE_READ_MAXIMUM_ADVERTISING_DATA_LENGTH_COMMAND => Command::LeReadMaximumAdvertisingDataLength,
-            HCI_LE_READ_NUMBER_OF_SUPPORTED_ADVERTISING_SETS_COMMAND => Command::LeReadNumberOfSupportedAdvertisingSets,
+            HCI_LE_READ_MAXIMUM_ADVERTISING_DATA_LENGTH_COMMAND => {
+                Command::LeReadMaximumAdvertisingDataLength
+            }
+            HCI_LE_READ_NUMBER_OF_SUPPORTED_ADVERTISING_SETS_COMMAND => {
+                Command::LeReadNumberOfSupportedAdvertisingSets
+            }
             HCI_LE_REMOVE_ADVERTISING_SET_COMMAND => {
                 let advertising_handle = r.u8()?;
-                Command::LeRemoveAdvertisingSet {
-                    advertising_handle,
-                }
+                Command::LeRemoveAdvertisingSet { advertising_handle }
             }
             HCI_LE_CLEAR_ADVERTISING_SETS_COMMAND => Command::LeClearAdvertisingSets,
             HCI_LE_SET_PERIODIC_ADVERTISING_PARAMETERS_COMMAND => {
@@ -3944,7 +3891,10 @@ impl Command {
             HCI_LE_SET_PERIODIC_ADVERTISING_DATA_COMMAND => {
                 let advertising_handle = r.u8()?;
                 let operation = r.u8()?;
-                let advertising_data = { let n = r.u8()? as usize; r.take(n)?.to_vec() };
+                let advertising_data = {
+                    let n = r.u8()? as usize;
+                    r.take(n)?.to_vec()
+                };
                 Command::LeSetPeriodicAdvertisingData {
                     advertising_handle,
                     operation,
@@ -3989,12 +3939,12 @@ impl Command {
                     sync_cte_type,
                 }
             }
-            HCI_LE_PERIODIC_ADVERTISING_CREATE_SYNC_CANCEL_COMMAND => Command::LePeriodicAdvertisingCreateSyncCancel,
+            HCI_LE_PERIODIC_ADVERTISING_CREATE_SYNC_CANCEL_COMMAND => {
+                Command::LePeriodicAdvertisingCreateSyncCancel
+            }
             HCI_LE_PERIODIC_ADVERTISING_TERMINATE_SYNC_COMMAND => {
                 let sync_handle = r.u16_le()?;
-                Command::LePeriodicAdvertisingTerminateSync {
-                    sync_handle,
-                }
+                Command::LePeriodicAdvertisingTerminateSync { sync_handle }
             }
             HCI_LE_READ_TRANSMIT_POWER_COMMAND => Command::LeReadTransmitPower,
             HCI_LE_SET_PRIVACY_MODE_COMMAND => {
@@ -4064,9 +4014,7 @@ impl Command {
             HCI_LE_READ_BUFFER_SIZE_V2_COMMAND => Command::LeReadBufferSizeV2,
             HCI_LE_READ_ISO_TX_SYNC_COMMAND => {
                 let connection_handle = r.u16_le()?;
-                Command::LeReadIsoTxSync {
-                    connection_handle,
-                }
+                Command::LeReadIsoTxSync { connection_handle }
             }
             HCI_LE_SET_CIG_PARAMETERS_COMMAND => {
                 let cig_id = r.u8()?;
@@ -4127,15 +4075,11 @@ impl Command {
             }
             HCI_LE_REMOVE_CIG_COMMAND => {
                 let cig_id = r.u8()?;
-                Command::LeRemoveCig {
-                    cig_id,
-                }
+                Command::LeRemoveCig { cig_id }
             }
             HCI_LE_ACCEPT_CIS_REQUEST_COMMAND => {
                 let connection_handle = r.u16_le()?;
-                Command::LeAcceptCisRequest {
-                    connection_handle,
-                }
+                Command::LeAcceptCisRequest { connection_handle }
             }
             HCI_LE_REJECT_CIS_REQUEST_COMMAND => {
                 let connection_handle = r.u16_le()?;
@@ -4176,10 +4120,7 @@ impl Command {
             HCI_LE_TERMINATE_BIG_COMMAND => {
                 let big_handle = r.u8()?;
                 let reason = r.u8()?;
-                Command::LeTerminateBig {
-                    big_handle,
-                    reason,
-                }
+                Command::LeTerminateBig { big_handle, reason }
             }
             HCI_LE_BIG_CREATE_SYNC_COMMAND => {
                 let big_handle = r.u8()?;
@@ -4205,9 +4146,7 @@ impl Command {
             }
             HCI_LE_BIG_TERMINATE_SYNC_COMMAND => {
                 let big_handle = r.u8()?;
-                Command::LeBigTerminateSync {
-                    big_handle,
-                }
+                Command::LeBigTerminateSync { big_handle }
             }
             HCI_LE_SETUP_ISO_DATA_PATH_COMMAND => {
                 let connection_handle = r.u16_le()?;
@@ -4215,7 +4154,10 @@ impl Command {
                 let data_path_id = r.u8()?;
                 let codec_id = CodingFormat::read(&mut r)?;
                 let controller_delay = r.u24_le()?;
-                let codec_configuration = { let n = r.u8()? as usize; r.take(n)?.to_vec() };
+                let codec_configuration = {
+                    let n = r.u8()? as usize;
+                    r.take(n)?.to_vec()
+                };
                 Command::LeSetupIsoDataPath {
                     connection_handle,
                     data_path_direction,
@@ -4271,12 +4213,12 @@ impl Command {
                     supervision_timeout,
                 }
             }
-            HCI_LE_CS_READ_LOCAL_SUPPORTED_CAPABILITIES_COMMAND => Command::LeCsReadLocalSupportedCapabilities,
+            HCI_LE_CS_READ_LOCAL_SUPPORTED_CAPABILITIES_COMMAND => {
+                Command::LeCsReadLocalSupportedCapabilities
+            }
             HCI_LE_CS_READ_REMOTE_SUPPORTED_CAPABILITIES_COMMAND => {
                 let connection_handle = r.u16_le()?;
-                Command::LeCsReadRemoteSupportedCapabilities {
-                    connection_handle,
-                }
+                Command::LeCsReadRemoteSupportedCapabilities { connection_handle }
             }
             HCI_LE_CS_WRITE_CACHED_REMOTE_SUPPORTED_CAPABILITIES_COMMAND => {
                 let connection_handle = r.u16_le()?;
@@ -4326,9 +4268,7 @@ impl Command {
             }
             HCI_LE_CS_SECURITY_ENABLE_COMMAND => {
                 let connection_handle = r.u16_le()?;
-                Command::LeCsSecurityEnable {
-                    connection_handle,
-                }
+                Command::LeCsSecurityEnable { connection_handle }
             }
             HCI_LE_CS_SET_DEFAULT_SETTINGS_COMMAND => {
                 let connection_handle = r.u16_le()?;
@@ -4344,9 +4284,7 @@ impl Command {
             }
             HCI_LE_CS_READ_REMOTE_FAE_TABLE_COMMAND => {
                 let connection_handle = r.u16_le()?;
-                Command::LeCsReadRemoteFaeTable {
-                    connection_handle,
-                }
+                Command::LeCsReadRemoteFaeTable { connection_handle }
             }
             HCI_LE_CS_WRITE_CACHED_REMOTE_FAE_TABLE_COMMAND => {
                 let connection_handle = r.u16_le()?;
@@ -4477,7 +4415,10 @@ impl Command {
                 let drbg_nonce = r.u16_le()?;
                 let channel_map_repetition = r.u8()?;
                 let override_config = r.u16_le()?;
-                let override_parameters_data = { let n = r.u8()? as usize; r.take(n)?.to_vec() };
+                let override_parameters_data = {
+                    let n = r.u8()? as usize;
+                    r.take(n)?.to_vec()
+                };
                 Command::LeCsTest {
                     main_mode_type,
                     sub_mode_type,
@@ -4567,7 +4508,9 @@ impl Command {
                     max_ce_length,
                 }
             }
-            HCI_LE_READ_MINIMUM_SUPPORTED_CONNECTION_INTERVAL_COMMAND => Command::LeReadMinimumSupportedConnectionInterval,
+            HCI_LE_READ_MINIMUM_SUPPORTED_CONNECTION_INTERVAL_COMMAND => {
+                Command::LeReadMinimumSupportedConnectionInterval
+            }
             HCI_LE_SET_EXTENDED_SCAN_PARAMETERS_COMMAND => {
                 let own_address_type = r.u8()?;
                 let scanning_filter_policy = r.u8()?;

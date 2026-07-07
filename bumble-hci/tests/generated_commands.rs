@@ -4,8 +4,8 @@
 //! position-revealing so the layout — not just the length — is pinned.
 #![allow(clippy::redundant_clone)]
 
-use bumble_hci::{CodingFormat, Command, HciPacket};
 use bumble::{Address, AddressType};
+use bumble_hci::{CodingFormat, Command, HciPacket};
 
 fn hex(b: &[u8]) -> String {
     b.iter().map(|x| format!("{x:02x}")).collect()
@@ -20,11 +20,14 @@ fn check(cmd: Command, expected: &str) {
 
 #[test]
 fn cmd_inquiry() {
-    check(Command::Inquiry {
+    check(
+        Command::Inquiry {
             lap: 197121,
             inquiry_length: 4,
             num_responses: 5,
-    }, "010104050102030405");
+        },
+        "010104050102030405",
+    );
 }
 
 #[test]
@@ -34,143 +37,195 @@ fn cmd_inquirycancel() {
 
 #[test]
 fn cmd_createconnection() {
-    check(Command::CreateConnection {
+    check(
+        Command::CreateConnection {
             bd_addr: Address::from_bytes([1, 2, 3, 4, 5, 6], AddressType::RANDOM_DEVICE),
             packet_type: 2055,
             page_scan_repetition_mode: 9,
             reserved: 10,
             clock_offset: 3083,
             allow_role_switch: 13,
-    }, "0105040d0102030405060708090a0b0c0d");
+        },
+        "0105040d0102030405060708090a0b0c0d",
+    );
 }
 
 #[test]
 fn cmd_disconnect() {
-    check(Command::Disconnect {
+    check(
+        Command::Disconnect {
             connection_handle: 513,
             reason: 3,
-    }, "01060403010203");
+        },
+        "01060403010203",
+    );
 }
 
 #[test]
 fn cmd_createconnectioncancel() {
-    check(Command::CreateConnectionCancel {
+    check(
+        Command::CreateConnectionCancel {
             bd_addr: Address::from_bytes([1, 2, 3, 4, 5, 6], AddressType::RANDOM_DEVICE),
-    }, "01080406010203040506");
+        },
+        "01080406010203040506",
+    );
 }
 
 #[test]
 fn cmd_acceptconnectionrequest() {
-    check(Command::AcceptConnectionRequest {
+    check(
+        Command::AcceptConnectionRequest {
             bd_addr: Address::from_bytes([1, 2, 3, 4, 5, 6], AddressType::RANDOM_DEVICE),
             role: 7,
-    }, "0109040701020304050607");
+        },
+        "0109040701020304050607",
+    );
 }
 
 #[test]
 fn cmd_rejectconnectionrequest() {
-    check(Command::RejectConnectionRequest {
+    check(
+        Command::RejectConnectionRequest {
             bd_addr: Address::from_bytes([1, 2, 3, 4, 5, 6], AddressType::RANDOM_DEVICE),
             reason: 7,
-    }, "010a040701020304050607");
+        },
+        "010a040701020304050607",
+    );
 }
 
 #[test]
 fn cmd_linkkeyrequestreply() {
-    check(Command::LinkKeyRequestReply {
+    check(
+        Command::LinkKeyRequestReply {
             bd_addr: Address::from_bytes([1, 2, 3, 4, 5, 6], AddressType::RANDOM_DEVICE),
             link_key: [7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22],
-    }, "010b04160102030405060708090a0b0c0d0e0f10111213141516");
+        },
+        "010b04160102030405060708090a0b0c0d0e0f10111213141516",
+    );
 }
 
 #[test]
 fn cmd_linkkeyrequestnegativereply() {
-    check(Command::LinkKeyRequestNegativeReply {
+    check(
+        Command::LinkKeyRequestNegativeReply {
             bd_addr: Address::from_bytes([1, 2, 3, 4, 5, 6], AddressType::RANDOM_DEVICE),
-    }, "010c0406010203040506");
+        },
+        "010c0406010203040506",
+    );
 }
 
 #[test]
 fn cmd_pincoderequestreply() {
-    check(Command::PinCodeRequestReply {
+    check(
+        Command::PinCodeRequestReply {
             bd_addr: Address::from_bytes([1, 2, 3, 4, 5, 6], AddressType::RANDOM_DEVICE),
             pin_code_length: 7,
             pin_code: [8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
-    }, "010d04170102030405060708090a0b0c0d0e0f1011121314151617");
+        },
+        "010d04170102030405060708090a0b0c0d0e0f1011121314151617",
+    );
 }
 
 #[test]
 fn cmd_pincoderequestnegativereply() {
-    check(Command::PinCodeRequestNegativeReply {
+    check(
+        Command::PinCodeRequestNegativeReply {
             bd_addr: Address::from_bytes([1, 2, 3, 4, 5, 6], AddressType::RANDOM_DEVICE),
-    }, "010e0406010203040506");
+        },
+        "010e0406010203040506",
+    );
 }
 
 #[test]
 fn cmd_changeconnectionpackettype() {
-    check(Command::ChangeConnectionPacketType {
+    check(
+        Command::ChangeConnectionPacketType {
             connection_handle: 513,
             packet_type: 1027,
-    }, "010f040401020304");
+        },
+        "010f040401020304",
+    );
 }
 
 #[test]
 fn cmd_authenticationrequested() {
-    check(Command::AuthenticationRequested {
+    check(
+        Command::AuthenticationRequested {
             connection_handle: 513,
-    }, "011104020102");
+        },
+        "011104020102",
+    );
 }
 
 #[test]
 fn cmd_setconnectionencryption() {
-    check(Command::SetConnectionEncryption {
+    check(
+        Command::SetConnectionEncryption {
             connection_handle: 513,
             encryption_enable: 3,
-    }, "01130403010203");
+        },
+        "01130403010203",
+    );
 }
 
 #[test]
 fn cmd_remotenamerequest() {
-    check(Command::RemoteNameRequest {
+    check(
+        Command::RemoteNameRequest {
             bd_addr: Address::from_bytes([1, 2, 3, 4, 5, 6], AddressType::RANDOM_DEVICE),
             page_scan_repetition_mode: 7,
             reserved: 8,
             clock_offset: 2569,
-    }, "0119040a0102030405060708090a");
+        },
+        "0119040a0102030405060708090a",
+    );
 }
 
 #[test]
 fn cmd_readremotesupportedfeatures() {
-    check(Command::ReadRemoteSupportedFeatures {
+    check(
+        Command::ReadRemoteSupportedFeatures {
             connection_handle: 513,
-    }, "011b04020102");
+        },
+        "011b04020102",
+    );
 }
 
 #[test]
 fn cmd_readremoteextendedfeatures() {
-    check(Command::ReadRemoteExtendedFeatures {
+    check(
+        Command::ReadRemoteExtendedFeatures {
             connection_handle: 513,
             page_number: 3,
-    }, "011c0403010203");
+        },
+        "011c0403010203",
+    );
 }
 
 #[test]
 fn cmd_readremoteversioninformation() {
-    check(Command::ReadRemoteVersionInformation {
+    check(
+        Command::ReadRemoteVersionInformation {
             connection_handle: 513,
-    }, "011d04020102");
+        },
+        "011d04020102",
+    );
 }
 
 #[test]
 fn cmd_readclockoffset() {
-    check(Command::ReadClockOffset {
+    check(
+        Command::ReadClockOffset {
             connection_handle: 513,
-    }, "011f04020102");
+        },
+        "011f04020102",
+    );
 }
 
 #[test]
 fn cmd_acceptsynchronousconnectionrequest() {
-    check(Command::AcceptSynchronousConnectionRequest {
+    check(
+        Command::AcceptSynchronousConnectionRequest {
             bd_addr: Address::from_bytes([1, 2, 3, 4, 5, 6], AddressType::RANDOM_DEVICE),
             transmit_bandwidth: 168364039,
             receive_bandwidth: 235736075,
@@ -178,78 +233,109 @@ fn cmd_acceptsynchronousconnectionrequest() {
             voice_setting: 4625,
             retransmission_effort: 19,
             packet_type: 5396,
-    }, "012904150102030405060708090a0b0c0d0e0f101112131415");
+        },
+        "012904150102030405060708090a0b0c0d0e0f101112131415",
+    );
 }
 
 #[test]
 fn cmd_rejectsynchronousconnectionrequest() {
-    check(Command::RejectSynchronousConnectionRequest {
+    check(
+        Command::RejectSynchronousConnectionRequest {
             bd_addr: Address::from_bytes([1, 2, 3, 4, 5, 6], AddressType::RANDOM_DEVICE),
             reason: 7,
-    }, "012a040701020304050607");
+        },
+        "012a040701020304050607",
+    );
 }
 
 #[test]
 fn cmd_iocapabilityrequestreply() {
-    check(Command::IoCapabilityRequestReply {
+    check(
+        Command::IoCapabilityRequestReply {
             bd_addr: Address::from_bytes([1, 2, 3, 4, 5, 6], AddressType::RANDOM_DEVICE),
             io_capability: 7,
             oob_data_present: 8,
             authentication_requirements: 9,
-    }, "012b0409010203040506070809");
+        },
+        "012b0409010203040506070809",
+    );
 }
 
 #[test]
 fn cmd_userconfirmationrequestreply() {
-    check(Command::UserConfirmationRequestReply {
+    check(
+        Command::UserConfirmationRequestReply {
             bd_addr: Address::from_bytes([1, 2, 3, 4, 5, 6], AddressType::RANDOM_DEVICE),
-    }, "012c0406010203040506");
+        },
+        "012c0406010203040506",
+    );
 }
 
 #[test]
 fn cmd_userconfirmationrequestnegativereply() {
-    check(Command::UserConfirmationRequestNegativeReply {
+    check(
+        Command::UserConfirmationRequestNegativeReply {
             bd_addr: Address::from_bytes([1, 2, 3, 4, 5, 6], AddressType::RANDOM_DEVICE),
-    }, "012d0406010203040506");
+        },
+        "012d0406010203040506",
+    );
 }
 
 #[test]
 fn cmd_userpasskeyrequestreply() {
-    check(Command::UserPasskeyRequestReply {
+    check(
+        Command::UserPasskeyRequestReply {
             bd_addr: Address::from_bytes([1, 2, 3, 4, 5, 6], AddressType::RANDOM_DEVICE),
             numeric_value: 168364039,
-    }, "012e040a0102030405060708090a");
+        },
+        "012e040a0102030405060708090a",
+    );
 }
 
 #[test]
 fn cmd_userpasskeyrequestnegativereply() {
-    check(Command::UserPasskeyRequestNegativeReply {
+    check(
+        Command::UserPasskeyRequestNegativeReply {
             bd_addr: Address::from_bytes([1, 2, 3, 4, 5, 6], AddressType::RANDOM_DEVICE),
-    }, "012f0406010203040506");
+        },
+        "012f0406010203040506",
+    );
 }
 
 #[test]
 fn cmd_remoteoobdatarequestreply() {
-    check(Command::RemoteOobDataRequestReply {
+    check(
+        Command::RemoteOobDataRequestReply {
             bd_addr: Address::from_bytes([1, 2, 3, 4, 5, 6], AddressType::RANDOM_DEVICE),
             c: [7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22],
-            r: [23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38],
-    }, "013004260102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20212223242526");
+            r: [
+                23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38,
+            ],
+        },
+        "013004260102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20212223242526",
+    );
 }
 
 #[test]
 fn cmd_remoteoobdatarequestnegativereply() {
-    check(Command::RemoteOobDataRequestNegativeReply {
+    check(
+        Command::RemoteOobDataRequestNegativeReply {
             bd_addr: Address::from_bytes([1, 2, 3, 4, 5, 6], AddressType::RANDOM_DEVICE),
-    }, "01330406010203040506");
+        },
+        "01330406010203040506",
+    );
 }
 
 #[test]
 fn cmd_iocapabilityrequestnegativereply() {
-    check(Command::IoCapabilityRequestNegativeReply {
+    check(
+        Command::IoCapabilityRequestNegativeReply {
             bd_addr: Address::from_bytes([1, 2, 3, 4, 5, 6], AddressType::RANDOM_DEVICE),
             reason: 7,
-    }, "0134040701020304050607");
+        },
+        "0134040701020304050607",
+    );
 }
 
 #[test]
@@ -314,23 +400,30 @@ fn cmd_enhancedacceptsynchronousconnectionrequest() {
 
 #[test]
 fn cmd_truncatedpage() {
-    check(Command::TruncatedPage {
+    check(
+        Command::TruncatedPage {
             bd_addr: Address::from_bytes([1, 2, 3, 4, 5, 6], AddressType::RANDOM_DEVICE),
             page_scan_repetition_mode: 7,
             clock_offset: 2312,
-    }, "013f0409010203040506070809");
+        },
+        "013f0409010203040506070809",
+    );
 }
 
 #[test]
 fn cmd_truncatedpagecancel() {
-    check(Command::TruncatedPageCancel {
+    check(
+        Command::TruncatedPageCancel {
             bd_addr: Address::from_bytes([1, 2, 3, 4, 5, 6], AddressType::RANDOM_DEVICE),
-    }, "01400406010203040506");
+        },
+        "01400406010203040506",
+    );
 }
 
 #[test]
 fn cmd_setconnectionlessperipheralbroadcast() {
-    check(Command::SetConnectionlessPeripheralBroadcast {
+    check(
+        Command::SetConnectionlessPeripheralBroadcast {
             enable: 1,
             lt_addr: 2,
             lpo_allowed: 3,
@@ -338,12 +431,15 @@ fn cmd_setconnectionlessperipheralbroadcast() {
             interval_min: 1798,
             interval_max: 2312,
             supervision_timeout: 2826,
-    }, "0141040b0102030405060708090a0b");
+        },
+        "0141040b0102030405060708090a0b",
+    );
 }
 
 #[test]
 fn cmd_setconnectionlessperipheralbroadcastreceive() {
-    check(Command::SetConnectionlessPeripheralBroadcastReceive {
+    check(
+        Command::SetConnectionlessPeripheralBroadcastReceive {
             enable: 1,
             bd_addr: Address::from_bytes([2, 3, 4, 5, 6, 7], AddressType::RANDOM_DEVICE),
             lt_addr: 8,
@@ -355,7 +451,9 @@ fn cmd_setconnectionlessperipheralbroadcastreceive() {
             skip: 22,
             packet_type: 6167,
             afh_channel_map: [25, 26, 27, 28, 29, 30, 31, 32, 33, 34],
-    }, "014204220102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122");
+        },
+        "014204220102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122",
+    );
 }
 
 #[test]
@@ -365,12 +463,15 @@ fn cmd_startsynchronizationtrain() {
 
 #[test]
 fn cmd_receivesynchronizationtrain() {
-    check(Command::ReceiveSynchronizationTrain {
+    check(
+        Command::ReceiveSynchronizationTrain {
             bd_addr: Address::from_bytes([1, 2, 3, 4, 5, 6], AddressType::RANDOM_DEVICE),
             sync_scan_timeout: 2055,
             sync_scan_window: 2569,
             sync_scan_interval: 3083,
-    }, "0144040c0102030405060708090a0b0c");
+        },
+        "0144040c0102030405060708090a0b0c",
+    );
 }
 
 #[test]
@@ -386,60 +487,81 @@ fn cmd_remoteoobextendeddatarequestreply() {
 
 #[test]
 fn cmd_sniffmode() {
-    check(Command::SniffMode {
+    check(
+        Command::SniffMode {
             connection_handle: 513,
             sniff_max_interval: 1027,
             sniff_min_interval: 1541,
             sniff_attempt: 2055,
             sniff_timeout: 2569,
-    }, "0103080a0102030405060708090a");
+        },
+        "0103080a0102030405060708090a",
+    );
 }
 
 #[test]
 fn cmd_exitsniffmode() {
-    check(Command::ExitSniffMode {
+    check(
+        Command::ExitSniffMode {
             connection_handle: 513,
-    }, "010408020102");
+        },
+        "010408020102",
+    );
 }
 
 #[test]
 fn cmd_switchrole() {
-    check(Command::SwitchRole {
+    check(
+        Command::SwitchRole {
             bd_addr: Address::from_bytes([1, 2, 3, 4, 5, 6], AddressType::RANDOM_DEVICE),
             role: 7,
-    }, "010b080701020304050607");
+        },
+        "010b080701020304050607",
+    );
 }
 
 #[test]
 fn cmd_writelinkpolicysettings() {
-    check(Command::WriteLinkPolicySettings {
+    check(
+        Command::WriteLinkPolicySettings {
             connection_handle: 513,
             link_policy_settings: 1027,
-    }, "010d080401020304");
+        },
+        "010d080401020304",
+    );
 }
 
 #[test]
 fn cmd_writedefaultlinkpolicysettings() {
-    check(Command::WriteDefaultLinkPolicySettings {
+    check(
+        Command::WriteDefaultLinkPolicySettings {
             default_link_policy_settings: 513,
-    }, "010f08020102");
+        },
+        "010f08020102",
+    );
 }
 
 #[test]
 fn cmd_sniffsubrating() {
-    check(Command::SniffSubrating {
+    check(
+        Command::SniffSubrating {
             connection_handle: 513,
             maximum_latency: 1027,
             minimum_remote_timeout: 1541,
             minimum_local_timeout: 2055,
-    }, "011108080102030405060708");
+        },
+        "011108080102030405060708",
+    );
 }
 
 #[test]
 fn cmd_seteventmask() {
-    check(Command::SetEventMask {
+    check(
+        Command::SetEventMask {
             event_mask: [1, 2, 3, 4, 5, 6, 7, 8],
-    }, "01010c080102030405060708");
+        },
+        "01010c080102030405060708",
+    );
 }
 
 #[test]
@@ -449,26 +571,35 @@ fn cmd_reset() {
 
 #[test]
 fn cmd_seteventfilter() {
-    check(Command::SetEventFilter {
+    check(
+        Command::SetEventFilter {
             filter_type: 1,
             filter_condition: vec![2, 3, 4, 5],
-    }, "01050c050102030405");
+        },
+        "01050c050102030405",
+    );
 }
 
 #[test]
 fn cmd_readstoredlinkkey() {
-    check(Command::ReadStoredLinkKey {
+    check(
+        Command::ReadStoredLinkKey {
             bd_addr: Address::from_bytes([1, 2, 3, 4, 5, 6], AddressType::RANDOM_DEVICE),
             read_all_flag: 7,
-    }, "010d0c0701020304050607");
+        },
+        "010d0c0701020304050607",
+    );
 }
 
 #[test]
 fn cmd_deletestoredlinkkey() {
-    check(Command::DeleteStoredLinkKey {
+    check(
+        Command::DeleteStoredLinkKey {
             bd_addr: Address::from_bytes([1, 2, 3, 4, 5, 6], AddressType::RANDOM_DEVICE),
             delete_all_flag: 7,
-    }, "01120c0701020304050607");
+        },
+        "01120c0701020304050607",
+    );
 }
 
 #[test]
@@ -485,23 +616,25 @@ fn cmd_readlocalname() {
 
 #[test]
 fn cmd_writeconnectionaccepttimeout() {
-    check(Command::WriteConnectionAcceptTimeout {
+    check(
+        Command::WriteConnectionAcceptTimeout {
             connection_accept_timeout: 513,
-    }, "01160c020102");
+        },
+        "01160c020102",
+    );
 }
 
 #[test]
 fn cmd_writepagetimeout() {
-    check(Command::WritePageTimeout {
-            page_timeout: 513,
-    }, "01180c020102");
+    check(
+        Command::WritePageTimeout { page_timeout: 513 },
+        "01180c020102",
+    );
 }
 
 #[test]
 fn cmd_writescanenable() {
-    check(Command::WriteScanEnable {
-            scan_enable: 1,
-    }, "011a0c0101");
+    check(Command::WriteScanEnable { scan_enable: 1 }, "011a0c0101");
 }
 
 #[test]
@@ -511,18 +644,24 @@ fn cmd_readpagescanactivity() {
 
 #[test]
 fn cmd_writepagescanactivity() {
-    check(Command::WritePageScanActivity {
+    check(
+        Command::WritePageScanActivity {
             page_scan_interval: 513,
             page_scan_window: 1027,
-    }, "011c0c0401020304");
+        },
+        "011c0c0401020304",
+    );
 }
 
 #[test]
 fn cmd_writeinquiryscanactivity() {
-    check(Command::WriteInquiryScanActivity {
+    check(
+        Command::WriteInquiryScanActivity {
             inquiry_scan_interval: 513,
             inquiry_scan_window: 1027,
-    }, "011e0c0401020304");
+        },
+        "011e0c0401020304",
+    );
 }
 
 #[test]
@@ -532,9 +671,12 @@ fn cmd_readauthenticationenable() {
 
 #[test]
 fn cmd_writeauthenticationenable() {
-    check(Command::WriteAuthenticationEnable {
+    check(
+        Command::WriteAuthenticationEnable {
             authentication_enable: 1,
-    }, "01200c0101");
+        },
+        "01200c0101",
+    );
 }
 
 #[test]
@@ -544,9 +686,12 @@ fn cmd_readclassofdevice() {
 
 #[test]
 fn cmd_writeclassofdevice() {
-    check(Command::WriteClassOfDevice {
+    check(
+        Command::WriteClassOfDevice {
             class_of_device: 197121,
-    }, "01240c03010203");
+        },
+        "01240c03010203",
+    );
 }
 
 #[test]
@@ -556,9 +701,10 @@ fn cmd_readvoicesetting() {
 
 #[test]
 fn cmd_writevoicesetting() {
-    check(Command::WriteVoiceSetting {
-            voice_setting: 513,
-    }, "01260c020102");
+    check(
+        Command::WriteVoiceSetting { voice_setting: 513 },
+        "01260c020102",
+    );
 }
 
 #[test]
@@ -568,34 +714,46 @@ fn cmd_readsynchronousflowcontrolenable() {
 
 #[test]
 fn cmd_writesynchronousflowcontrolenable() {
-    check(Command::WriteSynchronousFlowControlEnable {
+    check(
+        Command::WriteSynchronousFlowControlEnable {
             synchronous_flow_control_enable: 1,
-    }, "012f0c0101");
+        },
+        "012f0c0101",
+    );
 }
 
 #[test]
 fn cmd_setcontrollertohostflowcontrol() {
-    check(Command::SetControllerToHostFlowControl {
+    check(
+        Command::SetControllerToHostFlowControl {
             flow_control_enable: 1,
-    }, "01310c0101");
+        },
+        "01310c0101",
+    );
 }
 
 #[test]
 fn cmd_hostbuffersize() {
-    check(Command::HostBufferSize {
+    check(
+        Command::HostBufferSize {
             host_acl_data_packet_length: 513,
             host_synchronous_data_packet_length: 3,
             host_total_num_acl_data_packets: 1284,
             host_total_num_synchronous_data_packets: 1798,
-    }, "01330c0701020304050607");
+        },
+        "01330c0701020304050607",
+    );
 }
 
 #[test]
 fn cmd_writelinksupervisiontimeout() {
-    check(Command::WriteLinkSupervisionTimeout {
+    check(
+        Command::WriteLinkSupervisionTimeout {
             handle: 513,
             link_supervision_timeout: 1027,
-    }, "01370c0401020304");
+        },
+        "01370c0401020304",
+    );
 }
 
 #[test]
@@ -610,16 +768,12 @@ fn cmd_readcurrentiaclap() {
 
 #[test]
 fn cmd_writeinquiryscantype() {
-    check(Command::WriteInquiryScanType {
-            scan_type: 1,
-    }, "01430c0101");
+    check(Command::WriteInquiryScanType { scan_type: 1 }, "01430c0101");
 }
 
 #[test]
 fn cmd_writeinquirymode() {
-    check(Command::WriteInquiryMode {
-            inquiry_mode: 1,
-    }, "01450c0101");
+    check(Command::WriteInquiryMode { inquiry_mode: 1 }, "01450c0101");
 }
 
 #[test]
@@ -629,9 +783,10 @@ fn cmd_readpagescantype() {
 
 #[test]
 fn cmd_writepagescantype() {
-    check(Command::WritePageScanType {
-            page_scan_type: 1,
-    }, "01470c0101");
+    check(
+        Command::WritePageScanType { page_scan_type: 1 },
+        "01470c0101",
+    );
 }
 
 #[test]
@@ -644,9 +799,12 @@ fn cmd_writeextendedinquiryresponse() {
 
 #[test]
 fn cmd_writesimplepairingmode() {
-    check(Command::WriteSimplePairingMode {
+    check(
+        Command::WriteSimplePairingMode {
             simple_pairing_mode: 1,
-    }, "01560c0101");
+        },
+        "01560c0101",
+    );
 }
 
 #[test]
@@ -666,9 +824,12 @@ fn cmd_readdefaulterroneousdatareporting() {
 
 #[test]
 fn cmd_seteventmaskpage2() {
-    check(Command::SetEventMaskPage2 {
+    check(
+        Command::SetEventMaskPage2 {
             event_mask_page_2: [1, 2, 3, 4, 5, 6, 7, 8],
-    }, "01630c080102030405060708");
+        },
+        "01630c080102030405060708",
+    );
 }
 
 #[test]
@@ -678,25 +839,34 @@ fn cmd_readlehostsupport() {
 
 #[test]
 fn cmd_writelehostsupport() {
-    check(Command::WriteLeHostSupport {
+    check(
+        Command::WriteLeHostSupport {
             le_supported_host: 1,
             simultaneous_le_host: 2,
-    }, "016d0c020102");
+        },
+        "016d0c020102",
+    );
 }
 
 #[test]
 fn cmd_writesecureconnectionshostsupport() {
-    check(Command::WriteSecureConnectionsHostSupport {
+    check(
+        Command::WriteSecureConnectionsHostSupport {
             secure_connections_host_support: 1,
-    }, "017a0c0101");
+        },
+        "017a0c0101",
+    );
 }
 
 #[test]
 fn cmd_writeauthenticatedpayloadtimeout() {
-    check(Command::WriteAuthenticatedPayloadTimeout {
+    check(
+        Command::WriteAuthenticatedPayloadTimeout {
             connection_handle: 513,
             authenticated_payload_timeout: 1027,
-    }, "017c0c0401020304");
+        },
+        "017c0c0401020304",
+    );
 }
 
 #[test]
@@ -706,11 +876,14 @@ fn cmd_readlocaloobextendeddata() {
 
 #[test]
 fn cmd_configuredatapath() {
-    check(Command::ConfigureDataPath {
+    check(
+        Command::ConfigureDataPath {
             data_path_direction: 1,
             data_path_id: 2,
             vendor_specific_config: vec![3, 4, 5, 6],
-    }, "01830c06010203040506");
+        },
+        "01830c06010203040506",
+    );
 }
 
 #[test]
@@ -730,9 +903,10 @@ fn cmd_readlocalsupportedfeatures() {
 
 #[test]
 fn cmd_readlocalextendedfeatures() {
-    check(Command::ReadLocalExtendedFeatures {
-            page_number: 1,
-    }, "0104100101");
+    check(
+        Command::ReadLocalExtendedFeatures { page_number: 1 },
+        "0104100101",
+    );
 }
 
 #[test]
@@ -757,16 +931,17 @@ fn cmd_readlocalsupportedcodecsv2() {
 
 #[test]
 fn cmd_readrssi() {
-    check(Command::ReadRssi {
-            handle: 513,
-    }, "010514020102");
+    check(Command::ReadRssi { handle: 513 }, "010514020102");
 }
 
 #[test]
 fn cmd_readencryptionkeysize() {
-    check(Command::ReadEncryptionKeySize {
+    check(
+        Command::ReadEncryptionKeySize {
             connection_handle: 513,
-    }, "010814020102");
+        },
+        "010814020102",
+    );
 }
 
 #[test]
@@ -776,16 +951,20 @@ fn cmd_readloopbackmode() {
 
 #[test]
 fn cmd_writeloopbackmode() {
-    check(Command::WriteLoopbackMode {
-            loopback_mode: 1,
-    }, "0102180101");
+    check(
+        Command::WriteLoopbackMode { loopback_mode: 1 },
+        "0102180101",
+    );
 }
 
 #[test]
 fn cmd_leseteventmask() {
-    check(Command::LeSetEventMask {
+    check(
+        Command::LeSetEventMask {
             le_event_mask: [1, 2, 3, 4, 5, 6, 7, 8],
-    }, "010120080102030405060708");
+        },
+        "010120080102030405060708",
+    );
 }
 
 #[test]
@@ -800,14 +979,18 @@ fn cmd_lereadlocalsupportedfeatures() {
 
 #[test]
 fn cmd_lesetrandomaddress() {
-    check(Command::LeSetRandomAddress {
+    check(
+        Command::LeSetRandomAddress {
             random_address: Address::from_bytes([1, 2, 3, 4, 5, 6], AddressType::RANDOM_DEVICE),
-    }, "01052006010203040506");
+        },
+        "01052006010203040506",
+    );
 }
 
 #[test]
 fn cmd_lesetadvertisingparameters() {
-    check(Command::LeSetAdvertisingParameters {
+    check(
+        Command::LeSetAdvertisingParameters {
             advertising_interval_min: 513,
             advertising_interval_max: 1027,
             advertising_type: 5,
@@ -816,7 +999,9 @@ fn cmd_lesetadvertisingparameters() {
             peer_address: Address::from_bytes([8, 9, 10, 11, 12, 13], AddressType::RANDOM_DEVICE),
             advertising_channel_map: 14,
             advertising_filter_policy: 15,
-    }, "0106200f0102030405060708090a0b0c0d0e0f");
+        },
+        "0106200f0102030405060708090a0b0c0d0e0f",
+    );
 }
 
 #[test]
@@ -826,47 +1011,63 @@ fn cmd_lereadadvertisingphysicalchanneltxpower() {
 
 #[test]
 fn cmd_lesetadvertisingdata() {
-    check(Command::LeSetAdvertisingData {
+    check(
+        Command::LeSetAdvertisingData {
             advertising_data: vec![1, 2, 3],
-    }, "010820200301020300000000000000000000000000000000000000000000000000000000");
+        },
+        "010820200301020300000000000000000000000000000000000000000000000000000000",
+    );
 }
 
 #[test]
 fn cmd_lesetscanresponsedata() {
-    check(Command::LeSetScanResponseData {
+    check(
+        Command::LeSetScanResponseData {
             scan_response_data: vec![1, 2, 3],
-    }, "010920200301020300000000000000000000000000000000000000000000000000000000");
+        },
+        "010920200301020300000000000000000000000000000000000000000000000000000000",
+    );
 }
 
 #[test]
 fn cmd_lesetadvertisingenable() {
-    check(Command::LeSetAdvertisingEnable {
+    check(
+        Command::LeSetAdvertisingEnable {
             advertising_enable: 1,
-    }, "010a200101");
+        },
+        "010a200101",
+    );
 }
 
 #[test]
 fn cmd_lesetscanparameters() {
-    check(Command::LeSetScanParameters {
+    check(
+        Command::LeSetScanParameters {
             le_scan_type: 1,
             le_scan_interval: 770,
             le_scan_window: 1284,
             own_address_type: 6,
             scanning_filter_policy: 7,
-    }, "010b200701020304050607");
+        },
+        "010b200701020304050607",
+    );
 }
 
 #[test]
 fn cmd_lesetscanenable() {
-    check(Command::LeSetScanEnable {
+    check(
+        Command::LeSetScanEnable {
             le_scan_enable: 1,
             filter_duplicates: 2,
-    }, "010c20020102");
+        },
+        "010c20020102",
+    );
 }
 
 #[test]
 fn cmd_lecreateconnection() {
-    check(Command::LeCreateConnection {
+    check(
+        Command::LeCreateConnection {
             le_scan_interval: 513,
             le_scan_window: 1027,
             initiator_filter_policy: 5,
@@ -879,7 +1080,9 @@ fn cmd_lecreateconnection() {
             supervision_timeout: 5396,
             min_ce_length: 5910,
             max_ce_length: 6424,
-    }, "010d20190102030405060708090a0b0c0d0e0f10111213141516171819");
+        },
+        "010d20190102030405060708090a0b0c0d0e0f10111213141516171819",
+    );
 }
 
 #[test]
@@ -899,23 +1102,30 @@ fn cmd_leclearfilteracceptlist() {
 
 #[test]
 fn cmd_leadddevicetofilteracceptlist() {
-    check(Command::LeAddDeviceToFilterAcceptList {
+    check(
+        Command::LeAddDeviceToFilterAcceptList {
             address_type: 1,
             address: Address::from_bytes([2, 3, 4, 5, 6, 7], AddressType::RANDOM_DEVICE),
-    }, "0111200701020304050607");
+        },
+        "0111200701020304050607",
+    );
 }
 
 #[test]
 fn cmd_leremovedevicefromfilteracceptlist() {
-    check(Command::LeRemoveDeviceFromFilterAcceptList {
+    check(
+        Command::LeRemoveDeviceFromFilterAcceptList {
             address_type: 1,
             address: Address::from_bytes([2, 3, 4, 5, 6, 7], AddressType::RANDOM_DEVICE),
-    }, "0112200701020304050607");
+        },
+        "0112200701020304050607",
+    );
 }
 
 #[test]
 fn cmd_leconnectionupdate() {
-    check(Command::LeConnectionUpdate {
+    check(
+        Command::LeConnectionUpdate {
             connection_handle: 513,
             connection_interval_min: 1027,
             connection_interval_max: 1541,
@@ -923,14 +1133,19 @@ fn cmd_leconnectionupdate() {
             supervision_timeout: 2569,
             min_ce_length: 3083,
             max_ce_length: 3597,
-    }, "0113200e0102030405060708090a0b0c0d0e");
+        },
+        "0113200e0102030405060708090a0b0c0d0e",
+    );
 }
 
 #[test]
 fn cmd_lereadremotefeatures() {
-    check(Command::LeReadRemoteFeatures {
+    check(
+        Command::LeReadRemoteFeatures {
             connection_handle: 513,
-    }, "011620020102");
+        },
+        "011620020102",
+    );
 }
 
 #[test]
@@ -940,27 +1155,38 @@ fn cmd_lerand() {
 
 #[test]
 fn cmd_leenableencryption() {
-    check(Command::LeEnableEncryption {
+    check(
+        Command::LeEnableEncryption {
             connection_handle: 513,
             random_number: [3, 4, 5, 6, 7, 8, 9, 10],
             encrypted_diversifier: 3083,
-            long_term_key: [13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28],
-    }, "0119201c0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c");
+            long_term_key: [
+                13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28,
+            ],
+        },
+        "0119201c0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c",
+    );
 }
 
 #[test]
 fn cmd_lelongtermkeyrequestreply() {
-    check(Command::LeLongTermKeyRequestReply {
+    check(
+        Command::LeLongTermKeyRequestReply {
             connection_handle: 513,
             long_term_key: [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18],
-    }, "011a20120102030405060708090a0b0c0d0e0f101112");
+        },
+        "011a20120102030405060708090a0b0c0d0e0f101112",
+    );
 }
 
 #[test]
 fn cmd_lelongtermkeyrequestnegativereply() {
-    check(Command::LeLongTermKeyRequestNegativeReply {
+    check(
+        Command::LeLongTermKeyRequestNegativeReply {
             connection_handle: 513,
-    }, "011b20020102");
+        },
+        "011b20020102",
+    );
 }
 
 #[test]
@@ -970,7 +1196,8 @@ fn cmd_lereadsupportedstates() {
 
 #[test]
 fn cmd_leremoteconnectionparameterrequestreply() {
-    check(Command::LeRemoteConnectionParameterRequestReply {
+    check(
+        Command::LeRemoteConnectionParameterRequestReply {
             connection_handle: 513,
             interval_min: 1027,
             interval_max: 1541,
@@ -978,24 +1205,32 @@ fn cmd_leremoteconnectionparameterrequestreply() {
             timeout: 2569,
             min_ce_length: 3083,
             max_ce_length: 3597,
-    }, "0120200e0102030405060708090a0b0c0d0e");
+        },
+        "0120200e0102030405060708090a0b0c0d0e",
+    );
 }
 
 #[test]
 fn cmd_leremoteconnectionparameterrequestnegativereply() {
-    check(Command::LeRemoteConnectionParameterRequestNegativeReply {
+    check(
+        Command::LeRemoteConnectionParameterRequestNegativeReply {
             connection_handle: 513,
             reason: 3,
-    }, "01212003010203");
+        },
+        "01212003010203",
+    );
 }
 
 #[test]
 fn cmd_lesetdatalength() {
-    check(Command::LeSetDataLength {
+    check(
+        Command::LeSetDataLength {
             connection_handle: 513,
             tx_octets: 1027,
             tx_time: 1541,
-    }, "01222006010203040506");
+        },
+        "01222006010203040506",
+    );
 }
 
 #[test]
@@ -1005,10 +1240,13 @@ fn cmd_lereadsuggesteddefaultdatalength() {
 
 #[test]
 fn cmd_lewritesuggesteddefaultdatalength() {
-    check(Command::LeWriteSuggestedDefaultDataLength {
+    check(
+        Command::LeWriteSuggestedDefaultDataLength {
             suggested_max_tx_octets: 513,
             suggested_max_tx_time: 1027,
-    }, "0124200401020304");
+        },
+        "0124200401020304",
+    );
 }
 
 #[test]
@@ -1018,12 +1256,20 @@ fn cmd_lereadlocalp256publickey() {
 
 #[test]
 fn cmd_leadddevicetoresolvinglist() {
-    check(Command::LeAddDeviceToResolvingList {
+    check(
+        Command::LeAddDeviceToResolvingList {
             peer_identity_address_type: 1,
-            peer_identity_address: Address::from_bytes([2, 3, 4, 5, 6, 7], AddressType::RANDOM_DEVICE),
+            peer_identity_address: Address::from_bytes(
+                [2, 3, 4, 5, 6, 7],
+                AddressType::RANDOM_DEVICE,
+            ),
             peer_irk: [8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
-            local_irk: [24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39],
-    }, "012720270102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f2021222324252627");
+            local_irk: [
+                24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39,
+            ],
+        },
+        "012720270102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f2021222324252627",
+    );
 }
 
 #[test]
@@ -1038,16 +1284,20 @@ fn cmd_lereadresolvinglistsize() {
 
 #[test]
 fn cmd_lesetaddressresolutionenable() {
-    check(Command::LeSetAddressResolutionEnable {
+    check(
+        Command::LeSetAddressResolutionEnable {
             address_resolution_enable: 1,
-    }, "012d200101");
+        },
+        "012d200101",
+    );
 }
 
 #[test]
 fn cmd_lesetresolvableprivateaddresstimeout() {
-    check(Command::LeSetResolvablePrivateAddressTimeout {
-            rpa_timeout: 513,
-    }, "012e20020102");
+    check(
+        Command::LeSetResolvablePrivateAddressTimeout { rpa_timeout: 513 },
+        "012e20020102",
+    );
 }
 
 #[test]
@@ -1057,42 +1307,55 @@ fn cmd_lereadmaximumdatalength() {
 
 #[test]
 fn cmd_lereadphy() {
-    check(Command::LeReadPhy {
+    check(
+        Command::LeReadPhy {
             connection_handle: 513,
-    }, "013020020102");
+        },
+        "013020020102",
+    );
 }
 
 #[test]
 fn cmd_lesetdefaultphy() {
-    check(Command::LeSetDefaultPhy {
+    check(
+        Command::LeSetDefaultPhy {
             all_phys: 1,
             tx_phys: 2,
             rx_phys: 3,
-    }, "01312003010203");
+        },
+        "01312003010203",
+    );
 }
 
 #[test]
 fn cmd_lesetphy() {
-    check(Command::LeSetPhy {
+    check(
+        Command::LeSetPhy {
             connection_handle: 513,
             all_phys: 3,
             tx_phys: 4,
             rx_phys: 5,
             phy_options: 1798,
-    }, "0132200701020304050607");
+        },
+        "0132200701020304050607",
+    );
 }
 
 #[test]
 fn cmd_lesetadvertisingsetrandomaddress() {
-    check(Command::LeSetAdvertisingSetRandomAddress {
+    check(
+        Command::LeSetAdvertisingSetRandomAddress {
             advertising_handle: 1,
             random_address: Address::from_bytes([2, 3, 4, 5, 6, 7], AddressType::RANDOM_DEVICE),
-    }, "0135200701020304050607");
+        },
+        "0135200701020304050607",
+    );
 }
 
 #[test]
 fn cmd_lesetextendedadvertisingparameters() {
-    check(Command::LeSetExtendedAdvertisingParameters {
+    check(
+        Command::LeSetExtendedAdvertisingParameters {
             advertising_handle: 1,
             advertising_event_properties: 770,
             primary_advertising_interval_min: 394500,
@@ -1108,37 +1371,48 @@ fn cmd_lesetextendedadvertisingparameters() {
             secondary_advertising_phy: 23,
             advertising_sid: 24,
             scan_request_notification_enable: 25,
-    }, "013620190102030405060708090a0b0c0d0e0f10111213141516171819");
+        },
+        "013620190102030405060708090a0b0c0d0e0f10111213141516171819",
+    );
 }
 
 #[test]
 fn cmd_lesetextendedadvertisingdata() {
-    check(Command::LeSetExtendedAdvertisingData {
+    check(
+        Command::LeSetExtendedAdvertisingData {
             advertising_handle: 1,
             operation: 2,
             fragment_preference: 3,
             advertising_data: vec![4, 5, 6],
-    }, "0137200701020303040506");
+        },
+        "0137200701020303040506",
+    );
 }
 
 #[test]
 fn cmd_lesetextendedscanresponsedata() {
-    check(Command::LeSetExtendedScanResponseData {
+    check(
+        Command::LeSetExtendedScanResponseData {
             advertising_handle: 1,
             operation: 2,
             fragment_preference: 3,
             scan_response_data: vec![4, 5, 6],
-    }, "0138200701020303040506");
+        },
+        "0138200701020303040506",
+    );
 }
 
 #[test]
 fn cmd_lesetextendedadvertisingenable() {
-    check(Command::LeSetExtendedAdvertisingEnable {
+    check(
+        Command::LeSetExtendedAdvertisingEnable {
             enable: 1,
             advertising_handles: vec![2],
             durations: vec![1027],
             max_extended_advertising_events: vec![5],
-    }, "01392006010102030405");
+        },
+        "01392006010102030405",
+    );
 }
 
 #[test]
@@ -1153,9 +1427,12 @@ fn cmd_lereadnumberofsupportedadvertisingsets() {
 
 #[test]
 fn cmd_leremoveadvertisingset() {
-    check(Command::LeRemoveAdvertisingSet {
+    check(
+        Command::LeRemoveAdvertisingSet {
             advertising_handle: 1,
-    }, "013c200101");
+        },
+        "013c200101",
+    );
 }
 
 #[test]
@@ -1165,44 +1442,57 @@ fn cmd_leclearadvertisingsets() {
 
 #[test]
 fn cmd_lesetperiodicadvertisingparameters() {
-    check(Command::LeSetPeriodicAdvertisingParameters {
+    check(
+        Command::LeSetPeriodicAdvertisingParameters {
             advertising_handle: 1,
             periodic_advertising_interval_min: 770,
             periodic_advertising_interval_max: 1284,
             periodic_advertising_properties: 1798,
-    }, "013e200701020304050607");
+        },
+        "013e200701020304050607",
+    );
 }
 
 #[test]
 fn cmd_lesetperiodicadvertisingdata() {
-    check(Command::LeSetPeriodicAdvertisingData {
+    check(
+        Command::LeSetPeriodicAdvertisingData {
             advertising_handle: 1,
             operation: 2,
             advertising_data: vec![3, 4, 5],
-    }, "013f2006010203030405");
+        },
+        "013f2006010203030405",
+    );
 }
 
 #[test]
 fn cmd_lesetperiodicadvertisingenable() {
-    check(Command::LeSetPeriodicAdvertisingEnable {
+    check(
+        Command::LeSetPeriodicAdvertisingEnable {
             enable: 1,
             advertising_handle: 2,
-    }, "014020020102");
+        },
+        "014020020102",
+    );
 }
 
 #[test]
 fn cmd_lesetextendedscanenable() {
-    check(Command::LeSetExtendedScanEnable {
+    check(
+        Command::LeSetExtendedScanEnable {
             enable: 1,
             filter_duplicates: 2,
             duration: 1027,
             period: 1541,
-    }, "01422006010203040506");
+        },
+        "01422006010203040506",
+    );
 }
 
 #[test]
 fn cmd_leperiodicadvertisingcreatesync() {
-    check(Command::LePeriodicAdvertisingCreateSync {
+    check(
+        Command::LePeriodicAdvertisingCreateSync {
             options: 1,
             advertising_sid: 2,
             advertiser_address_type: 3,
@@ -1210,7 +1500,9 @@ fn cmd_leperiodicadvertisingcreatesync() {
             skip: 2826,
             sync_timeout: 3340,
             sync_cte_type: 14,
-    }, "0144200e0102030405060708090a0b0c0d0e");
+        },
+        "0144200e0102030405060708090a0b0c0d0e",
+    );
 }
 
 #[test]
@@ -1220,9 +1512,10 @@ fn cmd_leperiodicadvertisingcreatesynccancel() {
 
 #[test]
 fn cmd_leperiodicadvertisingterminatesync() {
-    check(Command::LePeriodicAdvertisingTerminateSync {
-            sync_handle: 513,
-    }, "014620020102");
+    check(
+        Command::LePeriodicAdvertisingTerminateSync { sync_handle: 513 },
+        "014620020102",
+    );
 }
 
 #[test]
@@ -1232,58 +1525,79 @@ fn cmd_lereadtransmitpower() {
 
 #[test]
 fn cmd_lesetprivacymode() {
-    check(Command::LeSetPrivacyMode {
+    check(
+        Command::LeSetPrivacyMode {
             peer_identity_address_type: 1,
-            peer_identity_address: Address::from_bytes([2, 3, 4, 5, 6, 7], AddressType::RANDOM_DEVICE),
+            peer_identity_address: Address::from_bytes(
+                [2, 3, 4, 5, 6, 7],
+                AddressType::RANDOM_DEVICE,
+            ),
             privacy_mode: 8,
-    }, "014e20080102030405060708");
+        },
+        "014e20080102030405060708",
+    );
 }
 
 #[test]
 fn cmd_lesetperiodicadvertisingreceiveenable() {
-    check(Command::LeSetPeriodicAdvertisingReceiveEnable {
+    check(
+        Command::LeSetPeriodicAdvertisingReceiveEnable {
             sync_handle: 513,
             enable: 3,
-    }, "01592003010203");
+        },
+        "01592003010203",
+    );
 }
 
 #[test]
 fn cmd_leperiodicadvertisingsynctransfer() {
-    check(Command::LePeriodicAdvertisingSyncTransfer {
+    check(
+        Command::LePeriodicAdvertisingSyncTransfer {
             connection_handle: 513,
             service_data: 1027,
             sync_handle: 1541,
-    }, "015a2006010203040506");
+        },
+        "015a2006010203040506",
+    );
 }
 
 #[test]
 fn cmd_leperiodicadvertisingsetinfotransfer() {
-    check(Command::LePeriodicAdvertisingSetInfoTransfer {
+    check(
+        Command::LePeriodicAdvertisingSetInfoTransfer {
             connection_handle: 513,
             service_data: 1027,
             advertising_handle: 5,
-    }, "015b20050102030405");
+        },
+        "015b20050102030405",
+    );
 }
 
 #[test]
 fn cmd_lesetperiodicadvertisingsynctransferparameters() {
-    check(Command::LeSetPeriodicAdvertisingSyncTransferParameters {
+    check(
+        Command::LeSetPeriodicAdvertisingSyncTransferParameters {
             connection_handle: 513,
             mode: 3,
             skip: 1284,
             sync_timeout: 1798,
             cte_type: 8,
-    }, "015c20080102030405060708");
+        },
+        "015c20080102030405060708",
+    );
 }
 
 #[test]
 fn cmd_lesetdefaultperiodicadvertisingsynctransferparameters() {
-    check(Command::LeSetDefaultPeriodicAdvertisingSyncTransferParameters {
+    check(
+        Command::LeSetDefaultPeriodicAdvertisingSyncTransferParameters {
             mode: 1,
             skip: 770,
             sync_timeout: 1284,
             cte_type: 6,
-    }, "015d2006010203040506");
+        },
+        "015d2006010203040506",
+    );
 }
 
 #[test]
@@ -1293,14 +1607,18 @@ fn cmd_lereadbuffersizev2() {
 
 #[test]
 fn cmd_lereadisotxsync() {
-    check(Command::LeReadIsoTxSync {
+    check(
+        Command::LeReadIsoTxSync {
             connection_handle: 513,
-    }, "016120020102");
+        },
+        "016120020102",
+    );
 }
 
 #[test]
 fn cmd_lesetcigparameters() {
-    check(Command::LeSetCigParameters {
+    check(
+        Command::LeSetCigParameters {
             cig_id: 1,
             sdu_interval_c_to_p: 262914,
             sdu_interval_p_to_c: 460293,
@@ -1316,42 +1634,52 @@ fn cmd_lesetcigparameters() {
             phy_p_to_c: vec![21],
             rtn_c_to_p: vec![22],
             rtn_p_to_c: vec![23],
-    }, "016220180102030405060708090a0b0c0d0e010f1011121314151617");
+        },
+        "016220180102030405060708090a0b0c0d0e010f1011121314151617",
+    );
 }
 
 #[test]
 fn cmd_lecreatecis() {
-    check(Command::LeCreateCis {
+    check(
+        Command::LeCreateCis {
             cis_connection_handle: vec![513],
             acl_connection_handle: vec![1027],
-    }, "016420050101020304");
+        },
+        "016420050101020304",
+    );
 }
 
 #[test]
 fn cmd_leremovecig() {
-    check(Command::LeRemoveCig {
-            cig_id: 1,
-    }, "0165200101");
+    check(Command::LeRemoveCig { cig_id: 1 }, "0165200101");
 }
 
 #[test]
 fn cmd_leacceptcisrequest() {
-    check(Command::LeAcceptCisRequest {
+    check(
+        Command::LeAcceptCisRequest {
             connection_handle: 513,
-    }, "016620020102");
+        },
+        "016620020102",
+    );
 }
 
 #[test]
 fn cmd_lerejectcisrequest() {
-    check(Command::LeRejectCisRequest {
+    check(
+        Command::LeRejectCisRequest {
             connection_handle: 513,
             reason: 3,
-    }, "01672003010203");
+        },
+        "01672003010203",
+    );
 }
 
 #[test]
 fn cmd_lecreatebig() {
-    check(Command::LeCreateBig {
+    check(
+        Command::LeCreateBig {
             big_handle: 1,
             advertising_handle: 2,
             num_bis: 3,
@@ -1363,21 +1691,29 @@ fn cmd_lecreatebig() {
             packing: 13,
             framing: 14,
             encryption: 15,
-            broadcast_code: [16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31],
-    }, "0168201f0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f");
+            broadcast_code: [
+                16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31,
+            ],
+        },
+        "0168201f0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    );
 }
 
 #[test]
 fn cmd_leterminatebig() {
-    check(Command::LeTerminateBig {
+    check(
+        Command::LeTerminateBig {
             big_handle: 1,
             reason: 2,
-    }, "016a20020102");
+        },
+        "016a20020102",
+    );
 }
 
 #[test]
 fn cmd_lebigcreatesync() {
-    check(Command::LeBigCreateSync {
+    check(
+        Command::LeBigCreateSync {
             big_handle: 1,
             sync_handle: 770,
             encryption: 4,
@@ -1385,65 +1721,84 @@ fn cmd_lebigcreatesync() {
             mse: 21,
             big_sync_timeout: 5910,
             bis: vec![24],
-    }, "016b20190102030405060708090a0b0c0d0e0f10111213141516170118");
+        },
+        "016b20190102030405060708090a0b0c0d0e0f10111213141516170118",
+    );
 }
 
 #[test]
 fn cmd_lebigterminatesync() {
-    check(Command::LeBigTerminateSync {
-            big_handle: 1,
-    }, "016c200101");
+    check(Command::LeBigTerminateSync { big_handle: 1 }, "016c200101");
 }
 
 #[test]
 fn cmd_lesetupisodatapath() {
-    check(Command::LeSetupIsoDataPath {
+    check(
+        Command::LeSetupIsoDataPath {
             connection_handle: 513,
             data_path_direction: 3,
             data_path_id: 4,
-            codec_id: CodingFormat { coding_format: 2, company_id: 0, vendor_specific_codec_id: 0 },
+            codec_id: CodingFormat {
+                coding_format: 2,
+                company_id: 0,
+                vendor_specific_codec_id: 0,
+            },
             controller_delay: 460293,
             codec_configuration: vec![8, 9, 10],
-    }, "016e20100102030402000000000506070308090a");
+        },
+        "016e20100102030402000000000506070308090a",
+    );
 }
 
 #[test]
 fn cmd_leremoveisodatapath() {
-    check(Command::LeRemoveIsoDataPath {
+    check(
+        Command::LeRemoveIsoDataPath {
             connection_handle: 513,
             data_path_direction: 3,
-    }, "016f2003010203");
+        },
+        "016f2003010203",
+    );
 }
 
 #[test]
 fn cmd_lesethostfeature() {
-    check(Command::LeSetHostFeature {
+    check(
+        Command::LeSetHostFeature {
             bit_number: 1,
             bit_value: 2,
-    }, "017420020102");
+        },
+        "017420020102",
+    );
 }
 
 #[test]
 fn cmd_lesetdefaultsubrate() {
-    check(Command::LeSetDefaultSubrate {
+    check(
+        Command::LeSetDefaultSubrate {
             subrate_min: 513,
             subrate_max: 1027,
             max_latency: 1541,
             continuation_number: 2055,
             supervision_timeout: 2569,
-    }, "017d200a0102030405060708090a");
+        },
+        "017d200a0102030405060708090a",
+    );
 }
 
 #[test]
 fn cmd_lesubraterequest() {
-    check(Command::LeSubrateRequest {
+    check(
+        Command::LeSubrateRequest {
             connection_handle: 513,
             subrate_min: 1027,
             subrate_max: 1541,
             max_latency: 2055,
             continuation_number: 2569,
             supervision_timeout: 3083,
-    }, "017e200c0102030405060708090a0b0c");
+        },
+        "017e200c0102030405060708090a0b0c",
+    );
 }
 
 #[test]
@@ -1453,14 +1808,18 @@ fn cmd_lecsreadlocalsupportedcapabilities() {
 
 #[test]
 fn cmd_lecsreadremotesupportedcapabilities() {
-    check(Command::LeCsReadRemoteSupportedCapabilities {
+    check(
+        Command::LeCsReadRemoteSupportedCapabilities {
             connection_handle: 513,
-    }, "018a20020102");
+        },
+        "018a20020102",
+    );
 }
 
 #[test]
 fn cmd_lecswritecachedremotesupportedcapabilities() {
-    check(Command::LeCsWriteCachedRemoteSupportedCapabilities {
+    check(
+        Command::LeCsWriteCachedRemoteSupportedCapabilities {
             connection_handle: 513,
             num_config_supported: 3,
             max_consecutive_procedures_supported: 1284,
@@ -1482,31 +1841,42 @@ fn cmd_lecswritecachedremotesupportedcapabilities() {
             t_pm_times_supported: 7195,
             t_sw_time_supported: 29,
             tx_snr_capability: 30,
-    }, "018b201e0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e");
+        },
+        "018b201e0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e",
+    );
 }
 
 #[test]
 fn cmd_lecssecurityenable() {
-    check(Command::LeCsSecurityEnable {
+    check(
+        Command::LeCsSecurityEnable {
             connection_handle: 513,
-    }, "018c20020102");
+        },
+        "018c20020102",
+    );
 }
 
 #[test]
 fn cmd_lecssetdefaultsettings() {
-    check(Command::LeCsSetDefaultSettings {
+    check(
+        Command::LeCsSetDefaultSettings {
             connection_handle: 513,
             role_enable: 3,
             cs_sync_antenna_selection: 4,
             max_tx_power: 5,
-    }, "018d20050102030405");
+        },
+        "018d20050102030405",
+    );
 }
 
 #[test]
 fn cmd_lecsreadremotefaetable() {
-    check(Command::LeCsReadRemoteFaeTable {
+    check(
+        Command::LeCsReadRemoteFaeTable {
             connection_handle: 513,
-    }, "018e20020102");
+        },
+        "018e20020102",
+    );
 }
 
 #[test]
@@ -1519,7 +1889,8 @@ fn cmd_lecswritecachedremotefaetable() {
 
 #[test]
 fn cmd_lecscreateconfig() {
-    check(Command::LeCsCreateConfig {
+    check(
+        Command::LeCsCreateConfig {
             connection_handle: 513,
             config_id: 3,
             create_context: 4,
@@ -1538,27 +1909,36 @@ fn cmd_lecscreateconfig() {
             ch3c_shape: 26,
             ch3c_jump: 27,
             reserved: 28,
-    }, "0190201c0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c");
+        },
+        "0190201c0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c",
+    );
 }
 
 #[test]
 fn cmd_lecsremoveconfig() {
-    check(Command::LeCsRemoveConfig {
+    check(
+        Command::LeCsRemoveConfig {
             connection_handle: 513,
             config_id: 3,
-    }, "01912003010203");
+        },
+        "01912003010203",
+    );
 }
 
 #[test]
 fn cmd_lecssetchannelclassification() {
-    check(Command::LeCsSetChannelClassification {
+    check(
+        Command::LeCsSetChannelClassification {
             channel_classification: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
-    }, "0192200a0102030405060708090a");
+        },
+        "0192200a0102030405060708090a",
+    );
 }
 
 #[test]
 fn cmd_lecssetprocedureparameters() {
-    check(Command::LeCsSetProcedureParameters {
+    check(
+        Command::LeCsSetProcedureParameters {
             connection_handle: 513,
             config_id: 3,
             max_procedure_len: 1284,
@@ -1573,21 +1953,27 @@ fn cmd_lecssetprocedureparameters() {
             preferred_peer_antenna: 21,
             snr_control_initiator: 22,
             snr_control_reflector: 23,
-    }, "019320170102030405060708090a0b0c0d0e0f1011121314151617");
+        },
+        "019320170102030405060708090a0b0c0d0e0f1011121314151617",
+    );
 }
 
 #[test]
 fn cmd_lecsprocedureenable() {
-    check(Command::LeCsProcedureEnable {
+    check(
+        Command::LeCsProcedureEnable {
             connection_handle: 513,
             config_id: 3,
             enable: 4,
-    }, "0194200401020304");
+        },
+        "0194200401020304",
+    );
 }
 
 #[test]
 fn cmd_lecstest() {
-    check(Command::LeCsTest {
+    check(
+        Command::LeCsTest {
             main_mode_type: 1,
             sub_mode_type: 2,
             main_mode_repetition: 3,
@@ -1613,7 +1999,9 @@ fn cmd_lecstest() {
             channel_map_repetition: 27,
             override_config: 7452,
             override_parameters_data: vec![30, 31, 32],
-    }, "019520210102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d031e1f20");
+        },
+        "019520210102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d031e1f20",
+    );
 }
 
 #[test]
@@ -1623,18 +2011,22 @@ fn cmd_lecstestend() {
 
 #[test]
 fn cmd_leframespaceupdate() {
-    check(Command::LeFrameSpaceUpdate {
+    check(
+        Command::LeFrameSpaceUpdate {
             connection_handle: 513,
             frame_space_min: 1027,
             frame_space_max: 1541,
             phys: 7,
             spacing_types: 2312,
-    }, "019d2009010203040506070809");
+        },
+        "019d2009010203040506070809",
+    );
 }
 
 #[test]
 fn cmd_leconnectionraterequest() {
-    check(Command::LeConnectionRateRequest {
+    check(
+        Command::LeConnectionRateRequest {
             connection_handle: 513,
             connection_interval_min: 1027,
             connection_interval_max: 1541,
@@ -1645,12 +2037,15 @@ fn cmd_leconnectionraterequest() {
             supervision_timeout: 4111,
             min_ce_length: 4625,
             max_ce_length: 5139,
-    }, "01a120140102030405060708090a0b0c0d0e0f1011121314");
+        },
+        "01a120140102030405060708090a0b0c0d0e0f1011121314",
+    );
 }
 
 #[test]
 fn cmd_lesetdefaultrateparameters() {
-    check(Command::LeSetDefaultRateParameters {
+    check(
+        Command::LeSetDefaultRateParameters {
             connection_interval_min: 513,
             connection_interval_max: 1027,
             subrate_min: 1541,
@@ -1660,10 +2055,15 @@ fn cmd_lesetdefaultrateparameters() {
             supervision_timeout: 3597,
             min_ce_length: 4111,
             max_ce_length: 4625,
-    }, "01a220120102030405060708090a0b0c0d0e0f101112");
+        },
+        "01a220120102030405060708090a0b0c0d0e0f101112",
+    );
 }
 
 #[test]
 fn cmd_lereadminimumsupportedconnectioninterval() {
-    check(Command::LeReadMinimumSupportedConnectionInterval, "01a32000");
+    check(
+        Command::LeReadMinimumSupportedConnectionInterval,
+        "01a32000",
+    );
 }
