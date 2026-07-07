@@ -61,14 +61,14 @@ Because the port targets the **LE core**, most touched modules are partial by
 design; the notes say what's covered vs. deferred. LOC is the upstream module
 size, to convey remaining surface.
 
-### Core & utilities
+### Core & utilities — ✅ done
 | Upstream (LOC) | Rust crate | Status | Notes |
 |---|---|---|---|
-| `core.py` (2.1k), `data_types.py` (1.0k) | `bumble` | 🟡 | `Uuid`, `Address`, `Appearance`, `ClassOfDevice`, `AdvertisingData` (raw TLV). Deferred: the typed `DataType` subclass hierarchy and many enums. |
-| `company_ids.py` (3.3k) | — | ⬜ | Vendor-ID lookup table. |
-| `utils.py` (0.5k) | (spread) | 🟡 | Open-enum/flag semantics reimplemented idiomatically; `crc_16` lives in `bumble-l2cap`. Not a 1:1 port. |
-| `keys.py` (0.4k) | — | ⬜ | Key store / bonding persistence. |
-| `colors`, `logging`, `snoop`, `helpers`, `decoder` | — | ⬜ | Logging / debug / packet-trace tooling. |
+| `core.py` (2.1k), `data_types.py` (1.0k) | `bumble` | ✅ | Core types (`Uuid`, `Address`, `Appearance`, `ClassOfDevice`, `AdvertisingData`), the full typed `DataType` AD hierarchy (~40 types, oracle-pinned), well-known 16-bit UUID names, and `PhysicalTransport`/`LeRole`. |
+| `company_ids.py` (3.3k) | `bumble::company_ids` | ✅ | 3,327-entry SIG company table + `company_name()` binary-search lookup. |
+| `keys.py` (0.4k) | `bumble::keys` | ✅ | `PairingKeys` / `Key` data structures. Persistent key stores (JSON/async I/O) deferred. |
+| `utils.py` (0.5k) | `bumble::util` (+ spread) | ✅ | Generic helpers (`bit_flags_to_strings`, `name_or_number`); `crc_16` lives in `bumble-l2cap`; the open-enum/flag pattern is realized as newtypes throughout. The asyncio event infra (`EventEmitter`/`AsyncRunner`/`FlowControlAsyncPipe`) is **N/A** for this synchronous port. |
+| `colors`, `logging`, `helpers`, `snoop`, `decoder` | — | N/A | Debug/logging tooling with idiomatic Rust equivalents rather than library surface: `colors` (ANSI), `logging` (→ `log`/`tracing`), `helpers.PacketTracer` (debug trace), `snoop` (BTSnoop/pcap capture). `decoder.py` is a **G.722 audio codec** — it belongs with the audio subsystem, not core. |
 
 ### HCI, controller & link
 | Upstream (LOC) | Rust crate | Status | Notes |

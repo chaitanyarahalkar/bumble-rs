@@ -1,9 +1,10 @@
 //! bumble — a Rust port of the core Bluetooth primitives from
 //! [`google/bumble`](https://github.com/google/bumble).
 //!
-//! This is **slice 1** of an incremental port: the shared types that every
-//! higher layer (HCI, L2CAP, ATT/GATT, SMP) depends on. It is intentionally
-//! self-contained — no async, no I/O, no hardware, std-only.
+//! The shared **core & utilities** layer that every higher layer (HCI, L2CAP,
+//! ATT/GATT, SMP) depends on — the port of `bumble.core`, `bumble.data_types`,
+//! `bumble.company_ids`, `bumble.keys`, and the portable parts of
+//! `bumble.utils`. std-only, no async, no I/O, no hardware.
 //!
 //! Modules:
 //! - [`uuid`] — Bluetooth UUIDs (16/32/128-bit).
@@ -11,6 +12,12 @@
 //! - [`appearance`] — GAP Appearance.
 //! - [`class_of_device`] — Class of Device.
 //! - [`advertising_data`] — Advertising Data (raw TLV).
+//! - [`data_types`] — typed Advertising Data structures.
+//! - [`company_ids`] — Bluetooth SIG company identifier table.
+//! - [`well_known_uuids`] — assigned 16-bit UUID names.
+//! - [`keys`] — pairing key material (`PairingKeys`).
+//! - [`types`] — small shared enums (`PhysicalTransport`, `LeRole`).
+//! - [`util`] — generic helpers (bit-flag names, name-or-number).
 
 pub mod address;
 pub mod advertising_data;
@@ -18,7 +25,11 @@ pub mod appearance;
 pub mod class_of_device;
 pub mod company_ids;
 pub mod data_types;
+pub mod keys;
+pub mod types;
+pub mod util;
 pub mod uuid;
+pub mod well_known_uuids;
 
 pub use address::{Address, AddressType};
 pub use advertising_data::AdvertisingData;
@@ -26,7 +37,10 @@ pub use appearance::{Appearance, Category};
 pub use class_of_device::{ClassOfDevice, MajorDeviceClass, MajorServiceClasses};
 pub use company_ids::company_name;
 pub use data_types::DataType;
+pub use keys::{Key, PairingKeys};
+pub use types::{LeRole, PhysicalTransport};
 pub use uuid::Uuid;
+pub use well_known_uuids::uuid16_name;
 
 use core::fmt;
 
