@@ -7,5 +7,6 @@ members = [
     "bumble-att",
     "bumble-crypto",
     "bumble-gatt",
+    "bumble-host",
 ]
 resolver = "2"

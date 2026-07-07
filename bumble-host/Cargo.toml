@@ -1,0 +1,14 @@
+[package]
+name = "bumble-host"
+version = "0.1.0"
+edition = "2021"
+description = "Rust port of google/bumble host glue (slice 10: Device — ATT-over-L2CAP-over-ACL sequencing as a library)"
+license = "Apache-2.0"
+
+[dependencies]
+bumble = { path = "../bumble" }
+bumble-hci = { path = "../bumble-hci" }
+bumble-l2cap = { path = "../bumble-l2cap" }
+bumble-att = { path = "../bumble-att" }
+bumble-gatt = { path = "../bumble-gatt" }
+bumble-controller = { path = "../bumble-controller" }

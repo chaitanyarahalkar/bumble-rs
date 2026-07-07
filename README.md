@@ -20,8 +20,9 @@ crate whose behavior is verified against the upstream Python.
 | 6. SMP cryptographic toolbox | `bumble-crypto` | ✅ 10/10 vectors green |
 | 7. LE connection establishment (in the controller) | `bumble-controller` | ✅ (see slice 3+7) |
 | 8. ACL data path (ATT-over-L2CAP-over-ACL, cross-layer) | `bumble-controller` | ✅ 8/8 controller tests |
-| 9. Minimal GATT/ATT server (end-to-end characteristic read/write) | `bumble-gatt` | ✅ 5/5 tests green |
-| 10+. GATT discovery, notifications, profiles, classic (RFCOMM/SDP/A2DP…) | — | planned |
+| 9. Minimal GATT/ATT server (end-to-end attribute read/write) | `bumble-gatt` | ✅ 5/5 tests green |
+| 10. Host/Device glue (ATT↔L2CAP↔ACL sequencing as a library API) | `bumble-host` | ✅ 2/2 tests green |
+| 11+. GATT discovery, notifications, profiles, classic (RFCOMM/SDP/A2DP…) | — | planned |
 
 Slice 2 covers the HCI **framing foundation**, every command exercised by
 `hci_test.py::run_test_commands` (fixed-layout, address, mask, and the per-entry
@@ -195,6 +196,28 @@ This composes all seven crates and is the first point where the port does
 something a Bluetooth stack is actually *for* — read/write a characteristic
 between two devices — rather than exercising a single layer in isolation.
 
+## Slice 10 — what's here
+
+The host-side glue in the [`bumble-host`](bumble-host/) crate — this is what
+makes the cross-layer composition a **library capability** rather than test
+wiring:
+
+- **`Device`** — sits above a controller (by id on a shared `LocalLink`), owns
+  the ATT↔L2CAP↔ACL sequencing: learns its connection handle from the
+  Connection Complete event, sends ATT PDUs with `send_att`, and on `poll`
+  processes inbound ACL (an optional server-role `AttServer` answers requests
+  automatically; responses/notifications are queued for the client).
+- **`pump`** — drives a set of devices to quiescence (the synchronous event
+  loop this port needs).
+
+The acceptance test does the same attribute write/read as slice 9, but the test
+now only performs connection setup and high-level `send_att` calls — the layer
+sequencing lives entirely in `Device`.
+
+Deferred: L2CAP fragmentation/reassembly across multiple ACL packets (each ATT
+PDU is assumed to fit one packet), the LE signaling channel, and multiple
+connections per device.
+
 ## Acceptance
 
 The port's contract is the upstream Python test suite, ported 1:1:
@@ -250,7 +273,10 @@ bumble-rs/
 │   └── tests/vectors.rs       # ported smp_test.py spec/RFC vectors
 ├── bumble-gatt/               # slice-9 minimal GATT/ATT server crate
 │   ├── src/lib.rs
-│   └── tests/end_to_end.rs    # characteristic write/read across the full stack
+│   └── tests/end_to_end.rs    # attribute write/read across the full stack
+├── bumble-host/               # slice-10 Host/Device glue crate
+│   ├── src/lib.rs
+│   └── tests/gatt_over_host.rs # write/read via the Device API (glue in the library)
 └── docs/superpowers/          # design specs + implementation plans
 ```
 
