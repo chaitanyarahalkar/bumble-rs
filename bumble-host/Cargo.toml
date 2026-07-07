@@ -12,3 +12,7 @@ bumble-l2cap = { path = "../bumble-l2cap" }
 bumble-att = { path = "../bumble-att" }
 bumble-gatt = { path = "../bumble-gatt" }
 bumble-controller = { path = "../bumble-controller" }
+
+[dev-dependencies]
+# The SMP pairing integration test runs the handshake over the link.
+bumble-smp = { path = "../bumble-smp" }

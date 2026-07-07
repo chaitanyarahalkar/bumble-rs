@@ -255,11 +255,12 @@ mod tests {
         a
     }
 
-    /// The confirm computation matches the published `c1` vector (slice 6), and
-    /// both sides derive the same STK from `s1` — a JustWorks legacy pairing.
+    /// The confirm computation matches the published Bluetooth-spec `c1` vector
+    /// (see bumble-crypto). (A genuine two-party pairing handshake, where the
+    /// matching STK is derived by independent peers, lives in the bumble-host
+    /// integration test.)
     #[test]
-    fn legacy_pairing_confirm_and_stk() {
-        // Inputs from the Bluetooth-spec c1 test vector (see bumble-crypto).
+    fn legacy_confirm_matches_spec_vector() {
         let tk = [0u8; 16];
         let mrand = rhex16("5783D52156AD6F0E6388274EC6702EE0");
         // preq/pres are the reversed 7-byte values from the c1 vector.
@@ -272,12 +273,6 @@ mod tests {
 
         let mconfirm = legacy_confirm(&tk, &mrand, &preq, &pres, &ia, 1, &ra, 0);
         assert_eq!(mconfirm, rhex16("1e1e3fef878988ead2a74dc5bef13b86"));
-
-        // Both peers derive the same STK from the two randoms.
-        let srand = rhex16("000102030405060708090a0b0c0d0e0f");
-        let stk_initiator = legacy_stk(&tk, &srand, &mrand);
-        let stk_responder = legacy_stk(&tk, &srand, &mrand);
-        assert_eq!(stk_initiator, stk_responder);
     }
 
     fn unhex_n(s: &str) -> Vec<u8> {

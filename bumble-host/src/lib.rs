@@ -41,6 +41,8 @@ pub struct Device {
     server: Option<Box<dyn AttRequestHandler>>,
     connection_handle: Option<u16>,
     inbox: Vec<AttPdu>,
+    /// Received payloads on non-ATT L2CAP channels, as `(cid, payload)`.
+    l2cap_inbox: Vec<(u16, Vec<u8>)>,
 }
 
 impl Device {
@@ -51,6 +53,7 @@ impl Device {
             server: None,
             connection_handle: None,
             inbox: Vec::new(),
+            l2cap_inbox: Vec::new(),
         }
     }
 
@@ -62,6 +65,7 @@ impl Device {
             server: Some(Box::new(server)),
             connection_handle: None,
             inbox: Vec::new(),
+            l2cap_inbox: Vec::new(),
         }
     }
 
@@ -100,14 +104,29 @@ impl Device {
         std::mem::take(&mut self.inbox)
     }
 
-    /// Send an ATT PDU to the peer on the ATT channel. Requires an established
-    /// connection.
-    pub fn send_att(&mut self, link: &mut LocalLink, pdu: &AttPdu) -> bool {
+    /// Send a raw payload on an L2CAP channel to the peer. Requires an
+    /// established connection.
+    pub fn send_l2cap(&mut self, link: &mut LocalLink, cid: u16, payload: &[u8]) -> bool {
         let Some(handle) = self.connection_handle else {
             return false;
         };
-        let frame = L2capPdu::new(ATT_CID, pdu.to_bytes()).to_bytes(false);
+        let frame = L2capPdu::new(cid, payload.to_vec()).to_bytes(false);
         link.send_acl_data(self.controller_id, handle, &frame)
+    }
+
+    /// Send an ATT PDU to the peer on the ATT channel.
+    pub fn send_att(&mut self, link: &mut LocalLink, pdu: &AttPdu) -> bool {
+        self.send_l2cap(link, ATT_CID, &pdu.to_bytes())
+    }
+
+    /// Remove and return payloads received on the given (non-ATT) L2CAP channel,
+    /// e.g. SMP on CID `0x0006`.
+    pub fn take_l2cap(&mut self, cid: u16) -> Vec<Vec<u8>> {
+        let (matching, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut self.l2cap_inbox)
+            .into_iter()
+            .partition(|(c, _)| *c == cid);
+        self.l2cap_inbox = rest;
+        matching.into_iter().map(|(_, payload)| payload).collect()
     }
 
     /// Send an unsolicited Handle Value Notification for `value_handle` to the
@@ -152,7 +171,9 @@ impl Device {
         let Ok(l2cap) = L2capPdu::from_bytes(data) else {
             return;
         };
+        // Non-ATT channels (e.g. SMP on 0x0006) are queued raw for the caller.
         if l2cap.cid != ATT_CID {
+            self.l2cap_inbox.push((l2cap.cid, l2cap.payload));
             return;
         }
         let Ok(pdu) = AttPdu::from_bytes(&l2cap.payload) else {

@@ -255,10 +255,16 @@ previously standalone `bumble-crypto` into a real protocol:
 - **`SmpPdu`** — the Security Manager PDUs (Pairing Request/Response/Confirm/
   Random/Failed) over L2CAP CID `0x0006`, oracle-pinned against Python.
 - **`legacy_confirm` / `legacy_stk`** — the LE Legacy pairing `c1`/`s1`
-  computations, wrapping `bumble-crypto`. The test pins the confirm value to the
-  published Bluetooth-spec `c1` vector and derives a matching Short Term Key.
+  computations, wrapping `bumble-crypto`; the unit test pins the confirm to the
+  published Bluetooth-spec `c1` vector.
 
-With this, all nine crates participate in the composition.
+The `bumble-host` integration test runs a **real JustWorks pairing handshake
+over the connection**: two peers exchange Pairing Request/Response/Confirm/Random
+on the SMP channel (CID `0x0006`), each verifies the other's confirm by
+recomputing `c1` with the *received* random, and both independently derive the
+same Short Term Key. This wires the last crate into the connection flow — all
+nine crates now genuinely compose (SMP PDUs cross the L2CAP/ACL/link boundary
+using the crypto toolbox).
 
 ## Acceptance
 
