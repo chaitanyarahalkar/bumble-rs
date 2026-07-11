@@ -27,6 +27,10 @@ crypto is pinned to Bluetooth-spec / RFC 4493 vectors.
 - **`bumble-gatt`** — a minimal ATT attribute server and a `GattServer` with a
   service/characteristic model and primary discovery.
 - **`bumble-smp`** — SMP PDU codec and LE Legacy pairing (`c1`/`s1`) helpers.
+- **`bumble-sdp`** — Service Discovery Protocol codec (the first Classic/BR-EDR
+  piece): the recursive `DataElement` type-length-value format, the
+  `ServiceAttribute` service-record model, and all seven `SdpPdu` messages —
+  oracle-pinned to upstream `sdp_test.py`.
 - **`bumble-controller`** — a synchronous software controller and in-process
   `LocalLink`: advertising/scanning, LE connection establishment, ACL routing,
   and disconnection.
@@ -39,6 +43,7 @@ crypto is pinned to Bluetooth-spec / RFC 4493 vectors.
 
 - LE Secure Connections pairing (ECDH + `f4`/`f5`/`f6`/`g2` handshake) is not
   wired, though the crypto primitives exist and are vector-verified.
-- No GATT descriptors/CCCD subscriptions, L2CAP fragmentation/reassembly, or
-  Classic Bluetooth (RFCOMM/SDP/A2DP/AVRCP/HFP).
+- No GATT descriptors/CCCD subscriptions or L2CAP fragmentation/reassembly.
+- Of Classic Bluetooth, only the SDP codec exists; RFCOMM/A2DP/AVRCP/HFP/HID
+  and the SDP async client/server + service-record database are not ported.
 - The controller/link are synchronous (no async runtime) by design.

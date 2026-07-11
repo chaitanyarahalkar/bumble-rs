@@ -30,7 +30,8 @@ crate whose behavior is verified against the upstream Python.
 | 12. GATT notifications (server → client) | `bumble-host` | ✅ |
 | 13. LE disconnection (Disconnect → Disconnection Complete both sides) | `bumble-controller` | ✅ |
 | 14. SMP PDU codec + LE Legacy pairing (wires in `bumble-crypto`) | `bumble-smp` | ✅ 2/2 tests green |
-| 15+. LE Secure Connections pairing, GATT descriptors, classic (RFCOMM/SDP/A2DP…) | — | planned |
+| 16. SDP codec (data elements + PDUs) — first Classic (BR/EDR) piece | `bumble-sdp` | ✅ 22/22 tests green |
+| 17+. LE Secure Connections pairing, GATT descriptors, more classic (RFCOMM/A2DP…) | — | planned |
 
 The LE lifecycle is now complete end-to-end through library APIs: **connect →
 discover → read/write → notify → disconnect** between two virtual devices — and
@@ -116,7 +117,7 @@ size, to convey remaining surface.
 | Upstream (LOC) | Rust crate | Status | Notes |
 |---|---|---|---|
 | `rfcomm.py` (1.2k) | — | ⬜ | Serial port emulation. |
-| `sdp.py` (1.4k) | — | ⬜ | Service Discovery Protocol. |
+| `sdp.py` (1.4k) | `bumble-sdp` | 🟡 | **Codec complete, oracle-pinned**: the recursive `DataElement` type-length-value format (all nine element types, all eight size-index encodings, 16/32/128-bit UUIDs), the `ServiceAttribute` service-record model, and all seven `SdpPdu` messages (Error / Service Search / Service Attribute / Service Search Attribute request+response) with continuation state carried verbatim. Deferred (matching the port's synchronous, codec-first approach): the asyncio `Client`/`Server`, the continuation-state reassembly loop, and the service-record database. |
 | `hfp.py` (2.1k), `at.py` (0.1k) | — | ⬜ | Hands-Free Profile. |
 | `hid.py` (0.6k) | — | ⬜ | Human Interface Device. |
 | `a2dp` (1.0k), `avdtp` (2.4k), `avrcp` (2.9k), `avc` (0.5k), `avctp` (0.3k), `rtp` (0.1k), `codecs` (0.5k) | — | ⬜ | A/V distribution + remote control + audio. |
@@ -131,10 +132,13 @@ size, to convey remaining surface.
 
 Fully or substantially covered for the **LE core data + security path**: core
 types, HCI framing, L2CAP/ATT/GATT/SMP codecs, the SMP crypto toolbox, and a
-controller/link/host that runs the LE lifecycle end-to-end. Everything else —
-the exhaustive HCI catalog, the full device/host/GATT-client abstractions, LE
-Secure Connections, real transports, and **all of Classic Bluetooth and the
-profiles** — is the large majority of the ~82k upstream lines and remains to do.
+controller/link/host that runs the LE lifecycle end-to-end. Classic Bluetooth
+has its **first foundation piece** — the SDP codec (`bumble-sdp`), which the
+classic profiles build service records on. Everything else — the full
+device/host/GATT-client abstractions, LE Secure Connections, real transports,
+and the **rest of Classic Bluetooth (RFCOMM/A2DP/AVRCP/HFP/HID/…) and the
+profiles** — is still the large majority of the ~82k upstream lines and remains
+to do.
 
 ## Slice 1 — what's here
 
@@ -358,6 +362,33 @@ same Short Term Key. This wires the last crate into the connection flow — all
 nine crates now genuinely compose (SMP PDUs cross the L2CAP/ACL/link boundary
 using the crypto toolbox).
 
+## Slice 16 — what's here
+
+The Service Discovery Protocol codec in [`bumble-sdp`](bumble-sdp/) — the first
+piece of Classic Bluetooth (BR/EDR) infrastructure. SDP is how a classic device
+discovers which services a peer offers and how to reach them, and its
+self-describing data-element format is the value encoding every classic profile
+(RFCOMM/SPP, A2DP, AVRCP, HFP, HID, …) builds its service records from:
+
+- **`DataElement`** — the recursive type-length-value element format (Vol 3,
+  Part B - 3.3): nil, unsigned/signed integers (1/2/4/8 bytes), 16/32/128-bit
+  UUIDs, text strings, booleans, sequences, alternatives and URLs — all eight
+  size-index encodings, including the 2-byte and 4-byte length forms exercised
+  by 300-byte and 100,000-byte strings.
+- **`ServiceAttribute`** — the `(attribute-id, value)` pair a service record is
+  built from, plus the flat alternating-element list encoding a record uses.
+- **`SdpPdu`** — the seven Protocol Data Units (Vol 3, Part B - 4.4–4.7), with
+  the common `[pdu-id, transaction-id, parameter-length, parameters…]` framing.
+
+Every serialization is **oracle-pinned** to a hex literal captured from upstream
+Python Bumble (commit `1d26b99`), mirroring `tests/sdp_test.py::test_data_elements`.
+The oracle immediately earned its keep: it caught that `SDP_ErrorResponse`'s
+`error_code` is serialized **little-endian** (upstream's default u16 encoding)
+while every other SDP integer field is big-endian — a quirk a round-trip test
+alone would have missed. Deferred, matching the port's synchronous, codec-first
+approach: the asyncio `Client`/`Server`, the continuation-state reassembly loop,
+and the higher-level service-record database.
+
 ## Acceptance
 
 The port's contract is the upstream Python test suite, ported 1:1:
@@ -419,6 +450,9 @@ bumble-rs/
 │   └── tests/gatt_over_host.rs # full LE lifecycle via the Device API
 ├── bumble-smp/                # slice-14 SMP codec + legacy pairing crate
 │   └── src/lib.rs             # wires bumble-crypto (c1/s1) into pairing
+├── bumble-sdp/                # slice-16 SDP codec crate (first Classic piece)
+│   ├── src/{lib,pdu}.rs       # DataElement + ServiceAttribute + SdpPdu
+│   └── tests/acceptance.rs    # ported sdp_test.py cases (oracle-pinned)
 └── docs/superpowers/          # design specs + implementation plans
 ```
 
