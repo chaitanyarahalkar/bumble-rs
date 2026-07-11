@@ -25,6 +25,14 @@ fn check(element: DataElement, oracle: &str) {
     );
     let parsed = DataElement::from_bytes(&bytes).expect("parse");
     assert_eq!(parsed, element, "round-trip mismatch for {element:?}");
+    // Re-serialize the parsed value (upstream `basic_check`'s third step): a
+    // byte-exact match is stricter than value equality, which for `Uuid` is
+    // fuzzy under 128-bit expansion.
+    assert_eq!(
+        hex(&parsed.to_bytes().expect("re-serialize")),
+        oracle,
+        "re-serialize mismatch for {element:?}"
+    );
 }
 
 // --- DataElement scalars -----------------------------------------------------
@@ -135,6 +143,13 @@ fn data_element_sequences_and_alternatives() {
     );
 }
 
+/// An empty sequence is header `35` plus a one-byte length of `00`.
+#[test]
+fn data_element_empty_sequence() {
+    check(DataElement::sequence([]), "3500");
+    check(DataElement::alternative([]), "3d00");
+}
+
 #[test]
 fn data_element_nested_sequence() {
     check(
@@ -191,6 +206,13 @@ fn check_pdu(pdu: SdpPdu, oracle: &str) {
     assert_eq!(hex(&bytes), oracle, "serialization mismatch for {pdu:?}");
     let parsed = SdpPdu::from_bytes(&bytes).expect("parse");
     assert_eq!(parsed, pdu, "round-trip mismatch for {pdu:?}");
+    // Re-serialize the parsed value (upstream `basic_check`'s third step) so
+    // the round-trip is byte-tight rather than resting on value equality.
+    assert_eq!(
+        hex(&parsed.to_bytes().expect("re-serialize")),
+        oracle,
+        "re-serialize mismatch for {pdu:?}"
+    );
 }
 
 fn browse_root_pattern() -> DataElement {

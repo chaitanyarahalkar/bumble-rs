@@ -30,7 +30,7 @@ crate whose behavior is verified against the upstream Python.
 | 12. GATT notifications (server → client) | `bumble-host` | ✅ |
 | 13. LE disconnection (Disconnect → Disconnection Complete both sides) | `bumble-controller` | ✅ |
 | 14. SMP PDU codec + LE Legacy pairing (wires in `bumble-crypto`) | `bumble-smp` | ✅ 2/2 tests green |
-| 16. SDP codec (data elements + PDUs) — first Classic (BR/EDR) piece | `bumble-sdp` | ✅ 22/22 tests green |
+| 16. SDP codec (data elements + PDUs) — first Classic (BR/EDR) piece | `bumble-sdp` | ✅ 23/23 tests green |
 | 17+. LE Secure Connections pairing, GATT descriptors, more classic (RFCOMM/A2DP…) | — | planned |
 
 The LE lifecycle is now complete end-to-end through library APIs: **connect →
