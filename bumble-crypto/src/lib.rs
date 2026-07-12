@@ -20,14 +20,14 @@
 //! `crypto.EccKey` (big-endian `x`/`y`, and a `dh` that returns the shared
 //! secret's X coordinate).
 
-use aes::cipher::generic_array::GenericArray;
-use aes::cipher::{BlockEncrypt, KeyInit};
+use aes::cipher::{Block, BlockEncrypt, KeyInit};
 use aes::Aes128;
 
 /// AES-128 encryption of a single 16-byte block.
 fn aes_encrypt_block(key: &[u8; 16], block: &[u8; 16]) -> [u8; 16] {
-    let cipher = Aes128::new(GenericArray::from_slice(key));
-    let mut b = *GenericArray::from_slice(block);
+    let cipher = Aes128::new_from_slice(key).expect("AES-128 key has fixed length");
+    let mut b = Block::<Aes128>::default();
+    b.copy_from_slice(block);
     cipher.encrypt_block(&mut b);
     let mut out = [0u8; 16];
     out.copy_from_slice(&b);
@@ -280,7 +280,7 @@ impl EccKey {
     pub fn public_x(&self) -> [u8; 32] {
         let ep = self.encoded_public();
         let mut out = [0u8; 32];
-        out.copy_from_slice(ep.x().expect("uncompressed point has an X").as_slice());
+        out.copy_from_slice(ep.x().expect("uncompressed point has an X"));
         out
     }
 
@@ -288,7 +288,7 @@ impl EccKey {
     pub fn public_y(&self) -> [u8; 32] {
         let ep = self.encoded_public();
         let mut out = [0u8; 32];
-        out.copy_from_slice(ep.y().expect("uncompressed point has a Y").as_slice());
+        out.copy_from_slice(ep.y().expect("uncompressed point has a Y"));
         out
     }
 
@@ -300,14 +300,16 @@ impl EccKey {
                 "peer coordinates must be 32 bytes".into(),
             ));
         }
-        let x = p256::FieldBytes::clone_from_slice(peer_x_be);
-        let y = p256::FieldBytes::clone_from_slice(peer_y_be);
+        let mut x = p256::FieldBytes::default();
+        x.copy_from_slice(peer_x_be);
+        let mut y = p256::FieldBytes::default();
+        y.copy_from_slice(peer_y_be);
         let ep = EncodedPoint::from_affine_coordinates(&x, &y, false);
         let peer = Option::<PublicKey>::from(PublicKey::from_encoded_point(&ep))
             .ok_or_else(|| Error::InvalidKey("peer point not on curve".into()))?;
         let shared = p256::ecdh::diffie_hellman(self.secret.to_nonzero_scalar(), peer.as_affine());
         let mut out = [0u8; 32];
-        out.copy_from_slice(shared.raw_secret_bytes().as_slice());
+        out.copy_from_slice(shared.raw_secret_bytes());
         Ok(out)
     }
 }

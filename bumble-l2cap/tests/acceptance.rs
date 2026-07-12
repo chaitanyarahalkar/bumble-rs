@@ -2,7 +2,10 @@
 //! (the self-contained codec tests). Frame bytes are pinned to ground-truth
 //! hex captured from real Python Bumble.
 
-use bumble_l2cap::{parse_psm, serialize_psm, ControlFrame, L2capPdu};
+use bumble_l2cap::{
+    decode_configuration_options, encode_configuration_options, parse_psm, serialize_psm,
+    ConfigurationOption, ControlFrame, L2capPdu,
+};
 
 fn unhex(s: &str) -> Vec<u8> {
     (0..s.len())
@@ -154,4 +157,72 @@ fn test_l2cap_pdu_roundtrip() {
     // length=0x0004, cid=0x0040, payload=deadbeef
     assert_eq!(hex(&bytes), "04004000deadbeef");
     assert_eq!(L2capPdu::from_bytes(&bytes).unwrap(), pdu);
+}
+
+// l2cap.py Classic signaling dataclasses, pinned to real Bumble's serializer.
+#[test]
+fn test_classic_control_frames() {
+    check(
+        ControlFrame::ConnectionResponse {
+            identifier: 0x88,
+            destination_cid: 0x0041,
+            source_cid: 0x0040,
+            result: 0,
+            status: 0,
+        },
+        "038808004100400000000000",
+    );
+
+    let mtu = encode_configuration_options(&[ConfigurationOption::new(
+        1,
+        2048u16.to_le_bytes().to_vec(),
+    )])
+    .unwrap();
+    check(
+        ControlFrame::ConfigureRequest {
+            identifier: 0x89,
+            destination_cid: 0x0041,
+            flags: 0,
+            options: mtu.clone(),
+        },
+        "048908004100000001020008",
+    );
+    check(
+        ControlFrame::ConfigureResponse {
+            identifier: 0x89,
+            source_cid: 0x0040,
+            flags: 0,
+            result: 0,
+            options: mtu,
+        },
+        "05890a0040000000000001020008",
+    );
+    check(
+        ControlFrame::DisconnectionRequest {
+            identifier: 0x8a,
+            destination_cid: 0x0041,
+            source_cid: 0x0040,
+        },
+        "068a040041004000",
+    );
+    check(
+        ControlFrame::DisconnectionResponse {
+            identifier: 0x8a,
+            destination_cid: 0x0041,
+            source_cid: 0x0040,
+        },
+        "078a040041004000",
+    );
+}
+
+#[test]
+fn test_configuration_options() {
+    let options = vec![
+        ConfigurationOption::new(1, 672u16.to_le_bytes().to_vec()),
+        ConfigurationOption::hinted(0x22, vec![0xaa, 0xbb]),
+    ];
+    let encoded = encode_configuration_options(&options).unwrap();
+    assert_eq!(hex(&encoded), "0102a002a202aabb");
+    assert_eq!(decode_configuration_options(&encoded).unwrap(), options);
+    assert!(decode_configuration_options(&[1, 2, 0xaa]).is_err());
 }

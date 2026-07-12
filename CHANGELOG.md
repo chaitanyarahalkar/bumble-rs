@@ -19,7 +19,11 @@ crypto is pinned to Bluetooth-spec / RFC 4493 vectors.
   meta events, Command Complete + typed return parameters, Disconnection
   Complete), and ACL/SCO/ISO data packets.
 - **`bumble-l2cap`** — L2CAP frame codec: `L2capPdu` with FCS (CRC-16),
-  variable-length PSM, and signaling `ControlFrame`s.
+  variable-length PSM, and signaling `ControlFrame`s. Plus (slice 21) the
+  Classic Connection/Configure/Disconnection frames and a synchronous
+  connection-oriented `ChannelManager`: validated PSM registration, dynamic
+  PSM/CID allocation, MTU negotiation, incoming accept/refusal, basic-mode SDU
+  transfer, and disconnect, verified peer-to-peer.
 - **`bumble-att`** — ATT protocol PDU codec: discovery (Read_By_Type/Group_Type,
   Find_Information, Find_By_Type_Value), reads (Read, Read_Blob), writes
   (Write_Request, Write_Command), and notifications/indications with
@@ -88,8 +92,8 @@ crypto is pinned to Bluetooth-spec / RFC 4493 vectors.
   L2CAP fragmentation/reassembly.
 - Of Classic Bluetooth, the SDP and RFCOMM codecs plus their session runtimes
   (SDP client/server + service-record database; the RFCOMM multiplexer/DLC
-  credit-flow state machine) exist, but as synchronous, sans-I/O state machines
-  only — there is no live Classic L2CAP connection-oriented channel to carry
-  them, RFCOMM retransmission and aggregate flow control are omitted, and
-  A2DP/AVRCP/HFP/HID are not ported.
+  credit-flow state machine) and the basic-mode Classic L2CAP channel runtime
+  exist as synchronous, sans-I/O components. The convenience wrappers binding
+  RFCOMM/SDP ownership to those channels, enhanced retransmission and aggregate
+  flow control are omitted, and A2DP/AVRCP/HFP/HID are not ported.
 - The controller/link are synchronous (no async runtime) by design.

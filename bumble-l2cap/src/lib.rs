@@ -9,14 +9,23 @@
 //! ## Scope
 //!
 //! Implemented: the basic L2CAP PDU with optional FCS, PSM (de)serialization,
-//! and the Connection_Request plus the four credit-based signaling frames,
-//! with a [`ControlFrame::Generic`] fallback for other signaling codes.
+//! the Classic connection/configuration/disconnection signaling frames, the
+//! four enhanced credit-based signaling frames, and a synchronous Classic
+//! channel manager with a [`ControlFrame::Generic`] fallback for other codes.
 //!
-//! Deferred to later slices: the full signaling command set, configuration
-//! option encoding, enhanced-retransmission control fields, and the channel
-//! manager / fragmentation-and-reassembly logic.
+//! Deferred to later slices: the remaining signaling command set,
+//! enhanced-retransmission control fields, LE credit-based channel runtime,
+//! and ACL fragmentation-and-reassembly logic.
 
 use core::fmt;
+
+pub mod classic;
+
+pub use classic::{
+    ChannelManager, ClassicChannel, ClassicChannelSpec, ClassicChannelState,
+    L2CAP_ACL_U_DYNAMIC_CID_RANGE_END, L2CAP_ACL_U_DYNAMIC_CID_RANGE_START, L2CAP_DEFAULT_MTU,
+    L2CAP_MIN_BR_EDR_MTU, L2CAP_PSM_DYNAMIC_RANGE_END, L2CAP_PSM_DYNAMIC_RANGE_START,
+};
 
 /// L2CAP signaling command codes (Vol 3, Part A - 4).
 pub mod codes {
@@ -46,6 +55,18 @@ pub mod codes {
 pub const L2CAP_SIGNALING_CID: u16 = 0x0001;
 /// The signaling channel identifier used for LE L2CAP.
 pub const L2CAP_LE_SIGNALING_CID: u16 = 0x0005;
+
+pub const CONNECTION_SUCCESSFUL: u16 = 0x0000;
+pub const CONNECTION_PENDING: u16 = 0x0001;
+pub const CONNECTION_REFUSED_PSM_NOT_SUPPORTED: u16 = 0x0002;
+pub const CONNECTION_REFUSED_NO_RESOURCES_AVAILABLE: u16 = 0x0004;
+
+pub const CONFIGURATION_SUCCESS: u16 = 0x0000;
+pub const CONFIGURATION_UNACCEPTABLE_PARAMETERS: u16 = 0x0001;
+pub const CONFIGURATION_REJECTED: u16 = 0x0002;
+pub const CONFIGURATION_UNKNOWN_OPTIONS: u16 = 0x0003;
+
+pub const CONFIGURATION_OPTION_MTU: u8 = 0x01;
 
 /// Errors produced while parsing L2CAP frames.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -168,6 +189,36 @@ pub enum ControlFrame {
         psm: u32,
         source_cid: u16,
     },
+    ConnectionResponse {
+        identifier: u8,
+        destination_cid: u16,
+        source_cid: u16,
+        result: u16,
+        status: u16,
+    },
+    ConfigureRequest {
+        identifier: u8,
+        destination_cid: u16,
+        flags: u16,
+        options: Vec<u8>,
+    },
+    ConfigureResponse {
+        identifier: u8,
+        source_cid: u16,
+        flags: u16,
+        result: u16,
+        options: Vec<u8>,
+    },
+    DisconnectionRequest {
+        identifier: u8,
+        destination_cid: u16,
+        source_cid: u16,
+    },
+    DisconnectionResponse {
+        identifier: u8,
+        destination_cid: u16,
+        source_cid: u16,
+    },
     CreditBasedConnectionRequest {
         identifier: u8,
         spsm: u16,
@@ -216,6 +267,11 @@ impl ControlFrame {
     pub fn code(&self) -> u8 {
         match self {
             ControlFrame::ConnectionRequest { .. } => codes::CONNECTION_REQUEST,
+            ControlFrame::ConnectionResponse { .. } => codes::CONNECTION_RESPONSE,
+            ControlFrame::ConfigureRequest { .. } => codes::CONFIGURE_REQUEST,
+            ControlFrame::ConfigureResponse { .. } => codes::CONFIGURE_RESPONSE,
+            ControlFrame::DisconnectionRequest { .. } => codes::DISCONNECTION_REQUEST,
+            ControlFrame::DisconnectionResponse { .. } => codes::DISCONNECTION_RESPONSE,
             ControlFrame::CreditBasedConnectionRequest { .. } => {
                 codes::CREDIT_BASED_CONNECTION_REQUEST
             }
@@ -235,6 +291,11 @@ impl ControlFrame {
     pub fn identifier(&self) -> u8 {
         match self {
             ControlFrame::ConnectionRequest { identifier, .. }
+            | ControlFrame::ConnectionResponse { identifier, .. }
+            | ControlFrame::ConfigureRequest { identifier, .. }
+            | ControlFrame::ConfigureResponse { identifier, .. }
+            | ControlFrame::DisconnectionRequest { identifier, .. }
+            | ControlFrame::DisconnectionResponse { identifier, .. }
             | ControlFrame::CreditBasedConnectionRequest { identifier, .. }
             | ControlFrame::CreditBasedConnectionResponse { identifier, .. }
             | ControlFrame::CreditBasedReconfigureRequest { identifier, .. }
@@ -251,6 +312,53 @@ impl ControlFrame {
                 psm, source_cid, ..
             } => {
                 p.extend_from_slice(&serialize_psm(*psm));
+                push_u16(&mut p, *source_cid);
+            }
+            ControlFrame::ConnectionResponse {
+                destination_cid,
+                source_cid,
+                result,
+                status,
+                ..
+            } => {
+                push_u16(&mut p, *destination_cid);
+                push_u16(&mut p, *source_cid);
+                push_u16(&mut p, *result);
+                push_u16(&mut p, *status);
+            }
+            ControlFrame::ConfigureRequest {
+                destination_cid,
+                flags,
+                options,
+                ..
+            } => {
+                push_u16(&mut p, *destination_cid);
+                push_u16(&mut p, *flags);
+                p.extend_from_slice(options);
+            }
+            ControlFrame::ConfigureResponse {
+                source_cid,
+                flags,
+                result,
+                options,
+                ..
+            } => {
+                push_u16(&mut p, *source_cid);
+                push_u16(&mut p, *flags);
+                push_u16(&mut p, *result);
+                p.extend_from_slice(options);
+            }
+            ControlFrame::DisconnectionRequest {
+                destination_cid,
+                source_cid,
+                ..
+            }
+            | ControlFrame::DisconnectionResponse {
+                destination_cid,
+                source_cid,
+                ..
+            } => {
+                push_u16(&mut p, *destination_cid);
                 push_u16(&mut p, *source_cid);
             }
             ControlFrame::CreditBasedConnectionRequest {
@@ -342,6 +450,51 @@ impl ControlFrame {
                     source_cid,
                 }
             }
+            codes::CONNECTION_RESPONSE => {
+                need(payload, 8)?;
+                ControlFrame::ConnectionResponse {
+                    identifier,
+                    destination_cid: le16(payload, 0),
+                    source_cid: le16(payload, 2),
+                    result: le16(payload, 4),
+                    status: le16(payload, 6),
+                }
+            }
+            codes::CONFIGURE_REQUEST => {
+                need(payload, 4)?;
+                ControlFrame::ConfigureRequest {
+                    identifier,
+                    destination_cid: le16(payload, 0),
+                    flags: le16(payload, 2),
+                    options: payload[4..].to_vec(),
+                }
+            }
+            codes::CONFIGURE_RESPONSE => {
+                need(payload, 6)?;
+                ControlFrame::ConfigureResponse {
+                    identifier,
+                    source_cid: le16(payload, 0),
+                    flags: le16(payload, 2),
+                    result: le16(payload, 4),
+                    options: payload[6..].to_vec(),
+                }
+            }
+            codes::DISCONNECTION_REQUEST => {
+                need(payload, 4)?;
+                ControlFrame::DisconnectionRequest {
+                    identifier,
+                    destination_cid: le16(payload, 0),
+                    source_cid: le16(payload, 2),
+                }
+            }
+            codes::DISCONNECTION_RESPONSE => {
+                need(payload, 4)?;
+                ControlFrame::DisconnectionResponse {
+                    identifier,
+                    destination_cid: le16(payload, 0),
+                    source_cid: le16(payload, 2),
+                }
+            }
             codes::CREDIT_BASED_CONNECTION_REQUEST => {
                 need(payload, 8)?;
                 ControlFrame::CreditBasedConnectionRequest {
@@ -402,4 +555,72 @@ fn need(payload: &[u8], n: usize) -> Result<()> {
 
 fn le16(data: &[u8], offset: usize) -> u16 {
     u16::from_le_bytes([data[offset], data[offset + 1]])
+}
+
+/// One type/length/value entry from a Classic L2CAP configuration frame.
+///
+/// Bit 7 of the wire type is the hint bit. Unknown hinted options may be
+/// ignored; unknown non-hinted options must be rejected by a channel runtime.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConfigurationOption {
+    pub option_type: u8,
+    pub hint: bool,
+    pub value: Vec<u8>,
+}
+
+impl ConfigurationOption {
+    pub fn new(option_type: u8, value: Vec<u8>) -> Self {
+        Self {
+            option_type: option_type & 0x7f,
+            hint: false,
+            value,
+        }
+    }
+
+    pub fn hinted(option_type: u8, value: Vec<u8>) -> Self {
+        Self {
+            option_type: option_type & 0x7f,
+            hint: true,
+            value,
+        }
+    }
+}
+
+/// Encode Classic L2CAP configuration options as type/length/value entries.
+pub fn encode_configuration_options(options: &[ConfigurationOption]) -> Result<Vec<u8>> {
+    let mut encoded = Vec::new();
+    for option in options {
+        let length = u8::try_from(option.value.len())
+            .map_err(|_| Error::InvalidPacket("configuration option is too long".into()))?;
+        encoded.push(option.option_type | if option.hint { 0x80 } else { 0 });
+        encoded.push(length);
+        encoded.extend_from_slice(&option.value);
+    }
+    Ok(encoded)
+}
+
+/// Decode Classic L2CAP configuration options, rejecting truncated entries.
+pub fn decode_configuration_options(mut data: &[u8]) -> Result<Vec<ConfigurationOption>> {
+    let mut options = Vec::new();
+    while !data.is_empty() {
+        if data.len() < 2 {
+            return Err(Error::InvalidPacket(
+                "truncated configuration option header".into(),
+            ));
+        }
+        let raw_type = data[0];
+        let length = data[1] as usize;
+        if data.len() < 2 + length {
+            return Err(Error::InvalidPacket(
+                "truncated configuration option value".into(),
+            ));
+        }
+        options.push(ConfigurationOption {
+            option_type: raw_type & 0x7f,
+            hint: raw_type & 0x80 != 0,
+            value: data[2..2 + length].to_vec(),
+        });
+        data = &data[2 + length..];
+    }
+    Ok(options)
 }

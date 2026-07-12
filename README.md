@@ -19,7 +19,7 @@ crate whose behavior is verified against the upstream Python.
 | 1. Core types & advertising data | `bumble` | ✅ complete — 16/16 tests green |
 | 2. HCI packet codec (framing + **full** command/event catalog + return params) | `bumble-hci` | ✅ 320/320 tests green |
 | 3+7. Software controller + virtual link (advertising + LE connections + read/PHY/data-length commands) | `bumble-controller` | ✅ 17/17 tests green |
-| 4. L2CAP frame codec (PDU + signaling frames + FCS) | `bumble-l2cap` | ✅ 8/8 tests green |
+| 4+21. L2CAP codec + Classic connection-oriented channel runtime | `bumble-l2cap` | ✅ 13/13 tests green |
 | 5. ATT protocol PDU codec (incl. Find_Information, Read_Blob, indications) | `bumble-att` | ✅ 16/16 tests green |
 | 6. SMP cryptographic toolbox (+ P-256 ECC/ECDH, slice 19) | `bumble-crypto` | ✅ 14/14 tests green |
 | 7. LE connection establishment (in the controller) | `bumble-controller` | ✅ (see slice 3+7) |
@@ -35,7 +35,8 @@ crate whose behavior is verified against the upstream Python.
 | 18. GATT client (discovery, read/long-read, write, subscribe) | `bumble-gatt` | ✅ client tests green |
 | 19. LE Secure Connections pairing (P-256 ECDH + JustWorks derivation) | `bumble-crypto` / `bumble-smp` | ✅ oracle + two-party green |
 | 20. RFCOMM + SDP session runtimes (Multiplexer/DLC credit flow, SDP client/server) | `bumble-rfcomm` / `bumble-sdp` | ✅ oracle + two-party green |
-| 21+. More classic profiles (A2DP/AVRCP/HFP/HID…) | — | planned |
+| 21. Classic L2CAP channels (PSM/CID allocation, configure/MTU, data, disconnect) | `bumble-l2cap` | ✅ oracle + two-party green |
+| 22+. More classic profiles (A2DP/AVRCP/HFP/HID…) | — | planned |
 
 The LE lifecycle is now complete end-to-end through library APIs: **connect →
 discover → read/write → notify → disconnect** between two virtual devices — and
@@ -96,7 +97,7 @@ size, to convey remaining surface.
 ### L2CAP
 | Upstream (LOC) | Rust crate | Status | Notes |
 |---|---|---|---|
-| `l2cap.py` (3.1k) | `bumble-l2cap` | 🟡 | PDU + signaling frames + FCS. Deferred: channel manager, fragmentation/reassembly, credit-based flow-control runtime. |
+| `l2cap.py` (3.1k) | `bumble-l2cap` | 🟡 | PDU + signaling frames + FCS, plus a synchronous Classic connection-oriented `ChannelManager`: valid dynamic PSM/CID allocation, Connection/Configure/Disconnection signaling, MTU option negotiation, PSM refusal, bidirectional basic-mode SDUs, and deterministic server accept. Deferred: ACL fragmentation/reassembly, enhanced retransmission mode, LE credit-based channel runtime, and remaining signaling commands. |
 
 ### ATT / GATT
 | Upstream (LOC) | Rust crate | Status | Notes |
@@ -138,11 +139,14 @@ Fully or substantially covered for the **LE core data + security path**: core
 types, HCI framing, L2CAP/ATT/GATT/SMP codecs, the SMP crypto toolbox, both
 sides of GATT (server **and** a client that discovers, reads, writes, and
 subscribes), and a controller/link/host that runs the LE lifecycle end-to-end.
-Classic Bluetooth now has its **two foundation protocols end-to-end** — SDP
+Classic Bluetooth now has its **two foundation protocols and their channel
+layer** — SDP
 (`bumble-sdp`: codec + a client/server continuation runtime), which the classic
 profiles build service records on, and RFCOMM (`bumble-rfcomm`: frame codec + a
 `Multiplexer`/`DLC` credit-flow session runtime), the serial-cable transport
-those profiles run over. Everything else — the full high-level device/host
+those profiles run over, plus a Classic L2CAP connection-oriented runtime with
+configuration and MTU negotiation. RFCOMM/SDP convenience wrappers that own and
+drive those channels are still pending. Everything else — the full high-level device/host
 orchestration, LE Secure Connections state machine, real transports, and the
 **rest of Classic Bluetooth (A2DP/AVRCP/HFP/HID/…) and the profiles** — is still
 the large majority of the ~82k upstream lines and remains to do.
@@ -482,11 +486,12 @@ bonding storage.
 ## Slice 20 — what's here
 
 The **session runtimes** for the two Classic codecs — the state machines that
-drive a live exchange over the wire formats from slices 16–17. Both are
-**sans-I/O**: this port has no live Classic L2CAP connection-oriented channel to
-route over (only the signaling codec is ported), so neither runtime touches a
-socket — they consume and produce PDUs, and a caller relays the bytes. Each is
-verified peer-to-peer over an in-memory relay.
+drive a live exchange over the wire formats from slices 16–17. Both were
+introduced as **sans-I/O** state machines: neither runtime touches a socket —
+they consume and produce PDUs, and a caller relays the bytes. Slice 21 now
+supplies the Classic L2CAP channel state machine beneath them; convenience
+wrappers that bind each runtime to a channel remain follow-on work. Each runtime
+is verified peer-to-peer over an in-memory relay.
 
 - **RFCOMM `Multiplexer`/`DLC` in [`bumble-rfcomm`](bumble-rfcomm/)** (module
   [`mux`](bumble-rfcomm/src/mux.rs)) — a synchronous port of the asyncio
@@ -516,6 +521,30 @@ credits), and SDP **continuation across four round-trips** (a small server MTU
 splits the answer; the client reassembles the identical record set it gets in
 the single-PDU case). Deferred: RFCOMM retransmission and the `Client`/`Server`
 L2CAP-binding wrappers; the SDP `register`/`on_connection` L2CAP glue.
+
+## Slice 21 — what's here
+
+The synchronous Classic connection-oriented channel runtime in
+[`bumble-l2cap`](bumble-l2cap/) removes the missing layer below RFCOMM and SDP:
+
+- Typed Connection Response, Configure Request/Response, and Disconnection
+  Request/Response signaling frames, plus strict configuration-option TLV
+  encoding and decoding. Their bytes are pinned to upstream Bumble's wire
+  layout alongside the existing Connection Request oracle.
+- `ChannelManager`, `ClassicChannel`, and `ClassicChannelSpec`: validated
+  Classic PSM registration (including deterministic dynamic allocation),
+  dynamic CID allocation, outgoing connect and incoming accept/refusal,
+  bidirectional configuration with asymmetric MTU negotiation, basic-mode SDU
+  delivery, and clean disconnect on both peers.
+- A two-party in-memory relay test that opens a channel, verifies both peers'
+  local/remote CIDs and negotiated MTUs, exchanges RFCOMM/SDP-shaped payloads in
+  both directions, enforces the peer MTU, and closes both endpoints. A separate
+  path verifies the spec result for an unsupported PSM.
+
+The manager stays sans-I/O and emits/consumes complete `L2capPdu` values, so a
+host can place it over an ACL data path without coupling L2CAP to a socket or
+async runtime. Deferred: ACL fragmentation/reassembly, enhanced retransmission
+mode, LE credit-based channels, and RFCOMM/SDP owning wrappers.
 
 ## Acceptance
 
@@ -561,9 +590,10 @@ bumble-rs/
 ├── bumble-controller/         # slice-3 controller + virtual link crate
 │   ├── src/lib.rs
 │   └── tests/scenario.rs      # end-to-end advertising→scan→report scenario
-├── bumble-l2cap/              # slice-4 L2CAP frame codec crate
-│   ├── src/lib.rs
-│   └── tests/acceptance.rs    # ported l2cap_test.py codec cases (oracle-pinned)
+├── bumble-l2cap/              # slice-4 codec + slice-21 Classic channel runtime
+│   ├── src/{lib,classic}.rs
+│   ├── tests/acceptance.rs    # ported l2cap_test.py codec cases (oracle-pinned)
+│   └── tests/classic_channels.rs # two-party Classic channel lifecycle
 ├── bumble-att/                # slice-5 ATT protocol PDU codec crate
 │   ├── src/lib.rs
 │   └── tests/acceptance.rs    # ported gatt_test.py ATT cases (oracle-pinned)
