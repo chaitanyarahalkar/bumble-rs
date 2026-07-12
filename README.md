@@ -30,11 +30,12 @@ crate whose behavior is verified against the upstream Python.
 | 12. GATT notifications (server → client) | `bumble-host` | ✅ |
 | 13. LE disconnection (Disconnect → Disconnection Complete both sides) | `bumble-controller` | ✅ |
 | 14. SMP PDU codec + LE Legacy pairing (wires in `bumble-crypto`) | `bumble-smp` | ✅ 2/2 tests green |
-| 16. SDP codec (data elements + PDUs) — first Classic (BR/EDR) piece | `bumble-sdp` | ✅ 23/23 tests green |
-| 17. RFCOMM frame + MCC codec (serial-cable emulation over L2CAP) | `bumble-rfcomm` | ✅ 14/14 tests green |
+| 16. SDP codec (data elements + PDUs) — first Classic (BR/EDR) piece | `bumble-sdp` | ✅ 28/28 tests green |
+| 17. RFCOMM frame + MCC codec (serial-cable emulation over L2CAP) | `bumble-rfcomm` | ✅ 16/16 tests green |
 | 18. GATT client (discovery, read/long-read, write, subscribe) | `bumble-gatt` | ✅ client tests green |
 | 19. LE Secure Connections pairing (P-256 ECDH + JustWorks derivation) | `bumble-crypto` / `bumble-smp` | ✅ oracle + two-party green |
-| 20+. RFCOMM/SDP async runtimes, more classic (A2DP/AVRCP/HFP…) | — | planned |
+| 20. RFCOMM + SDP session runtimes (Multiplexer/DLC credit flow, SDP client/server) | `bumble-rfcomm` / `bumble-sdp` | ✅ oracle + two-party green |
+| 21+. More classic profiles (A2DP/AVRCP/HFP/HID…) | — | planned |
 
 The LE lifecycle is now complete end-to-end through library APIs: **connect →
 discover → read/write → notify → disconnect** between two virtual devices — and
@@ -119,8 +120,8 @@ size, to convey remaining surface.
 ### Classic Bluetooth (BR/EDR)
 | Upstream (LOC) | Rust crate | Status | Notes |
 |---|---|---|---|
-| `rfcomm.py` (1.2k) | `bumble-rfcomm` | 🟡 | **Frame codec complete, oracle-pinned**: the `RfcommFrame` TS 07.10 framing (SABM/UA/DM/DISC/UIH, 1- and 2-byte length indicators, credit-based UIH flow control), the CRC-8 `compute_fcs`, and the `RfcommMccPn`/`RfcommMccMsc` MCC messages plus the MCC type/length header. Deferred (matching the port's synchronous, codec-first approach): the asyncio `DLC`, `Multiplexer`, `Client`/`Server` credit-flow state machine and the SDP-record helpers. |
-| `sdp.py` (1.4k) | `bumble-sdp` | 🟡 | **Codec complete, oracle-pinned**: the recursive `DataElement` type-length-value format (all nine element types, all eight size-index encodings, 16/32/128-bit UUIDs), the `ServiceAttribute` service-record model, and all seven `SdpPdu` messages (Error / Service Search / Service Attribute / Service Search Attribute request+response) with continuation state carried verbatim. Deferred (matching the port's synchronous, codec-first approach): the asyncio `Client`/`Server`, the continuation-state reassembly loop, and the service-record database. |
+| `rfcomm.py` (1.2k) | `bumble-rfcomm` | 🟡 | **Frame codec + session runtime**: the `RfcommFrame` TS 07.10 framing (SABM/UA/DM/DISC/UIH, 1- and 2-byte length indicators, credit-based UIH flow control), the CRC-8 `compute_fcs`, and the `RfcommMccPn`/`RfcommMccMsc` MCC messages, all oracle-pinned. Slice 20 adds `mux::{Multiplexer, Dlc}` — a synchronous, sans-I/O port of the asyncio `Multiplexer`/`DLC`: session open (SABM/UA), DLC PN/SABM/MSC open handshake, and the `process_tx` credit-flow engine. The open-handshake frames are pinned to the real upstream state machine. Deferred: retransmission (upstream also uses `max_retransmissions = 0`), aggregate flow control, and the `Client`/`Server` wrappers that bind to a live L2CAP channel (none is ported). |
+| `sdp.py` (1.4k) | `bumble-sdp` | 🟡 | **Codec + client/server runtime**: the recursive `DataElement` type-length-value format (all nine element types, all eight size-index encodings, 16/32/128-bit UUIDs), the `ServiceAttribute` service-record model, and all seven `SdpPdu` messages, all oracle-pinned. Slice 20 adds `service::{SdpServer, SdpClient}` — a synchronous port of the asyncio `Server`/`Client`: the service-record database, UUID matching, attribute selection, and continuation-state chunking + reassembly on both sides, for all three query types (Service Search / Service Attribute / Service Search Attribute). Server responses are pinned to the real upstream server. Deferred: the `register`/`on_connection` L2CAP glue. |
 | `hfp.py` (2.1k), `at.py` (0.1k) | — | ⬜ | Hands-Free Profile. |
 | `hid.py` (0.6k) | — | ⬜ | Human Interface Device. |
 | `a2dp` (1.0k), `avdtp` (2.4k), `avrcp` (2.9k), `avc` (0.5k), `avctp` (0.3k), `rtp` (0.1k), `codecs` (0.5k) | — | ⬜ | A/V distribution + remote control + audio. |
@@ -137,13 +138,14 @@ Fully or substantially covered for the **LE core data + security path**: core
 types, HCI framing, L2CAP/ATT/GATT/SMP codecs, the SMP crypto toolbox, both
 sides of GATT (server **and** a client that discovers, reads, writes, and
 subscribes), and a controller/link/host that runs the LE lifecycle end-to-end.
-Classic Bluetooth has its **first two foundation pieces** — the SDP codec
-(`bumble-sdp`), which the classic profiles build service records on, and the
-RFCOMM frame codec (`bumble-rfcomm`), the serial-cable transport those profiles
-run over. Everything else — the full high-level device/host orchestration, LE
-Secure Connections, real transports, and the **rest of Classic Bluetooth
-(A2DP/AVRCP/HFP/HID/…) and the profiles** — is still the large majority of the
-~82k upstream lines and remains to do.
+Classic Bluetooth now has its **two foundation protocols end-to-end** — SDP
+(`bumble-sdp`: codec + a client/server continuation runtime), which the classic
+profiles build service records on, and RFCOMM (`bumble-rfcomm`: frame codec + a
+`Multiplexer`/`DLC` credit-flow session runtime), the serial-cable transport
+those profiles run over. Everything else — the full high-level device/host
+orchestration, LE Secure Connections state machine, real transports, and the
+**rest of Classic Bluetooth (A2DP/AVRCP/HFP/HID/…) and the profiles** — is still
+the large majority of the ~82k upstream lines and remains to do.
 
 ## Slice 1 — what's here
 
@@ -477,6 +479,44 @@ self-comparison. Deferred: the full pairing state machine, Numeric
 Comparison / passkey / OOB entry UX, key distribution over the wire, and
 bonding storage.
 
+## Slice 20 — what's here
+
+The **session runtimes** for the two Classic codecs — the state machines that
+drive a live exchange over the wire formats from slices 16–17. Both are
+**sans-I/O**: this port has no live Classic L2CAP connection-oriented channel to
+route over (only the signaling codec is ported), so neither runtime touches a
+socket — they consume and produce PDUs, and a caller relays the bytes. Each is
+verified peer-to-peer over an in-memory relay.
+
+- **RFCOMM `Multiplexer`/`DLC` in [`bumble-rfcomm`](bumble-rfcomm/)** (module
+  [`mux`](bumble-rfcomm/src/mux.rs)) — a synchronous port of the asyncio
+  `Multiplexer`/`DLC`: session open on DLCI 0 (SABM/UA), per-channel DLC
+  parameter negotiation (PN) + open (SABM/UA) + modem-status (MSC) exchange, and
+  the credit-based flow-control engine (`process_tx`). Upstream's
+  DLC-holds-Multiplexer back-reference is flattened into a single owner to fit
+  Rust ownership; the wire behavior is identical.
+- **SDP `Server`/`Client` in [`bumble-sdp`](bumble-sdp/)** (module
+  [`service`](bumble-sdp/src/service.rs)) — a synchronous port of the asyncio
+  `Server`/`Client`: a service-record database, UUID matching, attribute
+  selection, and continuation-state chunking + reassembly on both sides, for all
+  three query types (Service Search / Service Attribute / Service Search
+  Attribute). The client drives the continuation loop through an `SdpTransport`,
+  the same blanket-impl shape as the GATT client's `AttTransport`.
+
+Both go beyond self-agreement: the RFCOMM open-handshake frames
+([`tests/session.rs`](bumble-rfcomm/tests/session.rs)) and the SDP server
+responses ([`tests/service.rs`](bumble-sdp/tests/service.rs)) are pinned
+byte-for-byte to captures from the **real upstream state machines** driven over
+the same relays, so the field-value choices (PN convergence layers, credit and
+frame-size negotiation, MSC signals; SDP matching, selection and chunking) are
+ground-truth, not just internally consistent. The two subtle paths are forced
+explicitly: RFCOMM credit **exhaustion + replenishment** (a write past the
+transmit budget stalls with data buffered, then drains once the peer grants
+credits), and SDP **continuation across four round-trips** (a small server MTU
+splits the answer; the client reassembles the identical record set it gets in
+the single-PDU case). Deferred: RFCOMM retransmission and the `Client`/`Server`
+L2CAP-binding wrappers; the SDP `register`/`on_connection` L2CAP glue.
+
 ## Acceptance
 
 The port's contract is the upstream Python test suite, ported 1:1:
@@ -543,12 +583,16 @@ bumble-rs/
 │   └── tests/smp_sc_pairing.rs # two-party LE Secure Connections handshake (slice 19)
 ├── bumble-smp/                # slice-14 SMP codec + legacy pairing + slice-19 SC
 │   └── src/lib.rs             # wires bumble-crypto; sc:: JustWorks derivation
-├── bumble-sdp/                # slice-16 SDP codec crate (first Classic piece)
+├── bumble-sdp/                # slice-16 SDP codec + slice-20 client/server runtime
 │   ├── src/{lib,pdu}.rs       # DataElement + ServiceAttribute + SdpPdu
-│   └── tests/acceptance.rs    # ported sdp_test.py cases (oracle-pinned)
-├── bumble-rfcomm/             # slice-17 RFCOMM frame + MCC codec crate
+│   ├── src/service.rs         # SdpServer + SdpClient (continuation runtime, slice 20)
+│   ├── tests/acceptance.rs    # ported sdp_test.py cases (oracle-pinned)
+│   └── tests/service.rs       # client↔server, responses pinned to upstream (slice 20)
+├── bumble-rfcomm/             # slice-17 RFCOMM codec + slice-20 session runtime
 │   ├── src/lib.rs             # RfcommFrame + compute_fcs + MCC PN/MSC
-│   └── tests/acceptance.rs    # ported rfcomm_test.py frame check (oracle-pinned)
+│   ├── src/mux.rs             # Multiplexer + DLC credit-flow state machine (slice 20)
+│   ├── tests/acceptance.rs    # ported rfcomm_test.py frame check (oracle-pinned)
+│   └── tests/session.rs       # two-party session, handshake pinned to upstream (slice 20)
 └── docs/superpowers/          # design specs + implementation plans
 ```
 

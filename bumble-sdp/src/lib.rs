@@ -23,11 +23,10 @@
 //!   Request/Response and Service Search Attribute Request/Response, with the
 //!   common `[pdu-id, transaction-id, parameter-length, parameters…]` framing.
 //!
-//! Deferred (matching the rest of this port's synchronous, codec-first
-//! approach): the asyncio `Client`/`Server` runtime, the continuation-state
-//! reassembly loop, and the higher-level service-record database. The
-//! continuation-state bytes are carried verbatim on every PDU, so a caller can
-//! still drive multi-packet exchanges by hand.
+//! The request/response runtime that drives this codec lives in [`service`]
+//! (**slice 20**): a synchronous port of upstream's asyncio `Client`/`Server` —
+//! a service-record database, the matching and attribute-selection logic, and
+//! the continuation-state chunking and reassembly on both sides.
 //!
 //! ## Oracle
 //!
@@ -612,3 +611,5 @@ impl ServiceAttribute {
 
 mod pdu;
 pub use pdu::SdpPdu;
+
+pub mod service;

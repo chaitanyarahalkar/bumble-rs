@@ -50,12 +50,22 @@ crypto is pinned to Bluetooth-spec / RFC 4493 vectors.
 - **`bumble-sdp`** — Service Discovery Protocol codec (the first Classic/BR-EDR
   piece): the recursive `DataElement` type-length-value format, the
   `ServiceAttribute` service-record model, and all seven `SdpPdu` messages —
-  oracle-pinned to upstream `sdp_test.py`.
+  oracle-pinned to upstream `sdp_test.py`. Plus (slice 20) a `service` module
+  with a synchronous `SdpServer`/`SdpClient` runtime — a service-record
+  database, UUID matching, attribute selection, and continuation-state chunking
+  + reassembly for all three query types — verified by a two-party in-process
+  test in which the server's response PDUs are pinned to the real upstream
+  Python `Server` (single-PDU and a forced four-round continuation).
 - **`bumble-rfcomm`** — RFCOMM frame + MCC codec (serial-cable emulation over
   L2CAP): the `RfcommFrame` TS 07.10 framing (SABM/UA/DM/DISC/UIH, 1- and
   2-byte length indicators, credit-based UIH flow control), the CRC-8
   `compute_fcs`, and the `RfcommMccPn`/`RfcommMccMsc` MCC messages — oracle-
-  pinned to upstream `rfcomm_test.py`.
+  pinned to upstream `rfcomm_test.py`. Plus (slice 20) a `mux` module with a
+  synchronous, sans-I/O `Multiplexer`/`DLC` session runtime — session open,
+  the PN/SABM/MSC DLC handshake, and the `process_tx` credit-flow engine —
+  verified by a two-party in-memory relay test in which the open-handshake
+  frames are pinned to the real upstream state machine and credit exhaustion +
+  replenishment is forced explicitly.
 - **`bumble-controller`** — a synchronous software controller and in-process
   `LocalLink`: advertising/scanning, LE connection establishment, ACL routing,
   and disconnection.
@@ -76,7 +86,10 @@ crypto is pinned to Bluetooth-spec / RFC 4493 vectors.
 - GATT supports the CCCD descriptor and notify/indicate subscriptions, but not
   the full descriptor set, included services, or prepared/queued writes; no
   L2CAP fragmentation/reassembly.
-- Of Classic Bluetooth, only the SDP and RFCOMM codecs exist; A2DP/AVRCP/HFP/HID
-  and the async runtimes — the SDP client/server + service-record database and
-  the RFCOMM DLC/multiplexer credit-flow state machine — are not ported.
+- Of Classic Bluetooth, the SDP and RFCOMM codecs plus their session runtimes
+  (SDP client/server + service-record database; the RFCOMM multiplexer/DLC
+  credit-flow state machine) exist, but as synchronous, sans-I/O state machines
+  only — there is no live Classic L2CAP connection-oriented channel to carry
+  them, RFCOMM retransmission and aggregate flow control are omitted, and
+  A2DP/AVRCP/HFP/HID are not ported.
 - The controller/link are synchronous (no async runtime) by design.

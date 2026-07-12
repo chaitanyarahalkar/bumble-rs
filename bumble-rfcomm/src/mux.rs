@@ -30,11 +30,11 @@
 //! Upstream models a `DLC` as an object holding a back-reference to its
 //! `Multiplexer` (calling `self.multiplexer.send_frame(...)`). Rust's ownership
 //! rules make a child-holds-parent cycle awkward, so this port flattens the two
-//! into a single owner: [`Multiplexer`] owns plain-data [`Dlc`] records and all
+//! into a single owner: [`Multiplexer`] owns plain-data `Dlc` records and all
 //! behavior lives on the multiplexer or on frame-producing `Dlc` methods that
-//! append to a borrowed outbox and return an [`upcall`](DlcUpcall) for the
-//! session-level state changes the multiplexer must apply. The observable wire
-//! behavior is identical.
+//! append to a borrowed outbox and return an upcall for the session-level state
+//! changes the multiplexer must apply. The observable wire behavior is
+//! identical.
 //!
 //! [`Multiplexer`]: https://github.com/google/bumble/blob/main/bumble/rfcomm.py
 //! [`DLC`]: https://github.com/google/bumble/blob/main/bumble/rfcomm.py
