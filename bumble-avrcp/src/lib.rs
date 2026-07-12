@@ -2,6 +2,10 @@
 
 use core::fmt;
 
+mod command;
+
+pub use command::*;
+
 pub const AVRCP_PID: u16 = 0x110E;
 pub const BLUETOOTH_SIG_COMPANY_ID: u32 = 0x001958;
 
@@ -65,6 +69,8 @@ pub enum Error {
     WrongCompanyId(u32),
     WrongPid(u16),
     NotVendorDependent,
+    InvalidField(&'static str),
+    TrailingBytes(usize),
     Avc(bumble_avc::Error),
 }
 

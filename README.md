@@ -56,7 +56,8 @@ crate whose behavior is verified against the upstream Python.
 | 39. AV/C generic, vendor-dependent, and panel pass-through frame codec | `bumble-avc` | ✅ upstream vectors green |
 | 40. AVCTP fragmentation/reassembly and live Classic L2CAP protocol | `bumble-avctp` | ✅ upstream + two-party green |
 | 41. AVRCP vendor-PDU envelope and independent fragmentation assembler | `bumble-avrcp` | ✅ upstream vectors green |
-| 42+. AVRCP typed catalog/runtime, HID, remaining modules… | — | planned |
+| 42. Complete AVRCP typed command catalog | `bumble-avrcp` | ✅ 22/22 Python-oracle vectors green |
+| 43+. AVRCP response/event catalog/runtime, HID, remaining modules… | — | planned |
 
 The LE lifecycle is now complete end-to-end through library APIs: **connect →
 discover → read/write → notify → disconnect** between two virtual devices — and
@@ -151,7 +152,7 @@ size, to convey remaining surface.
 | `rtp.py` (0.1k) | `bumble-rtp` | ✅ | Slice 32 ports RTP v2 media packet parsing/serialization with marker/payload type, wrapping sequence/timestamp fields, SSRC and correctly spaced CSRC entries. It additionally implements standard header extensions and padding, validates bit fields/lengths, and returns errors for truncated input instead of upstream's unchecked indexing. |
 | `avc.py` (0.5k) | `bumble-avc` | 🟡 | Slice 39 ports open subunit/opcode/command/response/operation identifiers; generic command and response frames; single and double-extended subunit IDs; 24-bit-company vendor-dependent frames; and panel pass-through press/release operations with bounded operation data. Upstream AVRCP vectors are byte-pinned and malformed frames return errors. Deferred: additional typed AV/C opcode subclasses beyond the two used by AVRCP. |
 | `avctp.py` (0.3k) | `bumble-avctp` | 🟡 | Slice 40 ports transaction labels, single/start/continue/end packets, command/response and IPID flags, 16-bit PIDs, safe fragmented-message assembly, MTU-aware outbound fragmentation, and a live Classic L2CAP binding. Registered PIDs receive commands; unknown PIDs automatically produce IPID responses. Deferred: handler callbacks and browsing-channel policy are provided by the higher AVRCP runtime. |
-| `avrcp` (2.9k) | `bumble-avrcp` | 🟡 | Slice 41 ports the Bluetooth SIG company envelope, all 25 open PDU identifiers, the `>BBH` vendor-PDU header, safe length validation, independent single/start/continue/end fragmentation and reassembly, and AV/C panel command wrapping. Upstream assembler/reset vectors are pinned. Deferred: the typed command/event/response catalog, controller/target runtime, browsing channel, and SDP. |
+| `avrcp` (2.9k) | `bumble-avrcp` | 🟡 | Slice 41 ports the Bluetooth SIG company envelope, all 25 open PDU identifiers, safe fragmentation/reassembly, and AV/C/AVCTP wrapping. Slice 42 ports all 22 registered command schemas with exact Python-oracle parameters, open identifiers, bounded list/string parsing, and lossless unknown commands. Deferred: typed responses/events, controller/target runtime, browsing channel, and SDP. |
 | `codecs` (0.5k) | — | ⬜ | Remaining common audio/media support. |
 
 ### Profiles & apps
@@ -966,6 +967,25 @@ AVRCP's protocol-specific envelope now sits above AV/C and AVCTP:
 The next slice ports the complete typed command catalog before adding typed
 responses/events and the controller/target runtime.
 
+## Slice 42 — what's here
+
+Every command class registered by upstream `bumble.avrcp.Command` is now typed:
+
+- All 22 command forms cover capabilities, player application settings,
+  element metadata, playback/volume/notifications, addressed and browsed
+  players, folder browsing, search, play, and now-playing insertion.
+- Counted parallel setting fields are represented as paired Rust values;
+  counted identifiers, 64-bit UIDs, and length-prefixed UTF-8 strings reject
+  truncation, overflow, invalid UTF-8, and trailing bytes.
+- Open newtypes retain vendor/future enum values, while unknown PDU IDs retain
+  their parameter bytes losslessly. The two continuing-response identifiers
+  that upstream declares without typed command classes therefore remain usable.
+- All upstream test instances were serialized by the real Python Bumble and
+  pinned byte-for-byte in Rust, including its unusual little-endian attribute
+  IDs for `GetItemAttributes`.
+
+Typed responses and notification events are next.
+
 ## Acceptance
 
 The port's contract is the upstream Python test suite, ported 1:1:
@@ -1089,7 +1109,9 @@ bumble-rs/
 │   ├── src/lib.rs             # messages, fragmentation, L2CAP protocol
 │   └── tests/protocol.rs      # upstream assembler + live PID/IPID flows
 ├── bumble-avrcp/              # slice-41 AVRCP vendor-PDU foundation
-│   └── src/lib.rs             # PDU codec/assembler, AV/C envelope, tests
+│   ├── src/lib.rs             # PDU codec/assembler and AV/C/AVCTP envelope
+│   ├── src/command.rs         # slice-42 complete typed command catalog
+│   └── tests/commands.rs      # 22 Python-oracle parameter vectors
 └── docs/superpowers/          # design specs + implementation plans
 ```
 
