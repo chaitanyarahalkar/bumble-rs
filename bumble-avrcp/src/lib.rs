@@ -6,6 +6,7 @@ mod command;
 mod event;
 mod response;
 mod runtime;
+pub mod sdp;
 
 pub use command::*;
 pub use event::*;

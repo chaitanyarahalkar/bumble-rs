@@ -60,7 +60,8 @@ crate whose behavior is verified against the upstream Python.
 | 43. Complete AVRCP typed notification-event catalog | `bumble-avrcp` | ✅ 9/9 Python-oracle vectors green |
 | 44. Complete AVRCP typed response and browseable-item catalog | `bumble-avrcp` | ✅ 23/23 Python-oracle vectors green |
 | 45. AVRCP controller/target runtime over live AVCTP/L2CAP | `bumble-avrcp` | ✅ command, notification, pass-through green |
-| 46+. AVRCP SDP, HID, remaining modules… | — | planned |
+| 46. AVRCP controller/target SDP records and discovery | `bumble-avrcp` | ✅ SDP client/server green |
+| 47+. HID and remaining modules… | — | planned |
 
 The LE lifecycle is now complete end-to-end through library APIs: **connect →
 discover → read/write → notify → disconnect** between two virtual devices — and
@@ -155,7 +156,7 @@ size, to convey remaining surface.
 | `rtp.py` (0.1k) | `bumble-rtp` | ✅ | Slice 32 ports RTP v2 media packet parsing/serialization with marker/payload type, wrapping sequence/timestamp fields, SSRC and correctly spaced CSRC entries. It additionally implements standard header extensions and padding, validates bit fields/lengths, and returns errors for truncated input instead of upstream's unchecked indexing. |
 | `avc.py` (0.5k) | `bumble-avc` | 🟡 | Slice 39 ports open subunit/opcode/command/response/operation identifiers; generic command and response frames; single and double-extended subunit IDs; 24-bit-company vendor-dependent frames; and panel pass-through press/release operations with bounded operation data. Upstream AVRCP vectors are byte-pinned and malformed frames return errors. Deferred: additional typed AV/C opcode subclasses beyond the two used by AVRCP. |
 | `avctp.py` (0.3k) | `bumble-avctp` | 🟡 | Slice 40 ports transaction labels, single/start/continue/end packets, command/response and IPID flags, 16-bit PIDs, safe fragmented-message assembly, MTU-aware outbound fragmentation, and a live Classic L2CAP binding. Registered PIDs receive commands; unknown PIDs automatically produce IPID responses. Deferred: handler callbacks and browsing-channel policy are provided by the higher AVRCP runtime. |
-| `avrcp` (2.9k) | `bumble-avrcp` | 🟡 | Slices 41–44 port the complete typed wire catalog. Slice 45 adds bounded 16-label controller transactions, target delegate dispatch, exact AV/C response semantics, interim→changed notifications, pass-through keys, rejection/not-implemented handling, and both AVRCP- and AVCTP-layer fragmentation over live Classic L2CAP. Deferred: browsing-channel runtime and SDP discovery/records. |
+| `avrcp` (2.9k) | `bumble-avrcp` | ✅ | Slices 41–46 port the complete typed wire catalog, bounded controller/target runtime, delegate behavior, interim→changed notifications, pass-through keys, both fragmentation layers over live Classic L2CAP, and controller/target SDP records + discovery. The browsing PSM is advertised exactly when supported; upstream itself does not implement a separate browsing-channel runtime. Async iterators are represented by explicit `RuntimeEvent` values. |
 | `codecs` (0.5k) | — | ⬜ | Remaining common audio/media support. |
 
 ### Profiles & apps
@@ -1046,6 +1047,26 @@ The typed catalog now participates in complete controller/target transactions:
 
 AVRCP SDP records/discovery and the separate browsing channel are next.
 
+## Slice 46 — what's here
+
+AVRCP service advertisement and discovery now close the profile:
+
+- Controller records advertise both A/V Remote Control (`0x110E`) and Controller
+  (`0x110F`); target records advertise Target (`0x110C`). Both carry the public
+  browse root, AVCTP PSM/version, AVRCP profile/version, handle, and the exact
+  role-specific supported-feature mask.
+- Controller and target feature newtypes expose every upstream feature bit.
+  Enabling browsing adds the upstream additional protocol descriptor for AVCTP
+  browsing PSM `0x001B`; records without it retain the six-attribute shape.
+- Strict parsers validate role UUIDs, L2CAP/AVCTP descriptors, primary PSM,
+  profile UUID, integer widths, and required fields.
+- Discovery helpers run through `SdpClient`; tests add both records to a real
+  `SdpServer`, force continuation with a small response budget, and recover the
+  original typed records.
+
+This completes upstream `avrcp.py` in the synchronous Rust architecture. Work
+now moves to HID and the remaining unported modules.
+
 ## Acceptance
 
 The port's contract is the upstream Python test suite, ported 1:1:
@@ -1174,10 +1195,12 @@ bumble-rs/
 │   ├── src/event.rs           # slice-43 complete typed event catalog
 │   ├── src/response.rs        # slice-44 responses + browseable item codec
 │   ├── src/runtime.rs         # slice-45 controller/target transaction engine
+│   ├── src/sdp.rs             # slice-46 controller/target records + discovery
 │   ├── tests/commands.rs      # 22 Python-oracle parameter vectors
 │   ├── tests/events.rs        # 9 Python-oracle notification vectors
 │   ├── tests/responses.rs     # 23 Python-oracle response vectors
-│   └── tests/runtime.rs       # live AVCTP/L2CAP + notifications/pass-through
+│   ├── tests/runtime.rs       # live AVCTP/L2CAP + notifications/pass-through
+│   └── tests/sdp.rs           # role records + SDP client/server discovery
 └── docs/superpowers/          # design specs + implementation plans
 ```
 
