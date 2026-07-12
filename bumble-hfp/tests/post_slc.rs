@@ -2,8 +2,9 @@ use std::collections::BTreeSet;
 
 use bumble_hfp::{
     AgConfiguration, AgEvent, AgFeatures, AgIndicator, AgIndicatorState, AgProtocol, AudioCodec,
-    CallDirection, CallHoldOperation, CallInfo, CallMode, CallMultiParty, CallStatus,
-    HfConfiguration, HfEvent, HfFeatures, HfIndicator, HfProtocol,
+    CallDirection, CallHoldOperation, CallInfo, CallLineIdentification, CallMode, CallMultiParty,
+    CallStatus, HfConfiguration, HfEvent, HfFeatures, HfIndicator, HfProtocol,
+    VoiceRecognitionState,
 };
 
 fn protocols() -> (HfProtocol, AgProtocol) {
@@ -119,7 +120,10 @@ fn call_control_current_calls_and_hf_indicators() {
     hf.execute_command("AT+BVRA=1", bumble_hfp::ResponseExpectation::None)
         .unwrap();
     exchange(&mut hf, &mut ag);
-    assert_eq!(ag.take_events(), [AgEvent::VoiceRecognition(1)]);
+    assert_eq!(
+        ag.take_events(),
+        [AgEvent::VoiceRecognition(VoiceRecognitionState::Enabled)]
+    );
     hf.take_completed_commands();
 
     hf.execute_command("AT+VGS=12", bumble_hfp::ResponseExpectation::None)
@@ -128,8 +132,7 @@ fn call_control_current_calls_and_hf_indicators() {
     assert_eq!(ag.take_events(), [AgEvent::SpeakerVolume(12)]);
     hf.take_completed_commands();
 
-    hf.execute_command("AT+BCC", bumble_hfp::ResponseExpectation::None)
-        .unwrap();
+    hf.setup_audio_connection().unwrap();
     exchange(&mut hf, &mut ag);
     assert_eq!(ag.take_events(), [AgEvent::CodecConnectionRequest]);
 }
@@ -159,11 +162,8 @@ fn unsolicited_indicators_volume_ring_caller_id_and_codec_negotiation() {
             HfEvent::Ring,
             HfEvent::SpeakerVolume(10),
             HfEvent::MicrophoneVolume(11),
-            HfEvent::CallerId {
-                number: "123456789".into(),
-                number_type: 129,
-            },
-            HfEvent::VoiceRecognition(1),
+            HfEvent::CallerId(CallLineIdentification::new("123456789", 129)),
+            HfEvent::VoiceRecognition(VoiceRecognitionState::Enabled),
             HfEvent::CodecProposal(AudioCodec::Msbc),
         ]
     );

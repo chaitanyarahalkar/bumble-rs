@@ -89,7 +89,10 @@ crypto is pinned to Bluetooth-spec / RFC 4493 vectors.
   adds role-correct HF/AG SDP records, feature mapping, and discovery parsing,
   verified through the SDP client/server runtime. Slice 27 ports all eight HFP
   1.8 SCO/eSCO default parameter sets and builds enhanced setup/accept HCI
-  commands for negotiated CVSD and mSBC audio.
+  commands for negotiated CVSD and mSBC audio. Slice 28 closes the remaining
+  synchronous protocol gaps with response-hold/call-state/voice/CME models,
+  full caller-ID metadata, CMEE/CCWA/BIA/CLIP AG controls, in-band ringtone
+  state, upstream public call/audio helpers, and batched-command coverage.
 - **`bumble-controller`** — a synchronous software controller and in-process
   `LocalLink`: advertising/scanning, LE connection establishment, ACL routing,
   and disconnection. Slice 27 adds Classic SCO/eSCO request, accept, reject,
@@ -120,6 +123,7 @@ crypto is pinned to Bluetooth-spec / RFC 4493 vectors.
   Enhanced retransmission, aggregate RFCOMM flow control, socket/async
   convenience APIs, and A2DP/AVRCP/HID profile behavior are not ported. HFP's
   AT grammar, stream framing, service-level connection, SDP records, and
-  SCO/eSCO HCI audio-link orchestration are available; remaining call metadata
-  variants and media codec implementations remain.
+  SCO/eSCO HCI audio-link orchestration are available. Its synchronous command
+  behavior now covers the upstream HFP test families; executor conveniences and
+  media codec implementations remain.
 - The controller/link are synchronous (no async runtime) by design.
