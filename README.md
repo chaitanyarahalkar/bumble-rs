@@ -41,7 +41,8 @@ crate whose behavior is verified against the upstream Python.
 | 24. HFP service-level connection (HF↔AG feature/indicator negotiation) | `bumble-hfp` | ✅ transcript + RFCOMM/L2CAP green |
 | 25. HFP call control, indicators, unsolicited events, codec negotiation | `bumble-hfp` | ✅ direct + RFCOMM/L2CAP green |
 | 26. HFP HF/AG SDP record generation and discovery parsing | `bumble-hfp` | ✅ SDP client/server green |
-| 27+. More classic profiles (HFP audio, A2DP/AVRCP/HID…) | — | planned |
+| 27. HFP SCO/eSCO parameters, controller/host connection lifecycle, and audio routing | `bumble-hfp` / `bumble-controller` / `bumble-host` | ✅ CVSD + mSBC, two-party green |
+| 28+. Remaining HFP behavior and more Classic profiles (A2DP/AVRCP/HID…) | — | planned |
 
 The LE lifecycle is now complete end-to-end through library APIs: **connect →
 discover → read/write → notify → disconnect** between two virtual devices — and
@@ -92,12 +93,12 @@ size, to convey remaining surface.
 | Upstream (LOC) | Rust crate | Status | Notes |
 |---|---|---|---|
 | `hci.py` (8.3k) | `bumble-hci` | ✅ | **Full typed catalog: 196 command op codes + 81 event / LE-meta sub-event codes**, generated from upstream's declarative field specs by [`tools/hcigen`](bumble-hci/tools/hcigen/) and **byte-pinned against real Python Bumble** (320 oracle tests). Framing (Command/Event/ACL/SCO/ISO), `Command_Complete` with a typed `ReturnParameters` model, and the open-enum `Generic` tail for any future/vendor opcode (still lossless). Two phys-derived array commands and the two nested-report events are hand-written; everything else is generated. |
-| `controller.py` (2.8k) | `bumble-controller` | 🟡 | **Full command surface**: every command upstream's `controller.py` handles (93, via the generated [`command_surface`](bumble-controller/src/command_surface.rs) table) gets a reply of the matching HCI shape — Command Complete + SUCCESS for config/set commands, Command Status for operations completing via a later event, and the spec-correct "Unknown HCI Command" for anything upstream also doesn't handle. **Functionally simulated**: LE advertising/scanning, connection establishment, ACL routing, disconnection, the read commands (`Read_BD_ADDR`/`Read_Local_Name`/`LE_Read_Buffer_Size`/`LE_Read_Local_Supported_Features`/`LE_Rand`), per-connection `LE_Set_Data_Length`/`LE_Set_PHY` (with follow-up meta events), and — via LL control-PDU exchange over the link — **encryption start** (`LE_Enable_Encryption` → `Encryption Change` on both sides), **remote-features** (`FeatureReq`/`FeatureRsp` → `LE_Read_Remote_Features_Complete`), and **CIS establishment** (LE Audio: `LE_Set_CIG_Parameters`/`LE_Create_CIS` → `LE CIS Request` → `LE_Accept_CIS_Request` → `LE CIS Established` on both sides). Also **classic (BR/EDR)**: ACL connection establishment (`Create_Connection` → `Connection Request` → `Accept_Connection_Request` → `Connection Complete`), `Remote_Name_Request`, and `Read_Remote_Supported_Features`, via simplified LMP PDUs over the link. Other read commands are acknowledged SUCCESS **without a synthesized payload** (a documented stub, not a full read). A **behavioral simulation with placeholder values** (as upstream's `controller.py` also is) — *not* oracle-pinned like the HCI codec. Deferred (behavior, not codec): LTK verification, ISO data-path streaming, remote-version exchange, extended/periodic advertising, and classic auth/encryption/role-switch/SCO sub-flows. |
-| `link.py` (0.15k) | `bumble-controller` | 🟡 | In-process **synchronous** `LocalLink`. Deferred: LL control PDUs, LMP routing, async scheduling. |
+| `controller.py` (2.8k) | `bumble-controller` | 🟡 | **Full command surface**: every command upstream's `controller.py` handles (93, via the generated [`command_surface`](bumble-controller/src/command_surface.rs) table) gets a reply of the matching HCI shape — Command Complete + SUCCESS for config/set commands, Command Status for operations completing via a later event, and the spec-correct "Unknown HCI Command" for anything upstream also doesn't handle. **Functionally simulated**: LE advertising/scanning, connection establishment, ACL routing, disconnection, the read commands (`Read_BD_ADDR`/`Read_Local_Name`/`LE_Read_Buffer_Size`/`LE_Read_Local_Supported_Features`/`LE_Rand`), per-connection `LE_Set_Data_Length`/`LE_Set_PHY` (with follow-up meta events), and — via LL control-PDU exchange over the link — **encryption start** (`LE_Enable_Encryption` → `Encryption Change` on both sides), **remote-features** (`FeatureReq`/`FeatureRsp` → `LE_Read_Remote_Features_Complete`), and **CIS establishment** (LE Audio: `LE_Set_CIG_Parameters`/`LE_Create_CIS` → `LE CIS Request` → `LE_Accept_CIS_Request` → `LE CIS Established` on both sides). Also **classic (BR/EDR)**: ACL connection establishment (`Create_Connection` → `Connection Request` → `Accept_Connection_Request` → `Connection Complete`), `Remote_Name_Request`, `Read_Remote_Supported_Features`, and SCO/eSCO request/accept/reject/disconnect with HCI synchronous-data routing, via simplified LMP PDUs over the link. Other read commands are acknowledged SUCCESS **without a synthesized payload** (a documented stub, not a full read). A **behavioral simulation with placeholder values** (as upstream's `controller.py` also is) — *not* oracle-pinned like the HCI codec. Deferred (behavior, not codec): LTK verification, ISO data-path streaming, remote-version exchange, extended/periodic advertising, and classic auth/encryption/role-switch sub-flows. |
+| `link.py` (0.15k) | `bumble-controller` | 🟡 | In-process **synchronous** `LocalLink` with LL-control, simplified LMP, ACL, and SCO/eSCO routing. Deferred: serialized over-the-air PDUs and async scheduling. |
 | `ll.py` (0.2k) | `bumble-controller` | 🟡 | Advertising/connection PDUs modeled as in-process structs, not serialized LL PDUs. Control PDUs (`EncReq`, `FeatureReq`/`PeripheralFeatureReq`/`FeatureRsp`, `TerminateInd`) are exchanged between controllers via `LocalLink::pump_ll` to drive the encryption-start, remote-features, and CIS-establishment (`CisReq`/`CisRsp`/`CisInd`) flows. |
-| `host.py` (2.1k) | `bumble-host` | 🟡 | `Device` glue (ATT↔L2CAP↔ACL sequencing + pairing transport). Not the full host feature set. |
+| `host.py` (2.1k) | `bumble-host` | 🟡 | `Device` glue (ATT↔L2CAP↔ACL sequencing + pairing transport), plus Classic ACL and synchronous connection/request/data APIs. Not the full host feature set. |
 | `device.py` (7.0k) | `bumble-host` | 🟡 | Minimal `Device`/`pump`; the high-level device API (advertising/scanning/connection orchestration, GATT client, listeners) is not ported. |
-| `lmp.py` (0.4k) | `bumble-controller::lmp` | 🟡 | Classic Link Manager Protocol PDUs modeled as in-process structs (`HostConnectionReq`/`Accepted`, `NameReq`/`NameRes`, `FeaturesReq`/`FeaturesRes`, `Detach`) driving the classic connection/name/features flows via `LocalLink::pump_classic`. The role-switch / authentication / encryption LMP sub-dance is simplified away. |
+| `lmp.py` (0.4k) | `bumble-controller::lmp` | 🟡 | Classic Link Manager Protocol PDUs modeled as in-process structs (`HostConnectionReq`/`Accepted`, `NameReq`/`NameRes`, `FeaturesReq`/`FeaturesRes`, synchronous request/accept/reject, `Detach`) driving the classic connection/name/features/SCO-eSCO flows via `LocalLink::pump_classic`. The role-switch / authentication / encryption LMP sub-dance is simplified away. |
 
 ### L2CAP
 | Upstream (LOC) | Rust crate | Status | Notes |
@@ -129,7 +130,7 @@ size, to convey remaining surface.
 | `rfcomm.py` (1.2k) | `bumble-rfcomm` | 🟡 | **Frame codec + session runtime + L2CAP binding**: the `RfcommFrame` TS 07.10 framing (SABM/UA/DM/DISC/UIH, 1- and 2-byte length indicators, credit-based UIH flow control), CRC-8, and PN/MSC MCC messages are oracle-pinned. Slice 20 adds `mux::{Multiplexer, Dlc}` for session/DLC open and credit flow; slice 22 adds `l2cap::L2capMultiplexer`, which derives its frame ceiling from the negotiated peer MTU and runs the complete session, DLC, replenishment, data, and disconnect flows over a live Classic channel. Deferred: retransmission (upstream also uses `max_retransmissions = 0`), aggregate flow control, and socket/async convenience APIs. |
 | `sdp.py` (1.4k) | `bumble-sdp` | 🟡 | **Codec + client/server runtime + L2CAP binding**: all `DataElement` encodings, `ServiceAttribute`, and seven `SdpPdu` messages are oracle-pinned. Slice 20 adds `service::{SdpServer, SdpClient}` with matching, selection, and continuation; slice 22 adds `l2cap::{SdpL2capServer, L2capSdpTransport}`, including fallible transport propagation and continuation over negotiated Classic channels. Deferred: async/event convenience APIs. |
 | `at.py` (0.1k) + HFP AT models | `bumble-at` | ✅ | Parameter tokenizer/parser ported 1:1, nested values, HFP `AtCommand`/`AtResponse` forms, and incremental command (`\r`) / response (`\r\n`) stream framing. |
-| `hfp.py` (2.1k) | `bumble-hfp` | 🟡 | Normative HF/AG models and paired SLC state machines, serialized post-SLC command completion, call control/current-call listing, HF/AG indicators, ring/volume/caller-ID/voice events, codec request/selection, and HF/AG SDP record generation/discovery. Control flows run end-to-end over RFCOMM/L2CAP and records through SDP client/server. Deferred: remaining call metadata/control variants and SCO/eSCO audio orchestration. |
+| `hfp.py` (2.1k) | `bumble-hfp` | 🟡 | Normative HF/AG models and paired SLC state machines, serialized post-SLC command completion, call control/current-call listing, HF/AG indicators, ring/volume/caller-ID/voice events, codec request/selection, HF/AG SDP record generation/discovery, and all eight upstream HFP 1.8 SCO/eSCO parameter presets. Control flows run end-to-end over RFCOMM/L2CAP and records through SDP client/server; negotiated CVSD/mSBC codecs now establish and route audio through the host/controller link. Deferred: remaining call metadata/control variants and actual CVSD/mSBC media encoding. |
 | `hid.py` (0.6k) | — | ⬜ | Human Interface Device. |
 | `a2dp` (1.0k), `avdtp` (2.4k), `avrcp` (2.9k), `avc` (0.5k), `avctp` (0.3k), `rtp` (0.1k), `codecs` (0.5k) | — | ⬜ | A/V distribution + remote control + audio. |
 
@@ -653,8 +654,29 @@ HFP can now advertise and discover both profile roles through SDP:
   records in `SdpServer`, query each UUID through `SdpClient`, and parse the
   returned attributes.
 
-The remaining major HFP gap is synchronous SCO/eSCO audio establishment and
-data routing, which spans HFP parameters, controller behavior, and host APIs.
+The next slice closes synchronous SCO/eSCO audio establishment and data routing
+across HFP parameters, controller behavior, and host APIs.
+
+## Slice 27 — what's here
+
+HFP codec negotiation can now drive a live synchronous audio link:
+
+- `DefaultCodecParameters` and `EscoParameters` port all eight HFP 1.8 section
+  5.7 parameter sets (SCO CVSD D0/D1, eSCO CVSD S1-S4, and eSCO mSBC T1/T2),
+  including enhanced setup/accept HCI command construction.
+- The controller models SCO/eSCO request, accept, reject, complete, and
+  disconnection over simplified LMP; Classic ACL teardown also removes its
+  dependent synchronous links.
+- `LocalLink` routes HCI synchronous-data packets bidirectionally with the
+  destination controller's local handle. The host `Device` exposes Classic and
+  synchronous connection state, incoming requests, packet inboxes, setup,
+  accept, send, and disconnect APIs.
+- Two-party tests establish CVSD/eSCO directly at the controller boundary and
+  an mSBC link through the host plus HFP preset, exchange audio payloads, test
+  rejection, and verify both independent and ACL-cascaded teardown.
+
+Media encoding/decoding and real controller transports remain separate future
+work; this slice provides the profile-to-HCI connection and packet boundary.
 
 ## Acceptance
 
@@ -699,7 +721,8 @@ bumble-rs/
 │   └── tests/acceptance.rs    # ported hci_test.py cases (oracle-pinned)
 ├── bumble-controller/         # slice-3 controller + virtual link crate
 │   ├── src/lib.rs
-│   └── tests/scenario.rs      # end-to-end advertising→scan→report scenario
+│   ├── tests/scenario.rs      # end-to-end advertising→scan→report scenario
+│   └── tests/synchronous.rs   # slice-27 SCO/eSCO lifecycle and data routing
 ├── bumble-l2cap/              # slice-4 codec + slice-21 Classic channel runtime
 │   ├── src/{lib,classic}.rs
 │   ├── tests/acceptance.rs    # ported l2cap_test.py codec cases (oracle-pinned)
@@ -720,7 +743,8 @@ bumble-rs/
 │   ├── src/lib.rs
 │   ├── tests/gatt_over_host.rs # full LE lifecycle via the Device API
 │   ├── tests/smp_pairing.rs    # two-party LE Legacy JustWorks handshake
-│   └── tests/smp_sc_pairing.rs # two-party LE Secure Connections handshake (slice 19)
+│   ├── tests/smp_sc_pairing.rs # two-party LE Secure Connections handshake (slice 19)
+│   └── tests/synchronous_audio.rs # HFP mSBC over host/controller (slice 27)
 ├── bumble-smp/                # slice-14 SMP codec + legacy pairing + slice-19 SC
 │   └── src/lib.rs             # wires bumble-crypto; sc:: JustWorks derivation
 ├── bumble-sdp/                # codec + runtime + slice-22 L2CAP binding
@@ -743,6 +767,7 @@ bumble-rs/
 ├── bumble-hfp/                # slice-24 HF/AG service-level connection
 │   ├── src/lib.rs             # features, events, paired HFP state machines
 │   ├── src/sdp.rs             # slice-26 HF/AG records and discovery parsing
+│   ├── src/audio.rs           # slice-27 SCO/eSCO presets + HCI commands
 │   ├── tests/slc.rs           # minimal/full transcript-pinned negotiation
 │   ├── tests/post_slc.rs      # call control, events, indicators, codec flow
 │   ├── tests/sdp.rs           # records and client/server discovery

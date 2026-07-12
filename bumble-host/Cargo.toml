@@ -24,3 +24,4 @@ bumble-controller = { path = "../bumble-controller" }
 # Secure Connections test also needs the P-256 key agreement.
 bumble-smp = { path = "../bumble-smp" }
 bumble-crypto = { path = "../bumble-crypto" }
+bumble-hfp = { path = "../bumble-hfp" }

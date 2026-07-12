@@ -9,6 +9,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use bumble_at::{AtCommand, AtResponse, CommandStream, CommandSubCode, Parameter, ResponseStream};
 
+pub mod audio;
 pub mod sdp;
 
 #[derive(Debug, Clone, PartialEq, Eq)]

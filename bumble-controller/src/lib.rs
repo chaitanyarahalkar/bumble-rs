@@ -87,6 +87,7 @@ use bumble::{Address, AddressType};
 use bumble_hci::codes::*;
 use bumble_hci::{
     AclDataPacket, AdvertisingReport, Command, Event, HciPacket, LeMetaEvent, ReturnParameters,
+    SynchronousDataPacket,
 };
 
 /// Legacy connectable-and-scannable undirected advertising event type.
@@ -131,6 +132,11 @@ const LE_1M_PHY: u8 = 1;
 const LMP_FEATURES: [u8; 8] = [0; 8];
 /// Classic ACL link type, reported in classic Connection Complete / Request.
 const LINK_TYPE_ACL: u8 = 0x01;
+/// Classic synchronous link types from the HCI Connection Request/Complete events.
+pub const LINK_TYPE_SCO: u8 = 0x00;
+pub const LINK_TYPE_ESCO: u8 = 0x02;
+const AIR_MODE_CVSD: u8 = 0x02;
+const AIR_MODE_TRANSPARENT: u8 = 0x03;
 
 /// An established LE connection on a controller.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -140,6 +146,24 @@ pub struct Connection {
     /// The address this controller uses for the connection.
     pub self_address: Address,
     pub peer_address: Address,
+}
+
+/// A synchronous SCO/eSCO logical link carried alongside a Classic ACL.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SynchronousConnection {
+    pub handle: u16,
+    pub acl_handle: u16,
+    pub self_address: Address,
+    pub peer_address: Address,
+    pub link_type: u8,
+    pub air_mode: u8,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConnectionKind {
+    LeAcl,
+    ClassicAcl,
+    Synchronous,
 }
 
 /// A Connected Isochronous Stream (CIS) link, established over an ACL connection
@@ -199,6 +223,8 @@ pub struct Controller {
     peripheral_cis_links: Vec<CisLink>,
     /// Classic (BR/EDR) ACL connections, keyed by peer address in `peer_address`.
     classic_connections: Vec<Connection>,
+    /// SCO/eSCO logical links over established Classic ACL connections.
+    synchronous_connections: Vec<SynchronousConnection>,
     /// Classic LMP PDUs waiting for a peer, as `(sender_public, receiver, pdu)`.
     outbound_classic: Vec<(Address, Address, lmp::ClassicPdu)>,
 }
@@ -223,6 +249,7 @@ impl Controller {
             central_cis_links: Vec::new(),
             peripheral_cis_links: Vec::new(),
             classic_connections: Vec::new(),
+            synchronous_connections: Vec::new(),
             outbound_classic: Vec::new(),
         }
     }
@@ -253,6 +280,8 @@ impl Controller {
                 self.scanning_enabled = false;
                 self.advertising_data.clear();
                 self.connections.clear();
+                self.classic_connections.clear();
+                self.synchronous_connections.clear();
                 self.initiating = None;
                 self.ack(op_code, HCI_SUCCESS);
             }
@@ -380,6 +409,33 @@ impl Controller {
             Command::RemoteNameRequest { bd_addr, .. } => self.handle_remote_name_request(bd_addr),
             Command::ReadRemoteSupportedFeatures { connection_handle } => {
                 self.handle_read_remote_supported_features(connection_handle)
+            }
+            Command::EnhancedSetupSynchronousConnection {
+                connection_handle,
+                transmit_coding_format,
+                ..
+            } => self.handle_setup_synchronous_connection(
+                connection_handle,
+                LINK_TYPE_ESCO,
+                air_mode_for_coding_format(transmit_coding_format.coding_format),
+            ),
+            Command::EnhancedAcceptSynchronousConnectionRequest {
+                bd_addr,
+                transmit_coding_format,
+                ..
+            } => self.handle_accept_synchronous_connection(
+                HCI_ENHANCED_ACCEPT_SYNCHRONOUS_CONNECTION_REQUEST_COMMAND,
+                bd_addr,
+                air_mode_for_coding_format(transmit_coding_format.coding_format),
+            ),
+            Command::AcceptSynchronousConnectionRequest { bd_addr, .. } => self
+                .handle_accept_synchronous_connection(
+                    HCI_ACCEPT_SYNCHRONOUS_CONNECTION_REQUEST_COMMAND,
+                    bd_addr,
+                    AIR_MODE_CVSD,
+                ),
+            Command::RejectSynchronousConnectionRequest { bd_addr, reason } => {
+                self.handle_reject_synchronous_connection(bd_addr, reason)
             }
             // Any command not modelled functionally above: reply with the same
             // response *shape* upstream `controller.py` uses for it (see
@@ -731,6 +787,135 @@ impl Controller {
         self.queue_classic(self_addr, peer_addr, lmp::ClassicPdu::FeaturesReq);
     }
 
+    /// Start an SCO/eSCO logical link over an established Classic ACL.
+    fn handle_setup_synchronous_connection(
+        &mut self,
+        acl_handle: u16,
+        link_type: u8,
+        air_mode: u8,
+    ) {
+        let Some(acl) = self
+            .classic_connections
+            .iter()
+            .find(|connection| connection.handle == acl_handle)
+        else {
+            return self.command_status(
+                HCI_ENHANCED_SETUP_SYNCHRONOUS_CONNECTION_COMMAND,
+                UNKNOWN_CONNECTION_IDENTIFIER_ERROR,
+            );
+        };
+        let (self_address, peer_address) = (acl.self_address.clone(), acl.peer_address.clone());
+        if self
+            .synchronous_connections
+            .iter()
+            .any(|connection| connection.peer_address == peer_address && connection.handle != 0)
+        {
+            return self.command_status(
+                HCI_ENHANCED_SETUP_SYNCHRONOUS_CONNECTION_COMMAND,
+                INVALID_COMMAND_PARAMETERS,
+            );
+        }
+        self.synchronous_connections.push(SynchronousConnection {
+            handle: 0,
+            acl_handle,
+            self_address: self_address.clone(),
+            peer_address: peer_address.clone(),
+            link_type,
+            air_mode,
+        });
+        self.command_status(
+            HCI_ENHANCED_SETUP_SYNCHRONOUS_CONNECTION_COMMAND,
+            HCI_SUCCESS,
+        );
+        self.queue_classic(
+            self_address,
+            peer_address,
+            lmp::ClassicPdu::SynchronousConnectionReq {
+                link_type,
+                air_mode,
+            },
+        );
+    }
+
+    fn handle_accept_synchronous_connection(
+        &mut self,
+        command_opcode: u16,
+        bd_addr: Address,
+        requested_air_mode: u8,
+    ) {
+        let Some(index) = self
+            .synchronous_connections
+            .iter()
+            .position(|connection| connection.peer_address == bd_addr && connection.handle == 0)
+        else {
+            return self.command_status(command_opcode, UNKNOWN_CONNECTION_IDENTIFIER_ERROR);
+        };
+        let handle = self.allocate_handle();
+        let connection = &mut self.synchronous_connections[index];
+        connection.handle = handle;
+        connection.air_mode = requested_air_mode;
+        let (self_address, peer_address, link_type, air_mode) = (
+            connection.self_address.clone(),
+            connection.peer_address.clone(),
+            connection.link_type,
+            connection.air_mode,
+        );
+        self.command_status(command_opcode, HCI_SUCCESS);
+        self.push_synchronous_connection_complete(handle, bd_addr, link_type, air_mode);
+        self.queue_classic(
+            self_address,
+            peer_address,
+            lmp::ClassicPdu::SynchronousConnectionAccepted {
+                link_type,
+                air_mode,
+            },
+        );
+    }
+
+    fn handle_reject_synchronous_connection(&mut self, bd_addr: Address, reason: u8) {
+        let Some(index) = self
+            .synchronous_connections
+            .iter()
+            .position(|connection| connection.peer_address == bd_addr && connection.handle == 0)
+        else {
+            return self.command_status(
+                HCI_REJECT_SYNCHRONOUS_CONNECTION_REQUEST_COMMAND,
+                UNKNOWN_CONNECTION_IDENTIFIER_ERROR,
+            );
+        };
+        let connection = self.synchronous_connections.remove(index);
+        self.command_status(
+            HCI_REJECT_SYNCHRONOUS_CONNECTION_REQUEST_COMMAND,
+            HCI_SUCCESS,
+        );
+        self.queue_classic(
+            connection.self_address,
+            connection.peer_address,
+            lmp::ClassicPdu::SynchronousConnectionRejected { reason },
+        );
+    }
+
+    fn push_synchronous_connection_complete(
+        &mut self,
+        handle: u16,
+        bd_addr: Address,
+        link_type: u8,
+        air_mode: u8,
+    ) {
+        self.host_queue
+            .push(HciPacket::Event(Event::SynchronousConnectionComplete {
+                status: HCI_SUCCESS,
+                connection_handle: handle,
+                bd_addr,
+                link_type,
+                transmission_interval: 0,
+                retransmission_window: 0,
+                rx_packet_length: 0,
+                tx_packet_length: 0,
+                air_mode,
+            }));
+    }
+
     fn push_classic_connection_complete(&mut self, handle: u16, bd_addr: Address) {
         self.host_queue
             .push(HciPacket::Event(Event::ConnectionComplete {
@@ -825,6 +1010,85 @@ impl Controller {
                     ));
                 }
             }
+            lmp::ClassicPdu::SynchronousConnectionReq {
+                link_type,
+                air_mode,
+            } => {
+                let Some(acl_handle) = self
+                    .classic_connections
+                    .iter()
+                    .find(|connection| connection.peer_address == *sender_address)
+                    .map(|connection| connection.handle)
+                else {
+                    return;
+                };
+                self.synchronous_connections.push(SynchronousConnection {
+                    handle: 0,
+                    acl_handle,
+                    self_address: self.public_address.clone(),
+                    peer_address: sender_address.clone(),
+                    link_type,
+                    air_mode,
+                });
+                self.host_queue
+                    .push(HciPacket::Event(Event::ConnectionRequest {
+                        bd_addr: sender_address.clone(),
+                        class_of_device: 0,
+                        link_type,
+                    }));
+            }
+            lmp::ClassicPdu::SynchronousConnectionAccepted {
+                link_type,
+                air_mode,
+            } => {
+                if let Some(index) = self.synchronous_connections.iter().position(|connection| {
+                    connection.peer_address == *sender_address && connection.handle == 0
+                }) {
+                    let handle = self.allocate_handle();
+                    let connection = &mut self.synchronous_connections[index];
+                    connection.handle = handle;
+                    connection.link_type = link_type;
+                    connection.air_mode = air_mode;
+                    self.push_synchronous_connection_complete(
+                        handle,
+                        sender_address.clone(),
+                        link_type,
+                        air_mode,
+                    );
+                }
+            }
+            lmp::ClassicPdu::SynchronousConnectionRejected { reason } => {
+                if let Some(index) = self.synchronous_connections.iter().position(|connection| {
+                    connection.peer_address == *sender_address && connection.handle == 0
+                }) {
+                    let connection = self.synchronous_connections.remove(index);
+                    self.host_queue
+                        .push(HciPacket::Event(Event::SynchronousConnectionComplete {
+                            status: reason,
+                            connection_handle: 0,
+                            bd_addr: sender_address.clone(),
+                            link_type: connection.link_type,
+                            transmission_interval: 0,
+                            retransmission_window: 0,
+                            rx_packet_length: 0,
+                            tx_packet_length: 0,
+                            air_mode: connection.air_mode,
+                        }));
+                }
+            }
+            lmp::ClassicPdu::SynchronousDetach { error_code } => {
+                if let Some(index) = self.synchronous_connections.iter().position(|connection| {
+                    connection.peer_address == *sender_address && connection.handle != 0
+                }) {
+                    let connection = self.synchronous_connections.remove(index);
+                    self.host_queue
+                        .push(HciPacket::Event(Event::DisconnectionComplete {
+                            status: HCI_SUCCESS,
+                            connection_handle: connection.handle,
+                            reason: error_code,
+                        }));
+                }
+            }
             lmp::ClassicPdu::Detach { error_code } => {
                 if let Some(idx) = self
                     .classic_connections
@@ -901,7 +1165,7 @@ impl Controller {
             }
             ll::ControlPdu::TerminateInd { error_code } => {
                 let peer = sender_address.clone();
-                self.on_peer_disconnect(&self_addr, &peer, error_code);
+                self.on_peer_disconnect(&self_addr, &peer, ConnectionKind::LeAcl, error_code);
             }
         }
     }
@@ -947,6 +1211,32 @@ impl Controller {
     /// The connections currently established on this controller.
     pub fn connections(&self) -> &[Connection] {
         &self.connections
+    }
+
+    pub fn classic_connections(&self) -> &[Connection] {
+        &self.classic_connections
+    }
+
+    pub fn synchronous_connections(&self) -> &[SynchronousConnection] {
+        &self.synchronous_connections
+    }
+
+    fn has_connection(
+        &self,
+        self_address: &Address,
+        peer_address: &Address,
+        kind: ConnectionKind,
+    ) -> bool {
+        let matches = |connection: &Connection| {
+            connection.self_address == *self_address && connection.peer_address == *peer_address
+        };
+        match kind {
+            ConnectionKind::LeAcl => self.connections.iter().any(matches),
+            ConnectionKind::ClassicAcl => self.classic_connections.iter().any(matches),
+            ConnectionKind::Synchronous => self.synchronous_connections.iter().any(|connection| {
+                connection.self_address == *self_address && connection.peer_address == *peer_address
+            }),
+        }
     }
 
     /// `true` if an `LE_Create_Connection` is pending (initiating).
@@ -1027,23 +1317,62 @@ impl Controller {
 
     /// Handle a host-initiated `HCI_Disconnect`: acknowledge with a Command
     /// Status, emit a Disconnection Complete, and drop the connection. Returns
-    /// the `(self_address, peer_address)` of the dropped connection so the link
-    /// can notify the peer, or `None` if no such connection existed.
-    pub fn request_disconnect(&mut self, handle: u16, reason: u8) -> Option<(Address, Address)> {
-        let index = self.connections.iter().position(|c| c.handle == handle)?;
-        let connection = self.connections.remove(index);
+    /// the endpoint addresses and connection kind so the link can notify the
+    /// peer, or `None` if no such connection existed.
+    pub fn request_disconnect(
+        &mut self,
+        handle: u16,
+        reason: u8,
+    ) -> Option<(Address, Address, ConnectionKind)> {
+        let (self_address, peer_address, kind, dependent_synchronous_handles) = if let Some(index) =
+            self.connections.iter().position(|c| c.handle == handle)
+        {
+            let connection = self.connections.remove(index);
+            (
+                connection.self_address,
+                connection.peer_address,
+                ConnectionKind::LeAcl,
+                Vec::new(),
+            )
+        } else if let Some(index) = self
+            .classic_connections
+            .iter()
+            .position(|c| c.handle == handle)
+        {
+            let connection = self.classic_connections.remove(index);
+            let dependent_synchronous_handles = self
+                .remove_synchronous_for_peer(&connection.self_address, &connection.peer_address);
+            (
+                connection.self_address,
+                connection.peer_address,
+                ConnectionKind::ClassicAcl,
+                dependent_synchronous_handles,
+            )
+        } else if let Some(index) = self
+            .synchronous_connections
+            .iter()
+            .position(|c| c.handle == handle)
+        {
+            let connection = self.synchronous_connections.remove(index);
+            (
+                connection.self_address,
+                connection.peer_address,
+                ConnectionKind::Synchronous,
+                Vec::new(),
+            )
+        } else {
+            return None;
+        };
         self.host_queue.push(HciPacket::Event(Event::CommandStatus {
             status: HCI_SUCCESS,
             num_hci_command_packets: 1,
             command_opcode: HCI_DISCONNECT_COMMAND,
         }));
-        self.host_queue
-            .push(HciPacket::Event(Event::DisconnectionComplete {
-                status: HCI_SUCCESS,
-                connection_handle: handle,
-                reason,
-            }));
-        Some((connection.self_address, connection.peer_address))
+        for dependent_handle in dependent_synchronous_handles {
+            self.push_disconnection_complete(dependent_handle, reason);
+        }
+        self.push_disconnection_complete(handle, reason);
+        Some((self_address, peer_address, kind))
     }
 
     /// Notify this controller that the peer dropped the connection identified by
@@ -1053,21 +1382,72 @@ impl Controller {
         &mut self,
         self_address: &Address,
         peer_address: &Address,
+        kind: ConnectionKind,
         reason: u8,
     ) {
-        if let Some(index) = self
-            .connections
-            .iter()
-            .position(|c| c.self_address == *self_address && c.peer_address == *peer_address)
-        {
-            let connection = self.connections.remove(index);
-            self.host_queue
-                .push(HciPacket::Event(Event::DisconnectionComplete {
-                    status: HCI_SUCCESS,
-                    connection_handle: connection.handle,
-                    reason,
-                }));
+        let connection = match kind {
+            ConnectionKind::LeAcl => self
+                .connections
+                .iter()
+                .position(|c| c.self_address == *self_address && c.peer_address == *peer_address)
+                .map(|index| (self.connections.remove(index).handle, Vec::new())),
+            ConnectionKind::ClassicAcl => self
+                .classic_connections
+                .iter()
+                .position(|c| c.self_address == *self_address && c.peer_address == *peer_address)
+                .map(|index| self.classic_connections.remove(index).handle)
+                .map(|handle| {
+                    (
+                        handle,
+                        self.remove_synchronous_for_peer(self_address, peer_address),
+                    )
+                }),
+            ConnectionKind::Synchronous => self
+                .synchronous_connections
+                .iter()
+                .position(|c| c.self_address == *self_address && c.peer_address == *peer_address)
+                .map(|index| {
+                    (
+                        self.synchronous_connections.remove(index).handle,
+                        Vec::new(),
+                    )
+                }),
+        };
+        if let Some((handle, dependent_synchronous_handles)) = connection {
+            for dependent_handle in dependent_synchronous_handles {
+                self.push_disconnection_complete(dependent_handle, reason);
+            }
+            self.push_disconnection_complete(handle, reason);
         }
+    }
+
+    fn remove_synchronous_for_peer(
+        &mut self,
+        self_address: &Address,
+        peer_address: &Address,
+    ) -> Vec<u16> {
+        let mut handles = Vec::new();
+        self.synchronous_connections.retain(|connection| {
+            if connection.self_address == *self_address && connection.peer_address == *peer_address
+            {
+                if connection.handle != 0 {
+                    handles.push(connection.handle);
+                }
+                false
+            } else {
+                true
+            }
+        });
+        handles
+    }
+
+    fn push_disconnection_complete(&mut self, connection_handle: u16, reason: u8) {
+        self.host_queue
+            .push(HciPacket::Event(Event::DisconnectionComplete {
+                status: HCI_SUCCESS,
+                connection_handle,
+                reason,
+            }));
     }
 
     /// Deliver received ACL data to the host as an HCI ACL Data packet on the
@@ -1080,6 +1460,19 @@ impl Controller {
             data_total_length: data.len() as u16,
             data: data.to_vec(),
         }));
+    }
+
+    fn deliver_synchronous(&mut self, connection_handle: u16, packet_status: u8, data: &[u8]) {
+        let Ok(data_total_length) = u8::try_from(data.len()) else {
+            return;
+        };
+        self.host_queue
+            .push(HciPacket::SyncData(SynchronousDataPacket {
+                connection_handle,
+                packet_status,
+                data_total_length,
+                data: data.to_vec(),
+            }));
     }
 
     fn connection_by_handle(&self, handle: u16) -> Option<&Connection> {
@@ -1120,6 +1513,14 @@ fn resolve_phy(no_preference: bool, phys_mask: u8) -> u8 {
         LE_1M_PHY
     } else {
         (phys_mask.trailing_zeros() as u8) + 1
+    }
+}
+
+fn air_mode_for_coding_format(coding_format: u8) -> u8 {
+    if coding_format == AIR_MODE_CVSD {
+        AIR_MODE_CVSD
+    } else {
+        AIR_MODE_TRANSPARENT
     }
 }
 
@@ -1294,11 +1695,57 @@ impl LocalLink {
         }
     }
 
+    /// Route one HCI SCO/eSCO payload to the peer synchronous connection.
+    pub fn send_synchronous_data(
+        &mut self,
+        from: usize,
+        connection_handle: u16,
+        packet_status: u8,
+        data: &[u8],
+    ) -> bool {
+        if data.len() > u8::MAX as usize {
+            return false;
+        }
+        let Some(connection) = self.controllers[from]
+            .synchronous_connections()
+            .iter()
+            .find(|connection| connection.handle == connection_handle)
+        else {
+            return false;
+        };
+        let source_address = connection.self_address.clone();
+        let peer_address = connection.peer_address.clone();
+        let destination = self
+            .controllers
+            .iter()
+            .enumerate()
+            .find_map(|(index, controller)| {
+                if index == from {
+                    return None;
+                }
+                controller
+                    .synchronous_connections()
+                    .iter()
+                    .find(|connection| {
+                        connection.handle != 0
+                            && connection.self_address == peer_address
+                            && connection.peer_address == source_address
+                    })
+                    .map(|connection| (index, connection.handle))
+            });
+        if let Some((index, handle)) = destination {
+            self.controllers[index].deliver_synchronous(handle, packet_status, data);
+            true
+        } else {
+            false
+        }
+    }
+
     /// Disconnect the connection `connection_handle` on controller `from`,
     /// notifying both sides with a Disconnection Complete. Returns `true` if the
     /// connection existed.
     pub fn disconnect(&mut self, from: usize, connection_handle: u16, reason: u8) -> bool {
-        let Some((self_address, peer_address)) =
+        let Some((self_address, peer_address, kind)) =
             self.controllers[from].request_disconnect(connection_handle, reason)
         else {
             return false;
@@ -1306,14 +1753,10 @@ impl LocalLink {
 
         // Notify the peer (its endpoints are the mirror of ours).
         let peer = self.controllers.iter().enumerate().position(|(i, ctrl)| {
-            i != from
-                && ctrl
-                    .connections()
-                    .iter()
-                    .any(|c| c.self_address == peer_address && c.peer_address == self_address)
+            i != from && ctrl.has_connection(&peer_address, &self_address, kind)
         });
         if let Some(i) = peer {
-            self.controllers[i].on_peer_disconnect(&peer_address, &self_address, reason);
+            self.controllers[i].on_peer_disconnect(&peer_address, &self_address, kind, reason);
         }
         true
     }

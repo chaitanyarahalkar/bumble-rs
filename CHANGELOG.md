@@ -87,17 +87,22 @@ crypto is pinned to Bluetooth-spec / RFC 4493 vectors.
   unsolicited ring/volume/caller-ID/voice events, serialized command results,
   and the BCS codec handshake, including live RFCOMM/L2CAP coverage. Slice 26
   adds role-correct HF/AG SDP records, feature mapping, and discovery parsing,
-  verified through the SDP client/server runtime.
+  verified through the SDP client/server runtime. Slice 27 ports all eight HFP
+  1.8 SCO/eSCO default parameter sets and builds enhanced setup/accept HCI
+  commands for negotiated CVSD and mSBC audio.
 - **`bumble-controller`** — a synchronous software controller and in-process
   `LocalLink`: advertising/scanning, LE connection establishment, ACL routing,
-  and disconnection.
+  and disconnection. Slice 27 adds Classic SCO/eSCO request, accept, reject,
+  connection completion, independent and ACL-cascaded teardown, and
+  bidirectional HCI synchronous-data routing.
 - **`bumble-host`** — a `Device`/`pump` host layer that owns the
   ATT↔L2CAP↔ACL sequencing, so two virtual devices run the full LE lifecycle
   — connect → discover → read/write → notify → pair (JustWorks) → disconnect —
   through a library API. Slice 19 adds a second pairing integration test: a
   two-party **LE Secure Connections** JustWorks handshake (public-key + nonce
   exchange, `f4` confirm, `f6` DHKey checks) in which both peers derive the same
-  LTK.
+  LTK. Slice 27 adds Classic ACL and SCO/eSCO connection/request/data APIs and
+  verifies an HFP mSBC audio link through the complete host/controller boundary.
 
 ### Known limitations
 
@@ -113,7 +118,8 @@ crypto is pinned to Bluetooth-spec / RFC 4493 vectors.
   credit-flow state machine) and the basic-mode Classic L2CAP channel runtime
   exist as synchronous, sans-I/O components with live channel bindings.
   Enhanced retransmission, aggregate RFCOMM flow control, socket/async
-  convenience APIs, and A2DP/AVRCP/HFP/HID profile behavior are not ported.
-  HFP's AT grammar, stream framing, and service-level connection are available;
-  Remaining call-control variants and SCO/eSCO audio behavior remain.
+  convenience APIs, and A2DP/AVRCP/HID profile behavior are not ported. HFP's
+  AT grammar, stream framing, service-level connection, SDP records, and
+  SCO/eSCO HCI audio-link orchestration are available; remaining call metadata
+  variants and media codec implementations remain.
 - The controller/link are synchronous (no async runtime) by design.

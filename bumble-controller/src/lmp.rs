@@ -23,6 +23,14 @@ pub enum ClassicPdu {
     FeaturesReq,
     /// Features response (`LmpFeaturesRes`).
     FeaturesRes { features: [u8; 8] },
+    /// Request an SCO/eSCO logical link over an established Classic ACL.
+    SynchronousConnectionReq { link_type: u8, air_mode: u8 },
+    /// Accept a pending SCO/eSCO logical link.
+    SynchronousConnectionAccepted { link_type: u8, air_mode: u8 },
+    /// Reject a pending SCO/eSCO logical link.
+    SynchronousConnectionRejected { reason: u8 },
+    /// Disconnect an established SCO/eSCO logical link without dropping ACL.
+    SynchronousDetach { error_code: u8 },
     /// Detach / disconnect (`LmpDetach`).
     Detach { error_code: u8 },
 }

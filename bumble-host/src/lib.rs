@@ -25,14 +25,23 @@
 //! is assumed to fit one ACL packet), the LE signaling channel, and multiple
 //! simultaneous connections per device.
 
+use bumble::Address;
 use bumble_att::AttPdu;
 use bumble_controller::LocalLink;
 use bumble_gatt::AttRequestHandler;
-use bumble_hci::{Event, HciPacket, LeMetaEvent};
+use bumble_hci::{Command, Event, HciPacket, LeMetaEvent, SynchronousDataPacket};
 use bumble_l2cap::L2capPdu;
 
 /// The fixed L2CAP channel id for the Attribute Protocol.
 pub const ATT_CID: u16 = 0x0004;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SynchronousConnectionInfo {
+    pub connection_handle: u16,
+    pub peer_address: Address,
+    pub link_type: u8,
+    pub air_mode: u8,
+}
 
 /// A host attached to a controller on a [`LocalLink`]. Owns the
 /// ATT↔L2CAP↔ACL sequencing.
@@ -40,6 +49,10 @@ pub struct Device {
     controller_id: usize,
     server: Option<Box<dyn AttRequestHandler>>,
     connection_handle: Option<u16>,
+    classic_connection_handle: Option<u16>,
+    synchronous_connections: Vec<SynchronousConnectionInfo>,
+    synchronous_requests: Vec<(Address, u8)>,
+    synchronous_inbox: Vec<SynchronousDataPacket>,
     inbox: Vec<AttPdu>,
     /// Received payloads on non-ATT L2CAP channels, as `(cid, payload)`.
     l2cap_inbox: Vec<(u16, Vec<u8>)>,
@@ -52,6 +65,10 @@ impl Device {
             controller_id,
             server: None,
             connection_handle: None,
+            classic_connection_handle: None,
+            synchronous_connections: Vec::new(),
+            synchronous_requests: Vec::new(),
+            synchronous_inbox: Vec::new(),
             inbox: Vec::new(),
             l2cap_inbox: Vec::new(),
         }
@@ -64,6 +81,10 @@ impl Device {
             controller_id,
             server: Some(Box::new(server)),
             connection_handle: None,
+            classic_connection_handle: None,
+            synchronous_connections: Vec::new(),
+            synchronous_requests: Vec::new(),
+            synchronous_inbox: Vec::new(),
             inbox: Vec::new(),
             l2cap_inbox: Vec::new(),
         }
@@ -81,6 +102,70 @@ impl Device {
     /// `true` while a connection is established.
     pub fn is_connected(&self) -> bool {
         self.connection_handle.is_some()
+    }
+
+    pub fn classic_connection_handle(&self) -> Option<u16> {
+        self.classic_connection_handle
+    }
+
+    pub fn synchronous_connections(&self) -> &[SynchronousConnectionInfo] {
+        &self.synchronous_connections
+    }
+
+    pub fn take_synchronous_requests(&mut self) -> Vec<(Address, u8)> {
+        std::mem::take(&mut self.synchronous_requests)
+    }
+
+    pub fn take_synchronous_inbox(&mut self) -> Vec<SynchronousDataPacket> {
+        std::mem::take(&mut self.synchronous_inbox)
+    }
+
+    /// Submit any typed HCI command through this device's attached controller.
+    pub fn send_hci_command(&mut self, link: &mut LocalLink, command: Command) {
+        link.handle_command(self.controller_id, command);
+    }
+
+    pub fn connect_classic(&mut self, link: &mut LocalLink, peer_address: Address) {
+        self.send_hci_command(
+            link,
+            Command::CreateConnection {
+                bd_addr: peer_address,
+                packet_type: 0,
+                page_scan_repetition_mode: 0,
+                reserved: 0,
+                clock_offset: 0,
+                allow_role_switch: 0,
+            },
+        );
+    }
+
+    pub fn accept_classic(&mut self, link: &mut LocalLink, peer_address: Address) {
+        self.send_hci_command(
+            link,
+            Command::AcceptConnectionRequest {
+                bd_addr: peer_address,
+                role: 0,
+            },
+        );
+    }
+
+    pub fn send_synchronous(
+        &mut self,
+        link: &mut LocalLink,
+        connection_handle: u16,
+        packet_status: u8,
+        data: &[u8],
+    ) -> bool {
+        link.send_synchronous_data(self.controller_id, connection_handle, packet_status, data)
+    }
+
+    pub fn disconnect_handle(
+        &mut self,
+        link: &mut LocalLink,
+        connection_handle: u16,
+        reason: u8,
+    ) -> bool {
+        link.disconnect(self.controller_id, connection_handle, reason)
     }
 
     /// Disconnect the current connection with the given reason. Both this device
@@ -157,10 +242,44 @@ impl Device {
                 })) => {
                     self.connection_handle = Some(connection_handle);
                 }
-                HciPacket::Event(Event::DisconnectionComplete { .. }) => {
-                    self.connection_handle = None;
+                HciPacket::Event(Event::DisconnectionComplete {
+                    connection_handle, ..
+                }) => {
+                    if self.connection_handle == Some(connection_handle) {
+                        self.connection_handle = None;
+                    }
+                    if self.classic_connection_handle == Some(connection_handle) {
+                        self.classic_connection_handle = None;
+                    }
+                    self.synchronous_connections
+                        .retain(|connection| connection.connection_handle != connection_handle);
                 }
+                HciPacket::Event(Event::ConnectionComplete {
+                    status: 0,
+                    connection_handle,
+                    link_type: 1,
+                    ..
+                }) => self.classic_connection_handle = Some(connection_handle),
+                HciPacket::Event(Event::ConnectionRequest {
+                    bd_addr, link_type, ..
+                }) if link_type != 1 => self.synchronous_requests.push((bd_addr, link_type)),
+                HciPacket::Event(Event::SynchronousConnectionComplete {
+                    status: 0,
+                    connection_handle,
+                    bd_addr,
+                    link_type,
+                    air_mode,
+                    ..
+                }) => self
+                    .synchronous_connections
+                    .push(SynchronousConnectionInfo {
+                        connection_handle,
+                        peer_address: bd_addr,
+                        link_type,
+                        air_mode,
+                    }),
                 HciPacket::AclData(acl) => self.on_acl(link, acl.connection_handle, &acl.data),
+                HciPacket::SyncData(packet) => self.synchronous_inbox.push(packet),
                 _ => {}
             }
         }
