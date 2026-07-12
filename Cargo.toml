@@ -10,6 +10,7 @@ members = [
     "bumble-host",
     "bumble-smp",
     "bumble-sdp",
+    "bumble-rfcomm",
 ]
 resolver = "2"
 

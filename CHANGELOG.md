@@ -31,6 +31,11 @@ crypto is pinned to Bluetooth-spec / RFC 4493 vectors.
   piece): the recursive `DataElement` type-length-value format, the
   `ServiceAttribute` service-record model, and all seven `SdpPdu` messages —
   oracle-pinned to upstream `sdp_test.py`.
+- **`bumble-rfcomm`** — RFCOMM frame + MCC codec (serial-cable emulation over
+  L2CAP): the `RfcommFrame` TS 07.10 framing (SABM/UA/DM/DISC/UIH, 1- and
+  2-byte length indicators, credit-based UIH flow control), the CRC-8
+  `compute_fcs`, and the `RfcommMccPn`/`RfcommMccMsc` MCC messages — oracle-
+  pinned to upstream `rfcomm_test.py`.
 - **`bumble-controller`** — a synchronous software controller and in-process
   `LocalLink`: advertising/scanning, LE connection establishment, ACL routing,
   and disconnection.
@@ -44,6 +49,7 @@ crypto is pinned to Bluetooth-spec / RFC 4493 vectors.
 - LE Secure Connections pairing (ECDH + `f4`/`f5`/`f6`/`g2` handshake) is not
   wired, though the crypto primitives exist and are vector-verified.
 - No GATT descriptors/CCCD subscriptions or L2CAP fragmentation/reassembly.
-- Of Classic Bluetooth, only the SDP codec exists; RFCOMM/A2DP/AVRCP/HFP/HID
-  and the SDP async client/server + service-record database are not ported.
+- Of Classic Bluetooth, only the SDP and RFCOMM codecs exist; A2DP/AVRCP/HFP/HID
+  and the async runtimes — the SDP client/server + service-record database and
+  the RFCOMM DLC/multiplexer credit-flow state machine — are not ported.
 - The controller/link are synchronous (no async runtime) by design.

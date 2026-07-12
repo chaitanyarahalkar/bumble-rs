@@ -31,7 +31,8 @@ crate whose behavior is verified against the upstream Python.
 | 13. LE disconnection (Disconnect → Disconnection Complete both sides) | `bumble-controller` | ✅ |
 | 14. SMP PDU codec + LE Legacy pairing (wires in `bumble-crypto`) | `bumble-smp` | ✅ 2/2 tests green |
 | 16. SDP codec (data elements + PDUs) — first Classic (BR/EDR) piece | `bumble-sdp` | ✅ 23/23 tests green |
-| 17+. LE Secure Connections pairing, GATT descriptors, more classic (RFCOMM/A2DP…) | — | planned |
+| 17. RFCOMM frame + MCC codec (serial-cable emulation over L2CAP) | `bumble-rfcomm` | ✅ 14/14 tests green |
+| 18+. LE Secure Connections pairing, GATT descriptors, more classic (A2DP/AVRCP/HFP…) | — | planned |
 
 The LE lifecycle is now complete end-to-end through library APIs: **connect →
 discover → read/write → notify → disconnect** between two virtual devices — and
@@ -116,7 +117,7 @@ size, to convey remaining surface.
 ### Classic Bluetooth (BR/EDR)
 | Upstream (LOC) | Rust crate | Status | Notes |
 |---|---|---|---|
-| `rfcomm.py` (1.2k) | — | ⬜ | Serial port emulation. |
+| `rfcomm.py` (1.2k) | `bumble-rfcomm` | 🟡 | **Frame codec complete, oracle-pinned**: the `RfcommFrame` TS 07.10 framing (SABM/UA/DM/DISC/UIH, 1- and 2-byte length indicators, credit-based UIH flow control), the CRC-8 `compute_fcs`, and the `RfcommMccPn`/`RfcommMccMsc` MCC messages plus the MCC type/length header. Deferred (matching the port's synchronous, codec-first approach): the asyncio `DLC`, `Multiplexer`, `Client`/`Server` credit-flow state machine and the SDP-record helpers. |
 | `sdp.py` (1.4k) | `bumble-sdp` | 🟡 | **Codec complete, oracle-pinned**: the recursive `DataElement` type-length-value format (all nine element types, all eight size-index encodings, 16/32/128-bit UUIDs), the `ServiceAttribute` service-record model, and all seven `SdpPdu` messages (Error / Service Search / Service Attribute / Service Search Attribute request+response) with continuation state carried verbatim. Deferred (matching the port's synchronous, codec-first approach): the asyncio `Client`/`Server`, the continuation-state reassembly loop, and the service-record database. |
 | `hfp.py` (2.1k), `at.py` (0.1k) | — | ⬜ | Hands-Free Profile. |
 | `hid.py` (0.6k) | — | ⬜ | Human Interface Device. |
@@ -133,12 +134,13 @@ size, to convey remaining surface.
 Fully or substantially covered for the **LE core data + security path**: core
 types, HCI framing, L2CAP/ATT/GATT/SMP codecs, the SMP crypto toolbox, and a
 controller/link/host that runs the LE lifecycle end-to-end. Classic Bluetooth
-has its **first foundation piece** — the SDP codec (`bumble-sdp`), which the
-classic profiles build service records on. Everything else — the full
-device/host/GATT-client abstractions, LE Secure Connections, real transports,
-and the **rest of Classic Bluetooth (RFCOMM/A2DP/AVRCP/HFP/HID/…) and the
-profiles** — is still the large majority of the ~82k upstream lines and remains
-to do.
+has its **first two foundation pieces** — the SDP codec (`bumble-sdp`), which
+the classic profiles build service records on, and the RFCOMM frame codec
+(`bumble-rfcomm`), the serial-cable transport those profiles run over.
+Everything else — the full device/host/GATT-client abstractions, LE Secure
+Connections, real transports, and the **rest of Classic Bluetooth
+(A2DP/AVRCP/HFP/HID/…) and the profiles** — is still the large majority of the
+~82k upstream lines and remains to do.
 
 ## Slice 1 — what's here
 
@@ -389,6 +391,29 @@ alone would have missed. Deferred, matching the port's synchronous, codec-first
 approach: the asyncio `Client`/`Server`, the continuation-state reassembly loop,
 and the higher-level service-record database.
 
+## Slice 17 — what's here
+
+The RFCOMM frame + MCC codec in [`bumble-rfcomm`](bumble-rfcomm/) — the second
+piece of Classic infrastructure. RFCOMM (TS 07.10) emulates serial cables over
+L2CAP and is the transport the Serial Port Profile and many other classic
+profiles run on; a device finds a peer's RFCOMM server channel through an SDP
+service record (slice 16), then speaks this framing to it:
+
+- **`RfcommFrame`** — the SABM/UA/DM/DISC/UIH frame layout
+  `[address, control, length, information…, fcs]`, with the 1- and 2-byte
+  length indicators (EA bit), the credit-based flow-control variant of UIH
+  (the leading credit octet excluded from the length), and the FCS.
+- **`compute_fcs`** — the CRC-8 frame check sequence over the TS 07.10 table.
+- **`RfcommMccPn` / `RfcommMccMsc`** — the Parameter Negotiation and Modem
+  Status Command MCC messages, plus `make_mcc`/`parse_mcc` for the MCC header.
+
+Every serialization is **oracle-pinned** to a hex literal from upstream
+(commit `1d26b99`), mirroring the byte round-trip in
+`tests/rfcomm_test.py::basic_frame_check`, with `compute_fcs` pinned directly so
+a single-nibble error in the hand-transcribed 256-byte table fails locally.
+Deferred, matching the codec-first approach: the asyncio `DLC`, `Multiplexer`,
+`Client`/`Server` credit-flow state machine and the SDP-record helpers.
+
 ## Acceptance
 
 The port's contract is the upstream Python test suite, ported 1:1:
@@ -453,6 +478,9 @@ bumble-rs/
 ├── bumble-sdp/                # slice-16 SDP codec crate (first Classic piece)
 │   ├── src/{lib,pdu}.rs       # DataElement + ServiceAttribute + SdpPdu
 │   └── tests/acceptance.rs    # ported sdp_test.py cases (oracle-pinned)
+├── bumble-rfcomm/             # slice-17 RFCOMM frame + MCC codec crate
+│   ├── src/lib.rs             # RfcommFrame + compute_fcs + MCC PN/MSC
+│   └── tests/acceptance.rs    # ported rfcomm_test.py frame check (oracle-pinned)
 └── docs/superpowers/          # design specs + implementation plans
 ```
 
