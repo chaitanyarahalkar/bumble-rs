@@ -76,6 +76,9 @@ crypto is pinned to Bluetooth-spec / RFC 4493 vectors.
   the runtime to a Classic channel and verifying session/DLC open, credit
   replenishment, ordered application data, and disconnect across two L2CAP
   peers.
+- **`bumble-at`** — upstream-compatible AT parameter tokenization/parsing,
+  typed HFP command/response forms, and incremental command/response stream
+  parsers that handle RFCOMM fragmentation and coalescing (slice 23).
 - **`bumble-controller`** — a synchronous software controller and in-process
   `LocalLink`: advertising/scanning, LE connection establishment, ACL routing,
   and disconnection.
@@ -101,5 +104,6 @@ crypto is pinned to Bluetooth-spec / RFC 4493 vectors.
   credit-flow state machine) and the basic-mode Classic L2CAP channel runtime
   exist as synchronous, sans-I/O components with live channel bindings.
   Enhanced retransmission, aggregate RFCOMM flow control, socket/async
-  convenience APIs, and A2DP/AVRCP/HFP/HID are not ported.
+  convenience APIs, and A2DP/AVRCP/HFP/HID profile behavior are not ported.
+  HFP's AT grammar and stream framing are available in `bumble-at`.
 - The controller/link are synchronous (no async runtime) by design.

@@ -37,7 +37,8 @@ crate whose behavior is verified against the upstream Python.
 | 20. RFCOMM + SDP session runtimes (Multiplexer/DLC credit flow, SDP client/server) | `bumble-rfcomm` / `bumble-sdp` | ✅ oracle + two-party green |
 | 21. Classic L2CAP channels (PSM/CID allocation, configure/MTU, data, disconnect) | `bumble-l2cap` | ✅ oracle + two-party green |
 | 22. RFCOMM + SDP bindings over live Classic L2CAP channels | `bumble-rfcomm` / `bumble-sdp` | ✅ two-party green |
-| 23+. More classic profiles (A2DP/AVRCP/HFP/HID…) | — | planned |
+| 23. AT parameter + HFP command/response streaming parser | `bumble-at` | ✅ 5/5 tests green |
+| 24+. More classic profiles (HFP, A2DP/AVRCP/HID…) | — | planned |
 
 The LE lifecycle is now complete end-to-end through library APIs: **connect →
 discover → read/write → notify → disconnect** between two virtual devices — and
@@ -124,7 +125,8 @@ size, to convey remaining surface.
 |---|---|---|---|
 | `rfcomm.py` (1.2k) | `bumble-rfcomm` | 🟡 | **Frame codec + session runtime + L2CAP binding**: the `RfcommFrame` TS 07.10 framing (SABM/UA/DM/DISC/UIH, 1- and 2-byte length indicators, credit-based UIH flow control), CRC-8, and PN/MSC MCC messages are oracle-pinned. Slice 20 adds `mux::{Multiplexer, Dlc}` for session/DLC open and credit flow; slice 22 adds `l2cap::L2capMultiplexer`, which derives its frame ceiling from the negotiated peer MTU and runs the complete session, DLC, replenishment, data, and disconnect flows over a live Classic channel. Deferred: retransmission (upstream also uses `max_retransmissions = 0`), aggregate flow control, and socket/async convenience APIs. |
 | `sdp.py` (1.4k) | `bumble-sdp` | 🟡 | **Codec + client/server runtime + L2CAP binding**: all `DataElement` encodings, `ServiceAttribute`, and seven `SdpPdu` messages are oracle-pinned. Slice 20 adds `service::{SdpServer, SdpClient}` with matching, selection, and continuation; slice 22 adds `l2cap::{SdpL2capServer, L2capSdpTransport}`, including fallible transport propagation and continuation over negotiated Classic channels. Deferred: async/event convenience APIs. |
-| `hfp.py` (2.1k), `at.py` (0.1k) | — | ⬜ | Hands-Free Profile. |
+| `at.py` (0.1k) + HFP AT models | `bumble-at` | ✅ | Parameter tokenizer/parser ported 1:1, nested values, HFP `AtCommand`/`AtResponse` forms, and incremental command (`\r`) / response (`\r\n`) stream framing. |
+| `hfp.py` (2.1k) | — | ⬜ | Hands-Free Profile state, features, indicators, call control, codec negotiation, and SCO/eSCO audio orchestration. The AT and RFCOMM/L2CAP dependencies are now present. |
 | `hid.py` (0.6k) | — | ⬜ | Human Interface Device. |
 | `a2dp` (1.0k), `avdtp` (2.4k), `avrcp` (2.9k), `avc` (0.5k), `avctp` (0.3k), `rtp` (0.1k), `codecs` (0.5k) | — | ⬜ | A/V distribution + remote control + audio. |
 
@@ -569,6 +571,25 @@ The adapters remain executor-neutral: their caller drives the surrounding ACL
 link through a callback, so they work with the in-process controller today and
 can sit above future socket/USB transports without an API split.
 
+## Slice 23 — what's here
+
+[`bumble-at`](bumble-at/) ports upstream's AT parameter grammar and extracts the
+protocol-neutral command/response models that HFP previously kept internally:
+
+- `tokenize_parameters` and `parse_parameters` match `bumble/at.py`, including
+  ignored unquoted spaces, quoted comma preservation, empty values, and nested
+  parenthesized lists. The two upstream tests are ported 1:1.
+- `AtCommand` recognizes extended set/test/read forms plus basic `ATA` and
+  `ATD…` commands; `AtResponse` parses status and unsolicited response lines.
+- `CommandStream` and `ResponseStream` preserve incomplete input across RFCOMM
+  packets and emit every coalesced command or response once its AT delimiter
+  arrives. Tests exercise both fragmentation and multiple messages per packet,
+  as well as malformed nesting.
+
+This is the codec boundary for the next HFP protocol slice; feature exchange,
+indicator synchronization, call control, codec negotiation, and audio-link
+orchestration remain in that profile layer.
+
 ## Acceptance
 
 The port's contract is the upstream Python test suite, ported 1:1:
@@ -650,6 +671,9 @@ bumble-rs/
 │   ├── tests/acceptance.rs    # ported rfcomm_test.py frame check (oracle-pinned)
 │   ├── tests/session.rs       # two-party session, handshake pinned to upstream (slice 20)
 │   └── tests/l2cap_binding.rs # session/DLC/data/disconnect over Classic L2CAP
+├── bumble-at/                 # slice-23 AT/HFP command and response parsing
+│   ├── src/lib.rs             # parameters, models, incremental stream parsers
+│   └── tests/acceptance.rs    # upstream AT tests + HFP framing cases
 └── docs/superpowers/          # design specs + implementation plans
 ```
 

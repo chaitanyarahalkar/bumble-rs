@@ -11,6 +11,7 @@ members = [
     "bumble-smp",
     "bumble-sdp",
     "bumble-rfcomm",
+    "bumble-at",
 ]
 resolver = "2"
 
