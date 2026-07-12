@@ -115,7 +115,8 @@ crypto is pinned to Bluetooth-spec / RFC 4493 vectors.
 - **`bumble-a2dp`** — slice 31 ports the SBC, MPEG-2/4 AAC, vendor-specific, and
   Opus codec capability models, pins the upstream byte vectors, validates
   malformed/range inputs, and converts typed codec information into AVDTP
-  media-codec capabilities.
+  media-codec capabilities. Slice 33 adds safe SBC frame parsing and MTU-aware
+  RTP aggregation, including a correct final-buffer flush missing upstream.
 - **`bumble-rtp`** — slice 32 adds safe RTP media packet parsing/serialization,
   including CSRC lists, header extensions, padding, exact byte round trips, and
   explicit errors for malformed remote input.

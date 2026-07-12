@@ -4,6 +4,8 @@ use core::fmt;
 
 use bumble_avdtp::{MediaType, ServiceCapabilities};
 
+pub mod media;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
     Truncated(&'static str),
