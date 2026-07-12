@@ -109,7 +109,9 @@ crypto is pinned to Bluetooth-spec / RFC 4493 vectors.
 - **`bumble-avdtp`** — slice 29 starts the Classic A/V stack with all 38 AVDTP
   signaling message forms, endpoint and capability codecs, exact payload
   vectors, lossless unknown signals, and MTU-aware single/fragmented PDU
-  encoding and safe reassembly.
+  encoding and safe reassembly. Slice 30 adds the endpoint/session state
+  machine, atomic multi-stream validation, lifecycle/security/delay events, and
+  transaction-labeled signaling over live Classic L2CAP channels.
 
 ### Known limitations
 
@@ -126,8 +128,8 @@ crypto is pinned to Bluetooth-spec / RFC 4493 vectors.
   exist as synchronous, sans-I/O components with live channel bindings.
   Enhanced retransmission, aggregate RFCOMM flow control, socket/async
   convenience APIs, and A2DP/AVRCP/HID profile behavior are not ported. The
-  AVDTP signaling codec exists, but its transaction/stream runtime and L2CAP
-  binding remain. HFP's
+  AVDTP signaling and endpoint runtime exist over Classic L2CAP, but its
+  initiator convenience, RTP media channel/pump, and A2DP codec layer remain. HFP's
   AT grammar, stream framing, service-level connection, SDP records, and
   SCO/eSCO HCI audio-link orchestration are available. Its synchronous command
   behavior now covers the upstream HFP test families; executor conveniences and

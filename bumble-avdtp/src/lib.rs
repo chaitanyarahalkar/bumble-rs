@@ -6,6 +6,9 @@
 
 use core::fmt;
 
+pub mod l2cap;
+pub mod session;
+
 pub const AVDTP_PSM: u16 = 0x0019;
 
 #[derive(Clone, Debug, PartialEq, Eq)]

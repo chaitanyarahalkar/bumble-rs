@@ -12,3 +12,4 @@ categories.workspace = true
 description = "Rust port of google/bumble AVDTP signaling and stream transport"
 
 [dependencies]
+bumble-l2cap = { path = "../bumble-l2cap" }

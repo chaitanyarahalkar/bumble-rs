@@ -44,7 +44,8 @@ crate whose behavior is verified against the upstream Python.
 | 27. HFP SCO/eSCO parameters, controller/host connection lifecycle, and audio routing | `bumble-hfp` / `bumble-controller` / `bumble-host` | ✅ CVSD + mSBC, two-party green |
 | 28. Remaining HFP normative models, AG controls, typed metadata, and public helpers | `bumble-hfp` | ✅ upstream behavior families green |
 | 29. AVDTP signaling catalog, capability codec, and safe PDU fragmentation | `bumble-avdtp` | ✅ 38 messages payload-pinned |
-| 30+. AVDTP stream runtime, A2DP, AVRCP, HID… | — | planned |
+| 30. AVDTP endpoint/session state machine and live Classic L2CAP binding | `bumble-avdtp` | ✅ full lifecycle, fragmented config green |
+| 31+. A2DP codecs/media, AVRCP, HID… | — | planned |
 
 The LE lifecycle is now complete end-to-end through library APIs: **connect →
 discover → read/write → notify → disconnect** between two virtual devices — and
@@ -134,7 +135,7 @@ size, to convey remaining surface.
 | `at.py` (0.1k) + HFP AT models | `bumble-at` | ✅ | Parameter tokenizer/parser ported 1:1, nested values, HFP `AtCommand`/`AtResponse` forms, and incremental command (`\r`) / response (`\r\n`) stream framing. |
 | `hfp.py` (2.1k) | `bumble-hfp` | 🟡 | Normative HF/AG models and paired SLC state machines, serialized post-SLC command completion, call control/current-call listing, HF/AG indicators, ring/volume/typed caller-ID/typed voice events, codec request/selection, CMEE/CCWA/BIA/CLIP controls, HF/AG SDP record generation/discovery, and all eight upstream HFP 1.8 SCO/eSCO parameter presets. Control flows run end-to-end over RFCOMM/L2CAP and records through SDP client/server; negotiated CVSD/mSBC codecs establish and route audio through the host/controller link. The core synchronous protocol surface covers the upstream behavior families; deferred: asyncio/event-emitter convenience and actual CVSD/mSBC media encoding. |
 | `hid.py` (0.6k) | — | ⬜ | Human Interface Device. |
-| `avdtp.py` (2.4k) | `bumble-avdtp` | 🟡 | Slice 29 ports all 38 upstream signaling command/accept/reject forms, endpoint descriptors, generic and media-codec capability TLVs, open protocol enums, exact payload encoding/decoding, unknown-signal preservation, and safe single/fragmented PDU assembly. Deferred: protocol transaction/session and stream endpoint state machines, L2CAP binding, and media packet pumping. |
+| `avdtp.py` (2.4k) | `bumble-avdtp` | 🟡 | Slice 29 ports all 38 upstream signaling command/accept/reject forms, endpoint descriptors, generic and media-codec capability TLVs, open protocol enums, exact payload encoding/decoding, unknown-signal preservation, and safe single/fragmented PDU assembly. Slice 30 adds local endpoint registration, command dispatch, atomic multi-SEP validation, the configured/open/streaming/idle lifecycle, event capture, transaction labels, and a live Classic L2CAP binding. Deferred: initiator-side high-level stream proxy, RTP media channel/pump, listener convenience, and SDP discovery. |
 | `a2dp` (1.0k), `avrcp` (2.9k), `avc` (0.5k), `avctp` (0.3k), `rtp` (0.1k), `codecs` (0.5k) | — | ⬜ | A/V distribution + remote control + audio above the new AVDTP codec boundary. |
 
 ### Profiles & apps
@@ -720,7 +721,29 @@ codec:
   fail safely instead of panicking or tearing down a channel.
 
 The next A/V slice builds protocol transactions and stream endpoint lifecycle
-on this codec before binding it to Classic L2CAP PSM `0x0019`.
+on this codec and binds it to Classic L2CAP PSM `0x0019`.
+
+## Slice 30 — what's here
+
+AVDTP signaling now drives real stream endpoint state:
+
+- `session::Session` registers source/sink endpoints, advertises live in-use
+  flags, returns capabilities/configuration, and handles every upstream command
+  through configuration, reconfiguration, open, start, suspend, close, abort,
+  security control, and delay reporting.
+- Transitions enforce the AVDTP state model and produce the matching reject
+  shape/error (`BAD_ACP_SEID`, `SEP_IN_USE`, or `BAD_STATE`). Multi-endpoint
+  start/suspend validation is atomic, so a later invalid SEID cannot partially
+  mutate earlier streams.
+- `l2cap::L2capSession` assigns 4-bit transaction labels, sends MTU-fragmented
+  messages, reassembles channel input, dispatches commands, returns responses
+  on the original label, and queues initiator-side results.
+- A two-party Classic L2CAP test runs discovery, capability exchange, a
+  configuration deliberately larger than the 48-byte minimum MTU, then the
+  open → start → suspend → close lifecycle while asserting responder state.
+
+The next layer is A2DP codec negotiation and RTP media packets over the AVDTP
+media channel.
 
 ## Acceptance
 
@@ -819,7 +842,11 @@ bumble-rs/
 │   └── tests/rfcomm_slc.rs    # SLC over RFCOMM over Classic L2CAP
 ├── bumble-avdtp/              # slice-29 A/V distribution transport codec
 │   ├── src/lib.rs             # messages, capabilities, PDU fragmentation
-│   └── tests/acceptance.rs    # 38 exact payloads + malformed PDU coverage
+│   ├── src/session.rs         # slice-30 endpoint and stream state machine
+│   ├── src/l2cap.rs           # transaction runtime over Classic L2CAP
+│   ├── tests/acceptance.rs    # 38 exact payloads + malformed PDU coverage
+│   ├── tests/session.rs       # lifecycle, errors, atomic multi-SEP commands
+│   └── tests/l2cap_binding.rs # fragmented signaling over live channels
 └── docs/superpowers/          # design specs + implementation plans
 ```
 
