@@ -13,3 +13,5 @@ description = "Rust port of google/bumble SMP cryptographic toolbox (slice 6: e,
 
 [dependencies]
 aes = "0.8"
+p256 = { version = "0.13", features = ["ecdh"] }
+rand_core = { version = "0.6", features = ["getrandom"] }

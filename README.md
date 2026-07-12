@@ -21,7 +21,7 @@ crate whose behavior is verified against the upstream Python.
 | 3+7. Software controller + virtual link (advertising + LE connections + read/PHY/data-length commands) | `bumble-controller` | ✅ 17/17 tests green |
 | 4. L2CAP frame codec (PDU + signaling frames + FCS) | `bumble-l2cap` | ✅ 8/8 tests green |
 | 5. ATT protocol PDU codec (incl. Find_Information, Read_Blob, indications) | `bumble-att` | ✅ 16/16 tests green |
-| 6. SMP cryptographic toolbox | `bumble-crypto` | ✅ 10/10 vectors green |
+| 6. SMP cryptographic toolbox (+ P-256 ECC/ECDH, slice 19) | `bumble-crypto` | ✅ 14/14 tests green |
 | 7. LE connection establishment (in the controller) | `bumble-controller` | ✅ (see slice 3+7) |
 | 8. ACL data path (ATT-over-L2CAP-over-ACL, cross-layer) | `bumble-controller` | ✅ 8/8 controller tests |
 | 9. Minimal GATT/ATT server (end-to-end attribute read/write) | `bumble-gatt` | ✅ 5/5 tests green |
@@ -33,7 +33,8 @@ crate whose behavior is verified against the upstream Python.
 | 16. SDP codec (data elements + PDUs) — first Classic (BR/EDR) piece | `bumble-sdp` | ✅ 23/23 tests green |
 | 17. RFCOMM frame + MCC codec (serial-cable emulation over L2CAP) | `bumble-rfcomm` | ✅ 14/14 tests green |
 | 18. GATT client (discovery, read/long-read, write, subscribe) | `bumble-gatt` | ✅ client tests green |
-| 19+. LE Secure Connections pairing, more classic (A2DP/AVRCP/HFP…), async runtimes | — | planned |
+| 19. LE Secure Connections pairing (P-256 ECDH + JustWorks derivation) | `bumble-crypto` / `bumble-smp` | ✅ oracle + two-party green |
+| 20+. RFCOMM/SDP async runtimes, more classic (A2DP/AVRCP/HFP…) | — | planned |
 
 The LE lifecycle is now complete end-to-end through library APIs: **connect →
 discover → read/write → notify → disconnect** between two virtual devices — and
@@ -106,8 +107,8 @@ size, to convey remaining surface.
 ### Security (SMP + crypto)
 | Upstream (LOC) | Rust crate | Status | Notes |
 |---|---|---|---|
-| `crypto/` | `bumble-crypto` | ✅ | All SMP **symmetric** security functions — `e`, AES-CMAC, `c1`, `s1`, `f4`/`f5`/`f6`, `g2`, `h6`/`h7`, `ah` — spec/RFC-4493 vector-verified. Deferred: ECC P-256 (`EccKey`) and RNG. |
-| `smp.py` (2.0k), `pairing.py` (0.3k) | `bumble-smp` | 🟡 | PDU codec + LE Legacy (JustWorks) pairing run over the link. Deferred: full pairing state machine, LE Secure Connections, key distribution, MITM/OOB, passkey. |
+| `crypto/` | `bumble-crypto` | ✅ | All SMP **symmetric** security functions — `e`, AES-CMAC, `c1`, `s1`, `f4`/`f5`/`f6`, `g2`, `h6`/`h7`, `ah` — spec/RFC-4493 vector-verified, plus **P-256 `EccKey`** (slice 19: keygen, `from_private_key_bytes`, public-key coordinates, ECDH) oracle-pinned to upstream. Deferred: none of the crypto primitives. |
+| `smp.py` (2.0k), `pairing.py` (0.3k) | `bumble-smp` | 🟡 | PDU codec (incl. all **LE Secure Connections** PDUs — public key, DHKey check, keypress, key-distribution), LE Legacy (JustWorks) pairing over the link, and the **SC JustWorks derivation** (`sc` module: `f4` confirm + `f5`/`f6`/`g2` keys) oracle-pinned and run as a two-party handshake. Deferred: full pairing state machine, Numeric Comparison / passkey / OOB entry UX, key distribution over the wire, bonding storage. |
 
 ### Transports & drivers
 | Upstream | Rust crate | Status | Notes |
@@ -445,6 +446,37 @@ Handle_Value_Indication/Confirmation) were added to `bumble-att` and
 oracle-pinned. Deferred, matching the synchronous port: the async bearer, the
 `gatt_adapters` typed-value proxies, and event listeners.
 
+## Slice 19 — what's here
+
+**LE Secure Connections** pairing crypto, the counterpart to the LE Legacy
+handshake from slice 14. Two pieces:
+
+- **P-256 ECC in [`bumble-crypto`](bumble-crypto/)** — an `EccKey` (backed by
+  the RustCrypto `p256` crate) porting upstream `crypto.EccKey`: `generate`,
+  `from_private_key_bytes`, big-endian public-key coordinates (`public_x` /
+  `public_y`), and ECDH (`dh`). The public keys and the Diffie-Hellman shared
+  secret are pinned to values captured from upstream Python's `EccKey` in
+  [`tests/ecc.rs`](bumble-crypto/tests/ecc.rs), and bad peer coordinates are
+  rejected.
+- **The SC JustWorks derivation in [`bumble-smp`](bumble-smp/)** — a `sc` module
+  composing the symmetric functions exactly as upstream `smp.py` does:
+  the responder confirm `Cb = f4(PKb, PKa, Nb, 0)`, `(MacKey, LTK) = f5(…)`,
+  the DHKey checks `Ea`/`Eb = f6(…)`, and the 6-digit numeric value
+  `g2(…) % 10⁶` — all pinned to a Python oracle, with careful attention to the
+  little-endian byte order upstream uses on the wire and into the crypto
+  functions. All nine remaining SMP PDUs (public key, DHKey check, keypress,
+  and the five key-distribution PDUs) were added to the codec and oracle-pinned.
+
+The whole exchange runs as a **two-party handshake** in
+[`bumble-host/tests/smp_sc_pairing.rs`](bumble-host/tests/smp_sc_pairing.rs):
+two peers each own a key pair, exchange public keys and nonces on the SMP
+channel, each derives its DHKey from the *peer's* transmitted public key, the
+initiator verifies the responder's `f4` confirm, both cross-verify the `f6`
+DHKey checks, and both arrive at the **same LTK** — a genuine agreement, not a
+self-comparison. Deferred: the full pairing state machine, Numeric
+Comparison / passkey / OOB entry UX, key distribution over the wire, and
+bonding storage.
+
 ## Acceptance
 
 The port's contract is the upstream Python test suite, ported 1:1:
@@ -495,9 +527,10 @@ bumble-rs/
 ├── bumble-att/                # slice-5 ATT protocol PDU codec crate
 │   ├── src/lib.rs
 │   └── tests/acceptance.rs    # ported gatt_test.py ATT cases (oracle-pinned)
-├── bumble-crypto/             # slice-6 SMP crypto toolbox crate
-│   ├── src/lib.rs
-│   └── tests/vectors.rs       # ported smp_test.py spec/RFC vectors
+├── bumble-crypto/             # slice-6 SMP crypto toolbox + slice-19 P-256 ECC
+│   ├── src/lib.rs             # symmetric functions + EccKey (P-256 ECDH)
+│   ├── tests/vectors.rs       # ported smp_test.py spec/RFC vectors
+│   └── tests/ecc.rs           # P-256 public keys + ECDH pinned to oracle
 ├── bumble-gatt/               # slice-9 GATT/ATT server + slice-18 GATT client
 │   ├── src/lib.rs             # AttServer, GattServer
 │   ├── src/client.rs         # GattClient (slice 18)
@@ -505,9 +538,11 @@ bumble-rs/
 │   └── tests/client.rs       # two-party client↔server discovery/read/write/subscribe
 ├── bumble-host/               # slice-10 Host/Device glue crate
 │   ├── src/lib.rs
-│   └── tests/gatt_over_host.rs # full LE lifecycle via the Device API
-├── bumble-smp/                # slice-14 SMP codec + legacy pairing crate
-│   └── src/lib.rs             # wires bumble-crypto (c1/s1) into pairing
+│   ├── tests/gatt_over_host.rs # full LE lifecycle via the Device API
+│   ├── tests/smp_pairing.rs    # two-party LE Legacy JustWorks handshake
+│   └── tests/smp_sc_pairing.rs # two-party LE Secure Connections handshake (slice 19)
+├── bumble-smp/                # slice-14 SMP codec + legacy pairing + slice-19 SC
+│   └── src/lib.rs             # wires bumble-crypto; sc:: JustWorks derivation
 ├── bumble-sdp/                # slice-16 SDP codec crate (first Classic piece)
 │   ├── src/{lib,pdu}.rs       # DataElement + ServiceAttribute + SdpPdu
 │   └── tests/acceptance.rs    # ported sdp_test.py cases (oracle-pinned)

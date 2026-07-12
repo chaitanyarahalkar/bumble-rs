@@ -15,8 +15,10 @@
 //! Secure-Connections functions `reverse()` their inputs/outputs around
 //! `aes_cmac`.
 //!
-//! Not included (needs elliptic-curve crypto / RNG, out of scope for this
-//! slice): the P-256 ECC key agreement (`EccKey`) and random generation.
+//! P-256 ECC key agreement ([`EccKey`], added in slice 19 for LE Secure
+//! Connections) wraps the audited RustCrypto `p256` crate; it mirrors upstream
+//! `crypto.EccKey` (big-endian `x`/`y`, and a `dh` that returns the shared
+//! secret's X coordinate).
 
 use aes::cipher::generic_array::GenericArray;
 use aes::cipher::{BlockEncrypt, KeyInit};
@@ -225,4 +227,87 @@ pub fn h6(w: &[u8], key_id: &[u8]) -> Vec<u8> {
 /// Link key conversion function `h7` (Vol 3, Part H - 2.2.11).
 pub fn h7(salt: &[u8], w: &[u8]) -> Vec<u8> {
     reverse(&aes_cmac(&reverse(w), salt))
+}
+
+use p256::elliptic_curve::sec1::{FromEncodedPoint, ToEncodedPoint};
+use p256::{EncodedPoint, PublicKey, SecretKey};
+
+/// Errors from ECC key operations.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    InvalidKey(String),
+}
+
+impl core::fmt::Display for Error {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Error::InvalidKey(m) => write!(f, "invalid ECC key: {m}"),
+        }
+    }
+}
+
+impl std::error::Error for Error {}
+
+/// A P-256 (secp256r1) key pair for LE Secure Connections ECDH, mirroring
+/// upstream `crypto.EccKey`.
+///
+/// Coordinates and the DH result are **big-endian**, matching upstream (SMP
+/// then byte-swaps them to little-endian for the wire and for `f4`/`f5`/`f6`).
+pub struct EccKey {
+    secret: SecretKey,
+}
+
+impl EccKey {
+    /// Generate a fresh random key pair from the OS RNG.
+    pub fn generate() -> EccKey {
+        EccKey {
+            secret: SecretKey::random(&mut rand_core::OsRng),
+        }
+    }
+
+    /// Build a key pair from a 32-byte big-endian private scalar.
+    pub fn from_private_key_bytes(d_be: &[u8]) -> core::result::Result<EccKey, Error> {
+        let secret = SecretKey::from_slice(d_be)
+            .map_err(|e| Error::InvalidKey(format!("private scalar: {e}")))?;
+        Ok(EccKey { secret })
+    }
+
+    fn encoded_public(&self) -> EncodedPoint {
+        self.secret.public_key().to_encoded_point(false)
+    }
+
+    /// The public key's X coordinate, big-endian (32 bytes).
+    pub fn public_x(&self) -> [u8; 32] {
+        let ep = self.encoded_public();
+        let mut out = [0u8; 32];
+        out.copy_from_slice(ep.x().expect("uncompressed point has an X").as_slice());
+        out
+    }
+
+    /// The public key's Y coordinate, big-endian (32 bytes).
+    pub fn public_y(&self) -> [u8; 32] {
+        let ep = self.encoded_public();
+        let mut out = [0u8; 32];
+        out.copy_from_slice(ep.y().expect("uncompressed point has a Y").as_slice());
+        out
+    }
+
+    /// ECDH: the shared secret's X coordinate (big-endian, 32 bytes), from a
+    /// peer public key given as big-endian X and Y (Vol 3, Part H - 2.3.5.6).
+    pub fn dh(&self, peer_x_be: &[u8], peer_y_be: &[u8]) -> core::result::Result<[u8; 32], Error> {
+        if peer_x_be.len() != 32 || peer_y_be.len() != 32 {
+            return Err(Error::InvalidKey(
+                "peer coordinates must be 32 bytes".into(),
+            ));
+        }
+        let x = p256::FieldBytes::clone_from_slice(peer_x_be);
+        let y = p256::FieldBytes::clone_from_slice(peer_y_be);
+        let ep = EncodedPoint::from_affine_coordinates(&x, &y, false);
+        let peer = Option::<PublicKey>::from(PublicKey::from_encoded_point(&ep))
+            .ok_or_else(|| Error::InvalidKey("peer point not on curve".into()))?;
+        let shared = p256::ecdh::diffie_hellman(self.secret.to_nonzero_scalar(), peer.as_affine());
+        let mut out = [0u8; 32];
+        out.copy_from_slice(shared.raw_secret_bytes().as_slice());
+        Ok(out)
+    }
 }

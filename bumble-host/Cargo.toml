@@ -20,5 +20,7 @@ bumble-gatt = { path = "../bumble-gatt" }
 bumble-controller = { path = "../bumble-controller" }
 
 [dev-dependencies]
-# The SMP pairing integration test runs the handshake over the link.
+# The SMP pairing integration tests run the handshake over the link; the
+# Secure Connections test also needs the P-256 key agreement.
 bumble-smp = { path = "../bumble-smp" }
+bumble-crypto = { path = "../bumble-crypto" }
