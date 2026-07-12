@@ -118,6 +118,7 @@ crypto is pinned to Bluetooth-spec / RFC 4493 vectors.
   media-codec capabilities. Slice 33 adds safe SBC frame parsing and MTU-aware
   RTP aggregation, including a correct final-buffer flush missing upstream.
   Slice 34 adds ADTS AAC parsing and exact simple LATM/RTP packet construction.
+  Slice 35 adds validated Ogg Opus logical-stream parsing and 20 ms RTP packets.
 - **`bumble-rtp`** — slice 32 adds safe RTP media packet parsing/serialization,
   including CSRC lists, header extensions, padding, exact byte round trips, and
   explicit errors for malformed remote input.

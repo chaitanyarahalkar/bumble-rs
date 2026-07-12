@@ -321,3 +321,128 @@ pub fn packetize_aac(frames: &[AacFrame]) -> Result<Vec<MediaPacket>> {
     }
     Ok(packets)
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OpusChannelMode {
+    Mono,
+    Stereo,
+    DualMono,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OpusPacket {
+    pub channel_mode: OpusChannelMode,
+    pub duration_ms: u16,
+    pub sampling_frequency: u32,
+    pub payload: Vec<u8>,
+}
+
+/// Parse the first logical Opus stream from an Ogg byte stream.
+pub fn parse_ogg_opus(mut data: &[u8]) -> Result<Vec<OpusPacket>> {
+    let mut selected_serial = None;
+    let mut expected_page_sequence = 0u32;
+    let mut logical_packet = Vec::new();
+    let mut logical_packet_count = 0usize;
+    let mut channel_mode = OpusChannelMode::Stereo;
+    let mut packets = Vec::new();
+
+    while !data.is_empty() {
+        if data.len() < 27 {
+            return Err(Error::Truncated("Ogg page header"));
+        }
+        let header = &data[..27];
+        data = &data[27..];
+        if &header[..4] != b"OggS" {
+            return Err(Error::Invalid("Ogg capture pattern"));
+        }
+        if header[4] != 0 {
+            return Err(Error::Invalid("Ogg version"));
+        }
+        let header_type = header[5];
+        let serial = u32::from_le_bytes(header[14..18].try_into().expect("four bytes"));
+        let page_sequence = u32::from_le_bytes(header[18..22].try_into().expect("four bytes"));
+        let segment_count = usize::from(header[26]);
+        if data.len() < segment_count {
+            return Err(Error::Truncated("Ogg segment table"));
+        }
+        let segment_table = &data[..segment_count];
+        data = &data[segment_count..];
+
+        if header_type & 0x02 != 0 && selected_serial.is_none() {
+            selected_serial = Some(serial);
+            expected_page_sequence = page_sequence;
+        }
+        let selected = selected_serial == Some(serial);
+        if selected && page_sequence != expected_page_sequence {
+            return Err(Error::Invalid("Ogg page sequence"));
+        }
+        if selected {
+            expected_page_sequence = page_sequence.wrapping_add(1);
+            if header_type & 0x01 == 0 {
+                logical_packet.clear();
+            }
+        }
+
+        for lacing in segment_table {
+            let length = usize::from(*lacing);
+            let segment = data
+                .get(..length)
+                .ok_or(Error::Truncated("Ogg segment data"))?;
+            data = &data[length..];
+            if !selected {
+                continue;
+            }
+            logical_packet.extend_from_slice(segment);
+            if *lacing < 255 {
+                logical_packet_count += 1;
+                match logical_packet_count {
+                    1 => {
+                        if logical_packet.len() < 10 || &logical_packet[..8] != b"OpusHead" {
+                            return Err(Error::Invalid("Opus identification header"));
+                        }
+                        channel_mode = if logical_packet[9] == 1 {
+                            OpusChannelMode::Mono
+                        } else {
+                            OpusChannelMode::Stereo
+                        };
+                    }
+                    2 => {
+                        if logical_packet.len() < 8 || &logical_packet[..8] != b"OpusTags" {
+                            return Err(Error::Invalid("Opus comment header"));
+                        }
+                    }
+                    _ => packets.push(OpusPacket {
+                        channel_mode,
+                        duration_ms: 20,
+                        sampling_frequency: 48_000,
+                        payload: core::mem::take(&mut logical_packet),
+                    }),
+                }
+                logical_packet.clear();
+            }
+        }
+    }
+    if !logical_packet.is_empty() {
+        return Err(Error::Truncated("continued Ogg packet"));
+    }
+    Ok(packets)
+}
+
+pub fn packetize_opus(packets: &[OpusPacket]) -> Result<Vec<MediaPacket>> {
+    let mut output = Vec::with_capacity(packets.len());
+    let mut sequence_number = 0u16;
+    let mut timestamp = 0u32;
+    for packet in packets {
+        if packet.sampling_frequency == 0 {
+            return Err(Error::Invalid("Opus sampling frequency"));
+        }
+        let mut payload = Vec::with_capacity(1 + packet.payload.len());
+        payload.push(1); // one complete, non-fragmented Opus frame
+        payload.extend_from_slice(&packet.payload);
+        output.push(MediaPacket::new(96, sequence_number, timestamp, 0, payload));
+        sequence_number = sequence_number.wrapping_add(1);
+        timestamp = timestamp
+            .wrapping_add(u32::from(packet.duration_ms) * packet.sampling_frequency / 1000);
+    }
+    Ok(output)
+}

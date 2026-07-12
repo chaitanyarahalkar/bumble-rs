@@ -49,7 +49,8 @@ crate whose behavior is verified against the upstream Python.
 | 32. RTP packet codec with CSRC, extension, padding, and malformed-input safety | `bumble-rtp` | ✅ exact round trips green |
 | 33. A2DP SBC frame parsing and MTU-aware RTP aggregation | `bumble-a2dp` | ✅ upstream fixture + final-flush coverage green |
 | 34. A2DP ADTS AAC parsing and exact LATM/RTP packet source | `bumble-a2dp` | ✅ upstream fixture green |
-| 35+. Opus media, AVRCP, HID… | — | planned |
+| 35. A2DP Ogg Opus parsing and RTP packet source | `bumble-a2dp` | ✅ upstream + multi-page fixtures green |
+| 36+. End-to-end media channel, AVRCP, HID… | — | planned |
 
 The LE lifecycle is now complete end-to-end through library APIs: **connect →
 discover → read/write → notify → disconnect** between two virtual devices — and
@@ -140,7 +141,7 @@ size, to convey remaining surface.
 | `hfp.py` (2.1k) | `bumble-hfp` | 🟡 | Normative HF/AG models and paired SLC state machines, serialized post-SLC command completion, call control/current-call listing, HF/AG indicators, ring/volume/typed caller-ID/typed voice events, codec request/selection, CMEE/CCWA/BIA/CLIP controls, HF/AG SDP record generation/discovery, and all eight upstream HFP 1.8 SCO/eSCO parameter presets. Control flows run end-to-end over RFCOMM/L2CAP and records through SDP client/server; negotiated CVSD/mSBC codecs establish and route audio through the host/controller link. The core synchronous protocol surface covers the upstream behavior families; deferred: asyncio/event-emitter convenience and actual CVSD/mSBC media encoding. |
 | `hid.py` (0.6k) | — | ⬜ | Human Interface Device. |
 | `avdtp.py` (2.4k) | `bumble-avdtp` | 🟡 | Slice 29 ports all 38 upstream signaling command/accept/reject forms, endpoint descriptors, generic and media-codec capability TLVs, open protocol enums, exact payload encoding/decoding, unknown-signal preservation, and safe single/fragmented PDU assembly. Slice 30 adds local endpoint registration, command dispatch, atomic multi-SEP validation, the configured/open/streaming/idle lifecycle, event capture, transaction labels, and a live Classic L2CAP binding. Deferred: initiator-side high-level stream proxy, RTP media channel/pump, listener convenience, and SDP discovery. |
-| `a2dp.py` (1.0k) | `bumble-a2dp` | 🟡 | Slice 31 ports open codec identifiers and exact SBC, MPEG-2/4 AAC, vendor-specific, and Opus codec information models. The upstream `3fff0235`, `f0018c83e800`, and `92` vectors round-trip, vendor headers use their specified little-endian layout, malformed fields are rejected, and typed codec information converts directly to AVDTP media-codec capabilities. Slice 33 adds SBC header/frame-length parsing, stream splitting, frame metrics, and MTU-aware RTP aggregation with 15-frame limits, wrapping sequence/timestamps, and correct end-of-stream flush. Slice 34 adds ADTS AAC frame parsing and exact simple LATM/RTP construction with 1024-sample timestamps. Deferred: Opus media parsing/packet source, codec selection policy, SDP records, and media-channel flow. |
+| `a2dp.py` (1.0k) | `bumble-a2dp` | 🟡 | Slice 31 ports open codec identifiers and exact SBC, MPEG-2/4 AAC, vendor-specific, and Opus codec information models. The upstream `3fff0235`, `f0018c83e800`, and `92` vectors round-trip, vendor headers use their specified little-endian layout, malformed fields are rejected, and typed codec information converts directly to AVDTP media-codec capabilities. Slice 33 adds SBC header/frame-length parsing, stream splitting, frame metrics, and MTU-aware RTP aggregation with 15-frame limits, wrapping sequence/timestamps, and correct end-of-stream flush. Slice 34 adds ADTS AAC frame parsing and exact simple LATM/RTP construction with 1024-sample timestamps. Slice 35 adds validated Ogg Opus page/lacing/logical-stream parsing and one-frame RTP packets with 20 ms timestamps. Deferred: codec selection policy, SDP records, and media-channel flow. |
 | `rtp.py` (0.1k) | `bumble-rtp` | ✅ | Slice 32 ports RTP v2 media packet parsing/serialization with marker/payload type, wrapping sequence/timestamp fields, SSRC and correctly spaced CSRC entries. It additionally implements standard header extensions and padding, validates bit fields/lengths, and returns errors for truncated input instead of upstream's unchecked indexing. |
 | `avrcp` (2.9k), `avc` (0.5k), `avctp` (0.3k), `codecs` (0.5k) | — | ⬜ | Remote control and remaining common audio/media support above AVDTP/A2DP. |
 
@@ -823,6 +824,25 @@ AAC media frames now cross the same parser-to-RTP boundary:
   invalid sync words, and truncated declared lengths are covered.
 
 Ogg Opus parsing and RTP packetization are next.
+
+## Slice 35 — what's here
+
+The third upstream A2DP media family is complete:
+
+- `parse_ogg_opus` validates Ogg capture/version, selects the first logical
+  bitstream, enforces page sequence numbers, handles continuation/lacing
+  segments, and recognizes `OpusHead` and `OpusTags` before emitting audio.
+- Channel count from `OpusHead` maps to mono/stereo state. Audio packets carry
+  the upstream 20 ms / 48 kHz defaults and preserve their encoded bytes.
+- RTP packetization emits one complete Opus frame per payload with the A2DP
+  `01` header, wrapping sequence numbers, and 960-sample timestamp increments.
+- Tests reproduce upstream's one-page fixture, add a second page to prove
+  sequence/timestamp continuity, and reject truncated pages, bad capture
+  patterns, and sequence gaps. The parser also corrects upstream's accidental
+  assignment of the channel mode into its packet counter.
+
+All three upstream A2DP media parser/packet-source families are now present;
+the next slice carries their RTP packets over a live AVDTP media channel.
 
 ## Acceptance
 

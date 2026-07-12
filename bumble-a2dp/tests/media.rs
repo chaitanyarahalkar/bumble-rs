@@ -1,4 +1,7 @@
-use bumble_a2dp::media::{packetize_aac, packetize_sbc, AacFrame, AacProfile, SbcFrame};
+use bumble_a2dp::media::{
+    packetize_aac, packetize_opus, packetize_sbc, parse_ogg_opus, AacFrame, AacProfile,
+    OpusChannelMode, SbcFrame,
+};
 
 #[test]
 fn sbc_parser_matches_upstream_fixture() {
@@ -74,4 +77,68 @@ fn aac_stream_timestamps_and_errors_are_deterministic() {
     let mut truncated = bytes[..13].to_vec();
     truncated[4] = 0x02;
     assert!(AacFrame::parse(&truncated).is_err());
+}
+
+fn opus_fixture() -> Vec<u8> {
+    let mut data = b"OggS".to_vec();
+    data.extend_from_slice(&[0, 0x02]);
+    data.extend_from_slice(&0u64.to_le_bytes());
+    data.extend_from_slice(&2u32.to_le_bytes());
+    data.extend_from_slice(&2u32.to_le_bytes());
+    data.extend_from_slice(&0u32.to_le_bytes());
+    data.push(3);
+    data.extend_from_slice(&[10, 8, 10]);
+    data.extend_from_slice(b"OpusHead\0\0");
+    data.extend_from_slice(b"OpusTags");
+    data.extend_from_slice(b"0123456789");
+    data
+}
+
+#[test]
+fn opus_parser_and_packet_source_match_upstream_fixture() {
+    let packets = parse_ogg_opus(&opus_fixture()).unwrap();
+    assert_eq!(packets.len(), 1);
+    assert_eq!(packets[0].channel_mode, OpusChannelMode::Stereo);
+    assert_eq!(packets[0].duration_ms, 20);
+    assert_eq!(packets[0].sampling_frequency, 48_000);
+    assert_eq!(packets[0].payload, b"0123456789");
+
+    let rtp = packetize_opus(&packets).unwrap();
+    assert_eq!(rtp.len(), 1);
+    assert_eq!(rtp[0].sequence_number, 0);
+    assert_eq!(rtp[0].timestamp, 0);
+    assert_eq!(
+        rtp[0].payload,
+        b"\x01"
+            .iter()
+            .chain(b"0123456789")
+            .copied()
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn opus_multi_page_sequence_and_malformed_inputs_are_checked() {
+    let mut first = opus_fixture();
+    // Append a second selected-stream page containing one more audio packet.
+    first.extend_from_slice(b"OggS");
+    first.extend_from_slice(&[0, 0]);
+    first.extend_from_slice(&0u64.to_le_bytes());
+    first.extend_from_slice(&2u32.to_le_bytes());
+    first.extend_from_slice(&3u32.to_le_bytes());
+    first.extend_from_slice(&0u32.to_le_bytes());
+    first.push(1);
+    first.push(3);
+    first.extend_from_slice(b"abc");
+    let packets = parse_ogg_opus(&first).unwrap();
+    assert_eq!(packetize_opus(&packets).unwrap()[1].timestamp, 960);
+
+    assert!(parse_ogg_opus(b"Ogg").is_err());
+    let mut bad_capture = opus_fixture();
+    bad_capture[0] = b'X';
+    assert!(parse_ogg_opus(&bad_capture).is_err());
+    let mut bad_sequence = first;
+    let second_page = opus_fixture().len();
+    bad_sequence[second_page + 18..second_page + 22].copy_from_slice(&9u32.to_le_bytes());
+    assert!(parse_ogg_opus(&bad_sequence).is_err());
 }
