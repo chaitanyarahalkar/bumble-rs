@@ -2,7 +2,7 @@ use crate::{Error, PacketType, PduId, Result, VendorPdu};
 
 macro_rules! open_integer {
     ($name:ident, $type:ty { $($constant:ident = $value:expr),+ $(,)? }) => {
-        #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+        #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
         pub struct $name(pub $type);
         impl $name { $(pub const $constant: Self = Self($value);)+ }
     };

@@ -5,10 +5,12 @@ use core::fmt;
 mod command;
 mod event;
 mod response;
+mod runtime;
 
 pub use command::*;
 pub use event::*;
 pub use response::*;
+pub use runtime::*;
 
 pub const AVRCP_PID: u16 = 0x110E;
 pub const BLUETOOTH_SIG_COMPANY_ID: u32 = 0x001958;
@@ -75,6 +77,11 @@ pub enum Error {
     NotVendorDependent,
     InvalidField(&'static str),
     TrailingBytes(usize),
+    NoTransactionLabels,
+    NotPending(u8),
+    InterleavedPdu,
+    WrongFrameKind,
+    MismatchedResponse { expected: PduId, actual: PduId },
     Avc(bumble_avc::Error),
 }
 

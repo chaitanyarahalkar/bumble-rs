@@ -14,3 +14,6 @@ description = "Rust port of google/bumble AVRCP remote-control protocol"
 [dependencies]
 bumble-avc = { path = "../bumble-avc" }
 bumble-avctp = { path = "../bumble-avctp" }
+
+[dev-dependencies]
+bumble-l2cap = { path = "../bumble-l2cap" }
