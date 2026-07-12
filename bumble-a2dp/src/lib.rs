@@ -5,6 +5,7 @@ use core::fmt;
 use bumble_avdtp::{MediaType, ServiceCapabilities};
 
 pub mod media;
+pub mod sdp;
 pub mod transport;
 
 #[derive(Clone, Debug, PartialEq, Eq)]

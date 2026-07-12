@@ -51,7 +51,8 @@ crate whose behavior is verified against the upstream Python.
 | 34. A2DP ADTS AAC parsing and exact LATM/RTP packet source | `bumble-a2dp` | ✅ upstream fixture green |
 | 35. A2DP Ogg Opus parsing and RTP packet source | `bumble-a2dp` | ✅ upstream + multi-page fixtures green |
 | 36. A2DP RTP packets over a live AVDTP Classic L2CAP media channel | `bumble-a2dp` | ✅ source→sink packet equality green |
-| 37+. A2DP orchestration/SDP, AVRCP, HID… | — | planned |
+| 37. A2DP source/sink SDP records and discovery parsing | `bumble-a2dp` | ✅ SDP client/server green |
+| 38+. A2DP orchestration, AVRCP, HID… | — | planned |
 
 The LE lifecycle is now complete end-to-end through library APIs: **connect →
 discover → read/write → notify → disconnect** between two virtual devices — and
@@ -142,7 +143,7 @@ size, to convey remaining surface.
 | `hfp.py` (2.1k) | `bumble-hfp` | 🟡 | Normative HF/AG models and paired SLC state machines, serialized post-SLC command completion, call control/current-call listing, HF/AG indicators, ring/volume/typed caller-ID/typed voice events, codec request/selection, CMEE/CCWA/BIA/CLIP controls, HF/AG SDP record generation/discovery, and all eight upstream HFP 1.8 SCO/eSCO parameter presets. Control flows run end-to-end over RFCOMM/L2CAP and records through SDP client/server; negotiated CVSD/mSBC codecs establish and route audio through the host/controller link. The core synchronous protocol surface covers the upstream behavior families; deferred: asyncio/event-emitter convenience and actual CVSD/mSBC media encoding. |
 | `hid.py` (0.6k) | — | ⬜ | Human Interface Device. |
 | `avdtp.py` (2.4k) | `bumble-avdtp` | 🟡 | Slice 29 ports all 38 upstream signaling command/accept/reject forms, endpoint descriptors, generic and media-codec capability TLVs, open protocol enums, exact payload encoding/decoding, unknown-signal preservation, and safe single/fragmented PDU assembly. Slice 30 adds local endpoint registration, command dispatch, atomic multi-SEP validation, the configured/open/streaming/idle lifecycle, event capture, transaction labels, and a live Classic L2CAP binding. Deferred: initiator-side high-level stream proxy, RTP media channel/pump, listener convenience, and SDP discovery. |
-| `a2dp.py` (1.0k) | `bumble-a2dp` | 🟡 | Slice 31 ports open codec identifiers and exact SBC, MPEG-2/4 AAC, vendor-specific, and Opus codec information models. The upstream `3fff0235`, `f0018c83e800`, and `92` vectors round-trip, vendor headers use their specified little-endian layout, malformed fields are rejected, and typed codec information converts directly to AVDTP media-codec capabilities. Slice 33 adds SBC header/frame-length parsing, stream splitting, frame metrics, and MTU-aware RTP aggregation with 15-frame limits, wrapping sequence/timestamps, and correct end-of-stream flush. Slice 34 adds ADTS AAC frame parsing and exact simple LATM/RTP construction with 1024-sample timestamps. Slice 35 adds validated Ogg Opus page/lacing/logical-stream parsing and one-frame RTP packets with 20 ms timestamps. Slice 36 carries RTP packets over a live Classic L2CAP media channel with MTU enforcement. Deferred: high-level codec selection/stream orchestration and SDP records. |
+| `a2dp.py` (1.0k) | `bumble-a2dp` | 🟡 | Slice 31 ports open codec identifiers and exact SBC, MPEG-2/4 AAC, vendor-specific, and Opus codec information models. The upstream `3fff0235`, `f0018c83e800`, and `92` vectors round-trip, vendor headers use their specified little-endian layout, malformed fields are rejected, and typed codec information converts directly to AVDTP media-codec capabilities. Slice 33 adds SBC header/frame-length parsing, stream splitting, frame metrics, and MTU-aware RTP aggregation with 15-frame limits, wrapping sequence/timestamps, and correct end-of-stream flush. Slice 34 adds ADTS AAC frame parsing and exact simple LATM/RTP construction with 1024-sample timestamps. Slice 35 adds validated Ogg Opus page/lacing/logical-stream parsing and one-frame RTP packets with 20 ms timestamps. Slice 36 carries RTP packets over a live Classic L2CAP media channel with MTU enforcement. Slice 37 adds upstream-shaped source/sink SDP records and discovery parsing. Deferred: high-level codec selection and stream orchestration. |
 | `rtp.py` (0.1k) | `bumble-rtp` | ✅ | Slice 32 ports RTP v2 media packet parsing/serialization with marker/payload type, wrapping sequence/timestamp fields, SSRC and correctly spaced CSRC entries. It additionally implements standard header extensions and padding, validates bit fields/lengths, and returns errors for truncated input instead of upstream's unchecked indexing. |
 | `avrcp` (2.9k), `avc` (0.5k), `avctp` (0.3k), `codecs` (0.5k) | — | ⬜ | Remote control and remaining common audio/media support above AVDTP/A2DP. |
 
@@ -863,6 +864,26 @@ The remaining A2DP work is high-level discovery/codec selection/stream
 orchestration and profile SDP; its signaling, state, codecs, media parsers,
 packetizers, RTP, and live channel transport are now present.
 
+## Slice 37 — what's here
+
+A2DP roles can now advertise and discover their profile endpoints:
+
+- Source and sink builders reproduce upstream's five attributes: record
+  handle, Public Browse Root, role service class, L2CAP/AVDTP protocol
+  descriptors with PSM `0x0019`, and the Advanced Audio Distribution profile
+  descriptor.
+- AVDTP and A2DP profile versions are open `ProfileVersion` values with common
+  1.2/1.3/1.4 constants.
+- `parse_sdp_record` distinguishes source and sink roles and validates the
+  complete L2CAP PSM, AVDTP UUID/version, and A2DP profile descriptor rather
+  than accepting a service-class match alone.
+- Both records are registered, queried by UUID, and parsed through the existing
+  continuation-aware SDP client/server runtime; missing protocol descriptors
+  and unrelated service classes are rejected.
+
+The remaining A2DP slice is a high-level initiator that selects a compatible
+remote codec/SEP and drives signaling plus media-channel setup as one operation.
+
 ## Acceptance
 
 The port's contract is the upstream Python test suite, ported 1:1:
@@ -969,9 +990,11 @@ bumble-rs/
 │   ├── src/lib.rs             # SBC/AAC/vendor Opus capability models
 │   ├── src/media.rs           # slice-33 SBC parser + RTP aggregation
 │   ├── src/transport.rs       # slice-36 RTP over Classic L2CAP
+│   ├── src/sdp.rs             # slice-37 source/sink records + discovery
 │   ├── tests/codecs.rs        # upstream exact vectors + invalid inputs
 │   ├── tests/media.rs         # SBC/AAC/Opus fixtures and packet sources
-│   └── tests/l2cap_media.rs   # source→sink RTP over live AVDTP channel
+│   ├── tests/l2cap_media.rs   # source→sink RTP over live AVDTP channel
+│   └── tests/sdp.rs           # source/sink discovery through SDP runtime
 ├── bumble-rtp/                # slice-32 RTP media packet codec
 │   ├── src/lib.rs             # header, CSRC, extension, payload, padding
 │   └── tests/packets.rs       # exact, full-featured, and malformed packets
