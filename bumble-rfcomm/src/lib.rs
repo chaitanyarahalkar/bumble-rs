@@ -24,10 +24,13 @@
 //!   messages this port needs (Parameter Negotiation and Modem Status
 //!   Command), plus [`make_mcc`]/[`parse_mcc`] for the MCC type/length header.
 //!
-//! Deferred (matching the rest of this port's synchronous, codec-first
-//! approach): the asyncio `DLC`, `Multiplexer`, `Client` and `Server` — the
-//! credit-flow state machine and the SDP-record helpers that drive a live
-//! session. The frame codec is the wire-format foundation those build on.
+//! The session runtime that drives this codec lives in [`mux`] (**slice 20**):
+//! a synchronous, sans-I/O port of upstream's asyncio `Multiplexer` and `DLC`,
+//! including the open handshake (SABM/UA, PN, MSC) and credit-based flow
+//! control. Still deferred: retransmission (upstream sets `max_retransmissions
+//! = 0` too), aggregate flow control, and the `Client`/`Server` convenience
+//! wrappers that bind a session to a live L2CAP channel (no Classic L2CAP
+//! connection-oriented channel is ported to bind to).
 //!
 //! ## Oracle
 //!
@@ -47,6 +50,8 @@
 //! re-serialization; see the tests.
 
 use core::fmt;
+
+pub mod mux;
 
 /// RFCOMM's fixed L2CAP PSM (Protocol/Service Multiplexer).
 pub const RFCOMM_PSM: u16 = 0x0003;
