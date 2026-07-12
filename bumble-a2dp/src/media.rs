@@ -151,3 +151,173 @@ pub fn packetize_sbc(frames: &[SbcFrame], mtu: usize) -> Result<Vec<MediaPacket>
     );
     Ok(packets)
 }
+
+const ADTS_AAC_SAMPLING_FREQUENCIES: [u32; 16] = [
+    96_000, 88_200, 64_000, 48_000, 44_100, 32_000, 24_000, 22_050, 16_000, 12_000, 11_025, 8_000,
+    7_350, 0, 0, 0,
+];
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AacProfile {
+    Main,
+    LowComplexity,
+    ScalableSampleRate,
+    LongTermPrediction,
+}
+
+impl AacProfile {
+    fn from_bits(value: u8) -> Self {
+        match value & 3 {
+            0 => Self::Main,
+            1 => Self::LowComplexity,
+            2 => Self::ScalableSampleRate,
+            _ => Self::LongTermPrediction,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AacFrame {
+    pub profile: AacProfile,
+    pub sampling_frequency: u32,
+    pub channel_configuration: u8,
+    /// Raw AAC access unit without the ADTS header.
+    pub payload: Vec<u8>,
+}
+
+impl AacFrame {
+    pub const SAMPLE_COUNT: u32 = 1024;
+
+    pub fn duration_seconds(&self) -> f64 {
+        f64::from(Self::SAMPLE_COUNT) / f64::from(self.sampling_frequency)
+    }
+
+    pub fn parse(data: &[u8]) -> Result<(Self, usize)> {
+        if data.len() < 7 {
+            return Err(Error::Truncated("ADTS header"));
+        }
+        if data[0] != 0xFF || data[1] >> 4 != 0x0F {
+            return Err(Error::Invalid("ADTS sync word"));
+        }
+        if (data[1] >> 1) & 3 != 0 {
+            return Err(Error::Invalid("ADTS layer"));
+        }
+        let frequency_index = usize::from((data[2] >> 2) & 0x0F);
+        let sampling_frequency = ADTS_AAC_SAMPLING_FREQUENCIES[frequency_index];
+        if sampling_frequency == 0 {
+            return Err(Error::Invalid("ADTS sampling frequency"));
+        }
+        let channel_configuration = ((data[2] & 1) << 2) | (data[3] >> 6);
+        let frame_length = (usize::from(data[3] & 3) << 11)
+            | (usize::from(data[4]) << 3)
+            | usize::from(data[5] >> 5);
+        if frame_length < 7 {
+            return Err(Error::Invalid("ADTS frame length"));
+        }
+        let frame = data
+            .get(..frame_length)
+            .ok_or(Error::Truncated("ADTS frame payload"))?;
+        Ok((
+            Self {
+                profile: AacProfile::from_bits(data[2] >> 6),
+                sampling_frequency,
+                channel_configuration,
+                payload: frame[7..].to_vec(),
+            },
+            frame_length,
+        ))
+    }
+
+    pub fn parse_stream(mut data: &[u8]) -> Result<Vec<Self>> {
+        let mut frames = Vec::new();
+        while !data.is_empty() {
+            let (frame, length) = Self::parse(data)?;
+            frames.push(frame);
+            data = &data[length..];
+        }
+        Ok(frames)
+    }
+}
+
+#[derive(Default)]
+struct BitWriter {
+    bytes: Vec<u8>,
+    bit_len: usize,
+}
+
+impl BitWriter {
+    fn write(&mut self, value: u32, bit_count: usize) {
+        for shift in (0..bit_count).rev() {
+            if self.bit_len.is_multiple_of(8) {
+                self.bytes.push(0);
+            }
+            let bit = ((value >> shift) & 1) as u8;
+            let byte = self.bit_len / 8;
+            self.bytes[byte] |= bit << (7 - self.bit_len % 8);
+            self.bit_len += 1;
+        }
+    }
+
+    fn write_bytes(&mut self, data: &[u8]) {
+        for byte in data {
+            self.write(u32::from(*byte), 8);
+        }
+    }
+}
+
+/// Build the LATM AudioMuxElement used by upstream's simple AAC RTP source.
+pub fn simple_aac_latm(frame: &AacFrame) -> Result<Vec<u8>> {
+    let frequency_index = ADTS_AAC_SAMPLING_FREQUENCIES
+        .iter()
+        .position(|frequency| *frequency == frame.sampling_frequency)
+        .ok_or(Error::Invalid("AAC sampling frequency"))?;
+    // Upstream's `for_simple_aac` always signals AAC-LC in LATM, even when
+    // the source ADTS header advertises a different profile.
+    let audio_object_type = 2;
+    let mut writer = BitWriter::default();
+    writer.write(0, 1); // useSameStreamMux
+    writer.write(0, 1); // audioMuxVersion
+    writer.write(1, 1); // allStreamsSameTimeFraming
+    writer.write(0, 6); // numSubFrames
+    writer.write(0, 4); // numProgram
+    writer.write(0, 3); // numLayer
+    writer.write(audio_object_type, 5);
+    writer.write(frequency_index as u32, 4);
+    writer.write(u32::from(frame.channel_configuration), 4);
+    writer.write(0, 1); // frameLengthFlag
+    writer.write(0, 1); // dependsOnCoreCoder
+    writer.write(0, 1); // extensionFlag
+    writer.write(0, 3); // frameLengthType
+    writer.write(0, 8); // latmBufferFullness
+    writer.write(0, 1); // otherDataPresent
+    writer.write(0, 1); // crcCheckPresent
+    let mut remaining = frame.payload.len();
+    while remaining > 255 {
+        writer.write(255, 8);
+        remaining -= 255;
+    }
+    writer.write(remaining as u32, 8);
+    if remaining == 255 {
+        writer.write(0, 8);
+    }
+    writer.write_bytes(&frame.payload);
+    Ok(writer.bytes)
+}
+
+pub fn packetize_aac(frames: &[AacFrame]) -> Result<Vec<MediaPacket>> {
+    let mut packets = Vec::with_capacity(frames.len());
+    let mut sequence_number = 0u16;
+    let mut sample_count = 0u32;
+    for frame in frames {
+        packets.push(MediaPacket::new(
+            96,
+            sequence_number,
+            sample_count,
+            0,
+            simple_aac_latm(frame)?,
+        ));
+        sequence_number = sequence_number.wrapping_add(1);
+        sample_count = sample_count.wrapping_add(AacFrame::SAMPLE_COUNT);
+    }
+    Ok(packets)
+}

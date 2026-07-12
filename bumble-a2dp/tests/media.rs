@@ -1,4 +1,4 @@
-use bumble_a2dp::media::{packetize_sbc, SbcFrame};
+use bumble_a2dp::media::{packetize_aac, packetize_sbc, AacFrame, AacProfile, SbcFrame};
 
 #[test]
 fn sbc_parser_matches_upstream_fixture() {
@@ -38,4 +38,40 @@ fn sbc_parser_and_packetizer_reject_incomplete_or_oversized_frames() {
         .unwrap()
         .0;
     assert!(packetize_sbc(&[frame], 22).is_err());
+}
+
+#[test]
+fn aac_parser_and_packet_source_match_upstream_fixtures() {
+    let bytes = [0xFF, 0xF0, 0x10, 0x00, 0x01, 0xA0, 0x00, 0, 0, 0, 0, 0, 0];
+    let (frame, consumed) = AacFrame::parse(&bytes).unwrap();
+    assert_eq!(consumed, bytes.len());
+    assert_eq!(frame.profile, AacProfile::Main);
+    assert_eq!(frame.sampling_frequency, 44_100);
+    assert_eq!(frame.channel_configuration, 0);
+    assert_eq!(frame.payload, [0; 6]);
+
+    let packets = packetize_aac(&[frame]).unwrap();
+    assert_eq!(packets.len(), 1);
+    assert_eq!(packets[0].sequence_number, 0);
+    assert_eq!(packets[0].timestamp, 0);
+    assert_eq!(
+        packets[0].payload,
+        [0x20, 0x00, 0x12, 0x00, 0x00, 0x00, 0x30, 0, 0, 0, 0, 0, 0]
+    );
+}
+
+#[test]
+fn aac_stream_timestamps_and_errors_are_deterministic() {
+    let bytes = [0xFF, 0xF0, 0x10, 0x00, 0x01, 0xA0, 0x00, 0, 0, 0, 0, 0, 0].repeat(2);
+    let frames = AacFrame::parse_stream(&bytes).unwrap();
+    let packets = packetize_aac(&frames).unwrap();
+    assert_eq!(packets[0].timestamp, 0);
+    assert_eq!(packets[1].timestamp, 1024);
+    assert_eq!(packets[1].sequence_number, 1);
+
+    assert!(AacFrame::parse(&[]).is_err());
+    assert!(AacFrame::parse(&[0; 7]).is_err());
+    let mut truncated = bytes[..13].to_vec();
+    truncated[4] = 0x02;
+    assert!(AacFrame::parse(&truncated).is_err());
 }
