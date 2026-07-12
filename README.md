@@ -58,7 +58,8 @@ crate whose behavior is verified against the upstream Python.
 | 41. AVRCP vendor-PDU envelope and independent fragmentation assembler | `bumble-avrcp` | ✅ upstream vectors green |
 | 42. Complete AVRCP typed command catalog | `bumble-avrcp` | ✅ 22/22 Python-oracle vectors green |
 | 43. Complete AVRCP typed notification-event catalog | `bumble-avrcp` | ✅ 9/9 Python-oracle vectors green |
-| 44+. AVRCP response catalog/runtime, HID, remaining modules… | — | planned |
+| 44. Complete AVRCP typed response and browseable-item catalog | `bumble-avrcp` | ✅ 23/23 Python-oracle vectors green |
+| 45+. AVRCP runtime/SDP, HID, remaining modules… | — | planned |
 
 The LE lifecycle is now complete end-to-end through library APIs: **connect →
 discover → read/write → notify → disconnect** between two virtual devices — and
@@ -153,7 +154,7 @@ size, to convey remaining surface.
 | `rtp.py` (0.1k) | `bumble-rtp` | ✅ | Slice 32 ports RTP v2 media packet parsing/serialization with marker/payload type, wrapping sequence/timestamp fields, SSRC and correctly spaced CSRC entries. It additionally implements standard header extensions and padding, validates bit fields/lengths, and returns errors for truncated input instead of upstream's unchecked indexing. |
 | `avc.py` (0.5k) | `bumble-avc` | 🟡 | Slice 39 ports open subunit/opcode/command/response/operation identifiers; generic command and response frames; single and double-extended subunit IDs; 24-bit-company vendor-dependent frames; and panel pass-through press/release operations with bounded operation data. Upstream AVRCP vectors are byte-pinned and malformed frames return errors. Deferred: additional typed AV/C opcode subclasses beyond the two used by AVRCP. |
 | `avctp.py` (0.3k) | `bumble-avctp` | 🟡 | Slice 40 ports transaction labels, single/start/continue/end packets, command/response and IPID flags, 16-bit PIDs, safe fragmented-message assembly, MTU-aware outbound fragmentation, and a live Classic L2CAP binding. Registered PIDs receive commands; unknown PIDs automatically produce IPID responses. Deferred: handler callbacks and browsing-channel policy are provided by the higher AVRCP runtime. |
-| `avrcp` (2.9k) | `bumble-avrcp` | 🟡 | Slice 41 ports the Bluetooth SIG envelope and safe PDU transport. Slice 42 ports all 22 registered command schemas. Slice 43 ports all 9 registered notification-event schemas, including typed player-setting lists; every upstream instance is Python-oracle pinned and unknown IDs remain lossless. Deferred: typed responses, controller/target runtime, browsing channel, and SDP. |
+| `avrcp` (2.9k) | `bumble-avrcp` | 🟡 | Slices 41–44 port the Bluetooth SIG envelope, safe PDU transport, all 22 commands, all 9 notification events, and all 23 regular responses. Capability lists, metadata, browseable media-player/folder/element items, 128-bit feature masks, rejection fallbacks, and unknown IDs are typed/lossless and Python-oracle pinned. Deferred: controller/target runtime, browsing channel, and SDP. |
 | `codecs` (0.5k) | — | ⬜ | Remaining common audio/media support. |
 
 ### Profiles & apps
@@ -1004,6 +1005,25 @@ Every event class registered by upstream `bumble.avrcp.Event` is now typed:
 
 The complete response and browseable-item catalog is next.
 
+## Slice 44 — what's here
+
+The AVRCP wire catalog is now complete for every upstream response class:
+
+- All 23 regular response forms cover capabilities, player settings and text,
+  play status, media metadata, volume and notifications, player selection,
+  browsing, search, item playback, and now-playing insertion.
+- Browseable media-player, folder, and media-element items preserve their
+  length-delimited envelopes, open identifiers, 128-bit little-endian feature
+  masks, nested attributes, character sets, and display strings.
+- AV/C rejected and not-implemented forms are explicit variants, while unknown
+  response PDU and browse-item types remain lossless. Every nested count and
+  length is bounded and malformed UTF-8 or trailing data is rejected.
+- All 23 upstream parametrized response instances are byte-for-byte pinned
+  against the Python serializer, including the three-item browse response.
+
+With commands, responses, events, and both fragmentation layers complete, the
+next slice wires the controller/target transaction runtime over live AVCTP.
+
 ## Acceptance
 
 The port's contract is the upstream Python test suite, ported 1:1:
@@ -1130,8 +1150,10 @@ bumble-rs/
 │   ├── src/lib.rs             # PDU codec/assembler and AV/C/AVCTP envelope
 │   ├── src/command.rs         # slice-42 complete typed command catalog
 │   ├── src/event.rs           # slice-43 complete typed event catalog
+│   ├── src/response.rs        # slice-44 responses + browseable item codec
 │   ├── tests/commands.rs      # 22 Python-oracle parameter vectors
-│   └── tests/events.rs        # 9 Python-oracle notification vectors
+│   ├── tests/events.rs        # 9 Python-oracle notification vectors
+│   └── tests/responses.rs     # 23 Python-oracle response vectors
 └── docs/superpowers/          # design specs + implementation plans
 ```
 
