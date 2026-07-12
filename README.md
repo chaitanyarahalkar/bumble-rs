@@ -53,7 +53,8 @@ crate whose behavior is verified against the upstream Python.
 | 36. A2DP RTP packets over a live AVDTP Classic L2CAP media channel | `bumble-a2dp` | ✅ source→sink packet equality green |
 | 37. A2DP source/sink SDP records and discovery parsing | `bumble-a2dp` | ✅ SDP client/server green |
 | 38. High-level A2DP SEP discovery, codec selection, and stream orchestration | `bumble-a2dp` | ✅ live signaling lifecycle green |
-| 39+. AVRCP, HID, remaining modules… | — | planned |
+| 39. AV/C generic, vendor-dependent, and panel pass-through frame codec | `bumble-avc` | ✅ upstream vectors green |
+| 40+. AVCTP/AVRCP, HID, remaining modules… | — | planned |
 
 The LE lifecycle is now complete end-to-end through library APIs: **connect →
 discover → read/write → notify → disconnect** between two virtual devices — and
@@ -146,7 +147,8 @@ size, to convey remaining surface.
 | `avdtp.py` (2.4k) | `bumble-avdtp` | 🟡 | Slice 29 ports all 38 upstream signaling command/accept/reject forms, endpoint descriptors, generic and media-codec capability TLVs, open protocol enums, exact payload encoding/decoding, unknown-signal preservation, and safe single/fragmented PDU assembly. Slice 30 adds local endpoint registration, command dispatch, atomic multi-SEP validation, the configured/open/streaming/idle lifecycle, event capture, transaction labels, and a live Classic L2CAP binding. Deferred: initiator-side high-level stream proxy, RTP media channel/pump, listener convenience, and SDP discovery. |
 | `a2dp.py` (1.0k) | `bumble-a2dp` | ✅ | Open codec identifiers and exact SBC, MPEG-2/4 AAC, vendor-specific, and Opus capability models; upstream byte vectors; SBC/ADTS AAC/Ogg Opus parsers and RTP packet sources; live Classic L2CAP media transport; source/sink SDP records; and a high-level initiator that discovers SEPs, verifies media transport + codec compatibility, and drives configure/open/start/suspend/close over AVDTP. Async generators/listeners are represented by synchronous collections and a caller-supplied drive callback. |
 | `rtp.py` (0.1k) | `bumble-rtp` | ✅ | Slice 32 ports RTP v2 media packet parsing/serialization with marker/payload type, wrapping sequence/timestamp fields, SSRC and correctly spaced CSRC entries. It additionally implements standard header extensions and padding, validates bit fields/lengths, and returns errors for truncated input instead of upstream's unchecked indexing. |
-| `avrcp` (2.9k), `avc` (0.5k), `avctp` (0.3k), `codecs` (0.5k) | — | ⬜ | Remote control and remaining common audio/media support above AVDTP/A2DP. |
+| `avc.py` (0.5k) | `bumble-avc` | 🟡 | Slice 39 ports open subunit/opcode/command/response/operation identifiers; generic command and response frames; single and double-extended subunit IDs; 24-bit-company vendor-dependent frames; and panel pass-through press/release operations with bounded operation data. Upstream AVRCP vectors are byte-pinned and malformed frames return errors. Deferred: additional typed AV/C opcode subclasses beyond the two used by AVRCP. |
+| `avrcp` (2.9k), `avctp` (0.3k), `codecs` (0.5k) | — | ⬜ | Remote control and remaining common audio/media support above the new AV/C boundary. |
 
 ### Profiles & apps
 | Upstream | Rust crate | Status | Notes |
@@ -904,6 +906,24 @@ The synchronous A2DP profile surface is now connected end-to-end:
 This completes the core synchronous `a2dp.py` behavior family. Work now moves
 to the AVRCP dependency stack (`avc.py`, `avctp.py`, then `avrcp.py`).
 
+## Slice 39 — what's here
+
+The first AVRCP dependency is a complete transport-neutral AV/C frame boundary:
+
+- Generic commands and responses preserve open category, subunit type, opcode,
+  and operand values while distinguishing command types from response codes.
+- Standard, one-byte-extended, and two-byte-extended subunit IDs parse and
+  serialize, including upstream's ID 7 and ID 260 fixtures. Reserved encodings
+  and unsupported extended subunit types fail explicitly.
+- Vendor-dependent frames preserve the 24-bit company ID and arbitrary payload;
+  the upstream `0148000019581000000103` command is byte-exact.
+- Panel pass-through frames support pressed/released state, open operation IDs,
+  and up to 255 operation-data bytes. Play press matches the upstream AVRCP
+  fixture; non-empty data uses the spec-correct offset that upstream currently
+  parses incorrectly.
+
+AVCTP fragmentation/reassembly and its Classic L2CAP binding are next.
+
 ## Acceptance
 
 The port's contract is the upstream Python test suite, ported 1:1:
@@ -1020,6 +1040,9 @@ bumble-rs/
 ├── bumble-rtp/                # slice-32 RTP media packet codec
 │   ├── src/lib.rs             # header, CSRC, extension, payload, padding
 │   └── tests/packets.rs       # exact, full-featured, and malformed packets
+├── bumble-avc/                # slice-39 AV/C frame codec for AVRCP
+│   ├── src/lib.rs             # generic/vendor/pass-through frames
+│   └── tests/frames.rs        # upstream exact vectors + malformed inputs
 └── docs/superpowers/          # design specs + implementation plans
 ```
 

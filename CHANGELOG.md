@@ -128,6 +128,10 @@ crypto is pinned to Bluetooth-spec / RFC 4493 vectors.
 - **`bumble-rtp`** — slice 32 adds safe RTP media packet parsing/serialization,
   including CSRC lists, header extensions, padding, exact byte round trips, and
   explicit errors for malformed remote input.
+- **`bumble-avc`** — slice 39 starts AVRCP's dependency stack with generic AV/C
+  command/response frames, extended subunit IDs, 24-bit vendor-dependent
+  payloads, panel pass-through keys, exact upstream vectors, and malformed
+  input validation.
 
 ### Known limitations
 
