@@ -112,6 +112,10 @@ crypto is pinned to Bluetooth-spec / RFC 4493 vectors.
   encoding and safe reassembly. Slice 30 adds the endpoint/session state
   machine, atomic multi-stream validation, lifecycle/security/delay events, and
   transaction-labeled signaling over live Classic L2CAP channels.
+- **`bumble-a2dp`** — slice 31 ports the SBC, MPEG-2/4 AAC, vendor-specific, and
+  Opus codec capability models, pins the upstream byte vectors, validates
+  malformed/range inputs, and converts typed codec information into AVDTP
+  media-codec capabilities.
 
 ### Known limitations
 
@@ -129,7 +133,8 @@ crypto is pinned to Bluetooth-spec / RFC 4493 vectors.
   Enhanced retransmission, aggregate RFCOMM flow control, socket/async
   convenience APIs, and A2DP/AVRCP/HID profile behavior are not ported. The
   AVDTP signaling and endpoint runtime exist over Classic L2CAP, but its
-  initiator convenience, RTP media channel/pump, and A2DP codec layer remain. HFP's
+  initiator convenience and RTP media channel/pump remain. A2DP codec
+  capabilities exist, while media frame parsing/packet sources remain. HFP's
   AT grammar, stream framing, service-level connection, SDP records, and
   SCO/eSCO HCI audio-link orchestration are available. Its synchronous command
   behavior now covers the upstream HFP test families; executor conveniences and

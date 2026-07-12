@@ -45,7 +45,8 @@ crate whose behavior is verified against the upstream Python.
 | 28. Remaining HFP normative models, AG controls, typed metadata, and public helpers | `bumble-hfp` | ✅ upstream behavior families green |
 | 29. AVDTP signaling catalog, capability codec, and safe PDU fragmentation | `bumble-avdtp` | ✅ 38 messages payload-pinned |
 | 30. AVDTP endpoint/session state machine and live Classic L2CAP binding | `bumble-avdtp` | ✅ full lifecycle, fragmented config green |
-| 31+. A2DP codecs/media, AVRCP, HID… | — | planned |
+| 31. A2DP SBC, AAC, and vendor Opus codec capability models | `bumble-a2dp` | ✅ upstream vectors + AVDTP integration green |
+| 32+. A2DP RTP/media, AVRCP, HID… | — | planned |
 
 The LE lifecycle is now complete end-to-end through library APIs: **connect →
 discover → read/write → notify → disconnect** between two virtual devices — and
@@ -136,7 +137,8 @@ size, to convey remaining surface.
 | `hfp.py` (2.1k) | `bumble-hfp` | 🟡 | Normative HF/AG models and paired SLC state machines, serialized post-SLC command completion, call control/current-call listing, HF/AG indicators, ring/volume/typed caller-ID/typed voice events, codec request/selection, CMEE/CCWA/BIA/CLIP controls, HF/AG SDP record generation/discovery, and all eight upstream HFP 1.8 SCO/eSCO parameter presets. Control flows run end-to-end over RFCOMM/L2CAP and records through SDP client/server; negotiated CVSD/mSBC codecs establish and route audio through the host/controller link. The core synchronous protocol surface covers the upstream behavior families; deferred: asyncio/event-emitter convenience and actual CVSD/mSBC media encoding. |
 | `hid.py` (0.6k) | — | ⬜ | Human Interface Device. |
 | `avdtp.py` (2.4k) | `bumble-avdtp` | 🟡 | Slice 29 ports all 38 upstream signaling command/accept/reject forms, endpoint descriptors, generic and media-codec capability TLVs, open protocol enums, exact payload encoding/decoding, unknown-signal preservation, and safe single/fragmented PDU assembly. Slice 30 adds local endpoint registration, command dispatch, atomic multi-SEP validation, the configured/open/streaming/idle lifecycle, event capture, transaction labels, and a live Classic L2CAP binding. Deferred: initiator-side high-level stream proxy, RTP media channel/pump, listener convenience, and SDP discovery. |
-| `a2dp` (1.0k), `avrcp` (2.9k), `avc` (0.5k), `avctp` (0.3k), `rtp` (0.1k), `codecs` (0.5k) | — | ⬜ | A/V distribution + remote control + audio above the new AVDTP codec boundary. |
+| `a2dp.py` (1.0k) | `bumble-a2dp` | 🟡 | Slice 31 ports open codec identifiers and exact SBC, MPEG-2/4 AAC, vendor-specific, and Opus codec information models. The upstream `3fff0235`, `f0018c83e800`, and `92` vectors round-trip, vendor headers use their specified little-endian layout, malformed fields are rejected, and typed codec information converts directly to AVDTP media-codec capabilities. Deferred: SBC/AAC/Opus frame parsers and packet sources, codec selection policy, SDP records, and RTP media flow. |
+| `avrcp` (2.9k), `avc` (0.5k), `avctp` (0.3k), `rtp` (0.1k), `codecs` (0.5k) | — | ⬜ | Remote control and common audio/media support above AVDTP/A2DP. |
 
 ### Profiles & apps
 | Upstream | Rust crate | Status | Notes |
@@ -745,6 +747,26 @@ AVDTP signaling now drives real stream endpoint state:
 The next layer is A2DP codec negotiation and RTP media packets over the AVDTP
 media channel.
 
+## Slice 31 — what's here
+
+A2DP can now express and negotiate its codec-specific capabilities:
+
+- `CodecType` preserves standard and unknown codec identifiers. SBC models all
+  sampling-frequency, channel-mode, block-length, subband, allocation, and
+  bitpool fields; AAC models object type, 12 sampling frequencies, channels,
+  VBR, and the 23-bit bitrate.
+- Vendor-specific information implements the A2DP little-endian 32-bit vendor
+  and 16-bit codec header. The registered Opus form exposes channel mode,
+  10/20 ms frame size, and 48 kHz support.
+- The upstream SBC `3fff0235`, AAC `f0018c83e800`, and Opus `92` fixtures are
+  byte-pinned in both directions. Truncated records and an overflowing AAC
+  bitrate return errors rather than indexing or truncating silently.
+- `MediaCodecInformation` dynamically selects SBC/AAC/Opus/vendor/raw forms and
+  creates an AVDTP audio `MEDIA_CODEC` capability without losing bytes.
+
+The next slice ports RTP framing and the SBC/AAC/Opus frame parser/packet-source
+boundary used by the AVDTP media channel.
+
 ## Acceptance
 
 The port's contract is the upstream Python test suite, ported 1:1:
@@ -847,6 +869,9 @@ bumble-rs/
 │   ├── tests/acceptance.rs    # 38 exact payloads + malformed PDU coverage
 │   ├── tests/session.rs       # lifecycle, errors, atomic multi-SEP commands
 │   └── tests/l2cap_binding.rs # fragmented signaling over live channels
+├── bumble-a2dp/               # slice-31 Advanced Audio Distribution Profile
+│   ├── src/lib.rs             # SBC/AAC/vendor Opus capability models
+│   └── tests/codecs.rs        # upstream exact vectors + invalid inputs
 └── docs/superpowers/          # design specs + implementation plans
 ```
 
