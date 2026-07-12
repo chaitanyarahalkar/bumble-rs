@@ -5,6 +5,7 @@ use core::fmt;
 use bumble_avdtp::{MediaType, ServiceCapabilities};
 
 pub mod media;
+pub mod profile;
 pub mod sdp;
 pub mod transport;
 

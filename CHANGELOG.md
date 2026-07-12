@@ -121,7 +121,10 @@ crypto is pinned to Bluetooth-spec / RFC 4493 vectors.
   Slice 35 adds validated Ogg Opus logical-stream parsing and 20 ms RTP packets.
   Slice 36 binds typed RTP packets to a live Classic L2CAP media channel with
   negotiated-MTU enforcement and source-to-sink verification. Slice 37 adds
-  upstream-shaped source/sink SDP records and strict discovery parsing.
+  upstream-shaped source/sink SDP records and strict discovery parsing. Slice
+  38 completes the synchronous profile client with remote SEP discovery, codec
+  selection, and configure/open/start/suspend/close orchestration over live
+  AVDTP signaling.
 - **`bumble-rtp`** — slice 32 adds safe RTP media packet parsing/serialization,
   including CSRC lists, header extensions, padding, exact byte round trips, and
   explicit errors for malformed remote input.
