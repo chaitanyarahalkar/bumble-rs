@@ -85,7 +85,9 @@ crypto is pinned to Bluetooth-spec / RFC 4493 vectors.
   and verified end-to-end over RFCOMM and Classic L2CAP (slice 24). Slice 25
   continues with call control/current-call queries, HF and AG indicator updates,
   unsolicited ring/volume/caller-ID/voice events, serialized command results,
-  and the BCS codec handshake, including live RFCOMM/L2CAP coverage.
+  and the BCS codec handshake, including live RFCOMM/L2CAP coverage. Slice 26
+  adds role-correct HF/AG SDP records, feature mapping, and discovery parsing,
+  verified through the SDP client/server runtime.
 - **`bumble-controller`** — a synchronous software controller and in-process
   `LocalLink`: advertising/scanning, LE connection establishment, ACL routing,
   and disconnection.
@@ -113,6 +115,5 @@ crypto is pinned to Bluetooth-spec / RFC 4493 vectors.
   Enhanced retransmission, aggregate RFCOMM flow control, socket/async
   convenience APIs, and A2DP/AVRCP/HFP/HID profile behavior are not ported.
   HFP's AT grammar, stream framing, and service-level connection are available;
-  SDP helpers, remaining call-control variants, and SCO/eSCO audio behavior
-  remain.
+  Remaining call-control variants and SCO/eSCO audio behavior remain.
 - The controller/link are synchronous (no async runtime) by design.

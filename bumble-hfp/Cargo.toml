@@ -13,6 +13,8 @@ description = "Rust port of google/bumble Hands-Free Profile service-level conne
 
 [dependencies]
 bumble-at = { path = "../bumble-at" }
+bumble = { path = "../bumble" }
+bumble-sdp = { path = "../bumble-sdp" }
 
 [dev-dependencies]
 bumble-l2cap = { path = "../bumble-l2cap" }
