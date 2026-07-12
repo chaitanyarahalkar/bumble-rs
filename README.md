@@ -39,7 +39,8 @@ crate whose behavior is verified against the upstream Python.
 | 22. RFCOMM + SDP bindings over live Classic L2CAP channels | `bumble-rfcomm` / `bumble-sdp` | ✅ two-party green |
 | 23. AT parameter + HFP command/response streaming parser | `bumble-at` | ✅ 5/5 tests green |
 | 24. HFP service-level connection (HF↔AG feature/indicator negotiation) | `bumble-hfp` | ✅ transcript + RFCOMM/L2CAP green |
-| 25+. More classic profiles (HFP call/audio, A2DP/AVRCP/HID…) | — | planned |
+| 25. HFP call control, indicators, unsolicited events, codec negotiation | `bumble-hfp` | ✅ direct + RFCOMM/L2CAP green |
+| 26+. More classic profiles (HFP SDP/audio, A2DP/AVRCP/HID…) | — | planned |
 
 The LE lifecycle is now complete end-to-end through library APIs: **connect →
 discover → read/write → notify → disconnect** between two virtual devices — and
@@ -127,7 +128,7 @@ size, to convey remaining surface.
 | `rfcomm.py` (1.2k) | `bumble-rfcomm` | 🟡 | **Frame codec + session runtime + L2CAP binding**: the `RfcommFrame` TS 07.10 framing (SABM/UA/DM/DISC/UIH, 1- and 2-byte length indicators, credit-based UIH flow control), CRC-8, and PN/MSC MCC messages are oracle-pinned. Slice 20 adds `mux::{Multiplexer, Dlc}` for session/DLC open and credit flow; slice 22 adds `l2cap::L2capMultiplexer`, which derives its frame ceiling from the negotiated peer MTU and runs the complete session, DLC, replenishment, data, and disconnect flows over a live Classic channel. Deferred: retransmission (upstream also uses `max_retransmissions = 0`), aggregate flow control, and socket/async convenience APIs. |
 | `sdp.py` (1.4k) | `bumble-sdp` | 🟡 | **Codec + client/server runtime + L2CAP binding**: all `DataElement` encodings, `ServiceAttribute`, and seven `SdpPdu` messages are oracle-pinned. Slice 20 adds `service::{SdpServer, SdpClient}` with matching, selection, and continuation; slice 22 adds `l2cap::{SdpL2capServer, L2capSdpTransport}`, including fallible transport propagation and continuation over negotiated Classic channels. Deferred: async/event convenience APIs. |
 | `at.py` (0.1k) + HFP AT models | `bumble-at` | ✅ | Parameter tokenizer/parser ported 1:1, nested values, HFP `AtCommand`/`AtResponse` forms, and incremental command (`\r`) / response (`\r\n`) stream framing. |
-| `hfp.py` (2.1k) | `bumble-hfp` | 🟡 | Normative HF/AG feature bits, codecs, AG/HF indicator models, call-hold operations, and paired service-level-connection state machines. The mandatory BRSF/CIND/CMER sequence and conditional BAC/CHLD/BIND branches are transcript-pinned and run end-to-end over RFCOMM/L2CAP. Deferred: runtime indicator events, call control, codec renegotiation, SDP record helpers, and SCO/eSCO audio orchestration. |
+| `hfp.py` (2.1k) | `bumble-hfp` | 🟡 | Normative HF/AG models and paired service-level-connection state machines, plus serialized post-SLC command completion, answer/dial/hang-up/call-hold/current-call control, HF/AG indicator updates, ring/volume/caller-ID/voice events, and codec request/selection. SLC and representative post-SLC flows run end-to-end over RFCOMM/L2CAP. Deferred: remaining call metadata/control variants, SDP record helpers, and SCO/eSCO audio orchestration. |
 | `hid.py` (0.6k) | — | ⬜ | Human Interface Device. |
 | `a2dp` (1.0k), `avdtp` (2.4k), `avrcp` (2.9k), `avc` (0.5k), `avctp` (0.3k), `rtp` (0.1k), `codecs` (0.5k) | — | ⬜ | A/V distribution + remote control + audio. |
 
@@ -612,6 +613,30 @@ machines work over the in-process stack and future real transports. Call
 control, unsolicited indicator delivery, codec renegotiation, HFP SDP helpers,
 and synchronous audio links are the next HFP work.
 
+## Slice 25 — what's here
+
+The HFP state machines continue after SLC completion instead of stopping at
+negotiation:
+
+- The HF serializes one pending command at a time, validates none/single/multiple
+  response cardinality, exposes completed command results, and offers helpers
+  for answer, dial, hang-up, indexed call hold, current-call queries, HF
+  indicator reports, and codec selection. `+CLCC` results parse into typed call
+  direction/status/mode/conference records.
+- The AG handles those commands and emits typed application events. It also
+  processes voice-recognition, volume, codec-connection, HF-indicator, and
+  codec-selection commands while maintaining negotiated state.
+- Unsolicited AG indicator updates, ring, speaker/microphone volume, caller ID,
+  voice recognition, and codec proposals update HF state and produce typed
+  events. Codec proposals complete through the normative `+BCS` / `AT+BCS`
+  handshake on both peers.
+- Direct tests cover the upstream `hfp_test.py` behavior families. The live
+  integration continues beyond SLC on the existing RFCOMM DLC to verify answer,
+  `+CIEV`, and codec negotiation through Classic L2CAP.
+
+HFP SDP service records and synchronous SCO/eSCO audio setup remain the next
+profile dependencies; the controller still needs a complete audio data path.
+
 ## Acceptance
 
 The port's contract is the upstream Python test suite, ported 1:1:
@@ -699,6 +724,7 @@ bumble-rs/
 ├── bumble-hfp/                # slice-24 HF/AG service-level connection
 │   ├── src/lib.rs             # features, indicators, paired SLC state machines
 │   ├── tests/slc.rs           # minimal/full transcript-pinned negotiation
+│   ├── tests/post_slc.rs      # call control, events, indicators, codec flow
 │   └── tests/rfcomm_slc.rs    # SLC over RFCOMM over Classic L2CAP
 └── docs/superpowers/          # design specs + implementation plans
 ```

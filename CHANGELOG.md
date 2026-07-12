@@ -82,7 +82,10 @@ crypto is pinned to Bluetooth-spec / RFC 4493 vectors.
 - **`bumble-hfp`** — paired HF/AG service-level-connection state machines with
   normative feature, codec, indicator, and call-hold models. The mandatory
   BRSF/CIND/CMER flow and optional BAC/CHLD/BIND branches are transcript-pinned
-  and verified end-to-end over RFCOMM and Classic L2CAP (slice 24).
+  and verified end-to-end over RFCOMM and Classic L2CAP (slice 24). Slice 25
+  continues with call control/current-call queries, HF and AG indicator updates,
+  unsolicited ring/volume/caller-ID/voice events, serialized command results,
+  and the BCS codec handshake, including live RFCOMM/L2CAP coverage.
 - **`bumble-controller`** — a synchronous software controller and in-process
   `LocalLink`: advertising/scanning, LE connection establishment, ACL routing,
   and disconnection.
@@ -110,6 +113,6 @@ crypto is pinned to Bluetooth-spec / RFC 4493 vectors.
   Enhanced retransmission, aggregate RFCOMM flow control, socket/async
   convenience APIs, and A2DP/AVRCP/HFP/HID profile behavior are not ported.
   HFP's AT grammar, stream framing, and service-level connection are available;
-  call control, unsolicited events, codec renegotiation, SDP helpers, and
-  SCO/eSCO audio behavior remain.
+  SDP helpers, remaining call-control variants, and SCO/eSCO audio behavior
+  remain.
 - The controller/link are synchronous (no async runtime) by design.

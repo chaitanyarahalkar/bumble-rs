@@ -1,8 +1,8 @@
 use std::collections::BTreeSet;
 
 use bumble_hfp::{
-    AgConfiguration, AgFeatures, AgIndicatorState, AgProtocol, AudioCodec, CallHoldOperation,
-    HfConfiguration, HfFeatures, HfIndicator, HfProtocol,
+    AgConfiguration, AgEvent, AgFeatures, AgIndicator, AgIndicatorState, AgProtocol, AudioCodec,
+    CallHoldOperation, HfConfiguration, HfEvent, HfFeatures, HfIndicator, HfProtocol,
 };
 use bumble_l2cap::{ChannelManager, ClassicChannelSpec};
 use bumble_rfcomm::l2cap::L2capMultiplexer;
@@ -34,6 +34,42 @@ fn drive_rfcomm(
         }
     }
     panic!("RFCOMM stack did not quiesce");
+}
+
+fn exchange_hfp(
+    client_manager: &mut ChannelManager,
+    client: &mut L2capMultiplexer,
+    server_manager: &mut ChannelManager,
+    server: &mut L2capMultiplexer,
+    dlci: u8,
+    hf: &mut HfProtocol,
+    ag: &mut AgProtocol,
+) {
+    for _ in 0..64 {
+        let mut progressed = false;
+        for command in hf.drain_outgoing() {
+            client.write(client_manager, dlci, &command).unwrap();
+            progressed = true;
+        }
+        drive_rfcomm(client_manager, client, server_manager, server);
+        for command in server.multiplexer_mut().take_rx(dlci) {
+            ag.feed(&command).unwrap();
+            progressed = true;
+        }
+        for response in ag.drain_outgoing() {
+            server.write(server_manager, dlci, &response).unwrap();
+            progressed = true;
+        }
+        drive_rfcomm(client_manager, client, server_manager, server);
+        for response in client.multiplexer_mut().take_rx(dlci) {
+            hf.feed(&response).unwrap();
+            progressed = true;
+        }
+        if !progressed {
+            return;
+        }
+    }
+    panic!("HFP/RFCOMM exchange did not quiesce");
 }
 
 #[test]
@@ -100,35 +136,15 @@ fn hfp_slc_completes_over_rfcomm_and_classic_l2cap() {
     });
     hf.start_slc().unwrap();
 
-    for _ in 0..64 {
-        for command in hf.drain_outgoing() {
-            client.write(&mut client_manager, dlci, &command).unwrap();
-        }
-        drive_rfcomm(
-            &mut client_manager,
-            &mut client,
-            &mut server_manager,
-            &mut server,
-        );
-        for command in server.multiplexer_mut().take_rx(dlci) {
-            ag.feed(&command).unwrap();
-        }
-        for response in ag.drain_outgoing() {
-            server.write(&mut server_manager, dlci, &response).unwrap();
-        }
-        drive_rfcomm(
-            &mut client_manager,
-            &mut client,
-            &mut server_manager,
-            &mut server,
-        );
-        for response in client.multiplexer_mut().take_rx(dlci) {
-            hf.feed(&response).unwrap();
-        }
-        if hf.slc_complete && ag.slc_complete {
-            break;
-        }
-    }
+    exchange_hfp(
+        &mut client_manager,
+        &mut client,
+        &mut server_manager,
+        &mut server,
+        dlci,
+        &mut hf,
+        &mut ag,
+    );
 
     assert!(hf.slc_complete);
     assert!(ag.slc_complete);
@@ -139,4 +155,61 @@ fn hfp_slc_completes_over_rfcomm_and_classic_l2cap() {
         .hf_indicators
         .values()
         .all(|state| state.supported && state.enabled));
+
+    // Post-SLC commands and unsolicited events stay on the same live DLC.
+    hf.answer().unwrap();
+    exchange_hfp(
+        &mut client_manager,
+        &mut client,
+        &mut server_manager,
+        &mut server,
+        dlci,
+        &mut hf,
+        &mut ag,
+    );
+    assert_eq!(ag.take_events(), [AgEvent::Answer]);
+    assert_eq!(hf.take_completed_commands().len(), 1);
+
+    ag.update_ag_indicator(AgIndicator::Call, 1).unwrap();
+    exchange_hfp(
+        &mut client_manager,
+        &mut client,
+        &mut server_manager,
+        &mut server,
+        dlci,
+        &mut hf,
+        &mut ag,
+    );
+    assert_eq!(
+        hf.take_events(),
+        [HfEvent::AgIndicatorChanged {
+            indicator: AgIndicator::Call,
+            value: 1,
+        }]
+    );
+
+    ag.propose_codec(AudioCodec::Msbc).unwrap();
+    exchange_hfp(
+        &mut client_manager,
+        &mut client,
+        &mut server_manager,
+        &mut server,
+        dlci,
+        &mut hf,
+        &mut ag,
+    );
+    assert_eq!(hf.take_events(), [HfEvent::CodecProposal(AudioCodec::Msbc)]);
+    hf.select_codec(AudioCodec::Msbc).unwrap();
+    exchange_hfp(
+        &mut client_manager,
+        &mut client,
+        &mut server_manager,
+        &mut server,
+        dlci,
+        &mut hf,
+        &mut ag,
+    );
+    assert_eq!(ag.take_events(), [AgEvent::CodecSelected(AudioCodec::Msbc)]);
+    assert_eq!(hf.active_codec, AudioCodec::Msbc);
+    assert_eq!(ag.active_codec, AudioCodec::Msbc);
 }

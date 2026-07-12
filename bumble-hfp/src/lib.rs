@@ -307,6 +307,179 @@ pub struct AgConfiguration {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResponseExpectation {
+    None,
+    Single,
+    Multiple,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommandResult {
+    pub id: u64,
+    pub responses: Vec<AtResponse>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CallDirection {
+    MobileOriginated,
+    MobileTerminated,
+    Other(u8),
+}
+
+impl CallDirection {
+    fn value(self) -> u8 {
+        match self {
+            CallDirection::MobileOriginated => 0,
+            CallDirection::MobileTerminated => 1,
+            CallDirection::Other(value) => value,
+        }
+    }
+
+    fn from_value(value: u8) -> Self {
+        match value {
+            0 => CallDirection::MobileOriginated,
+            1 => CallDirection::MobileTerminated,
+            value => CallDirection::Other(value),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CallStatus {
+    Active,
+    Held,
+    Dialing,
+    Alerting,
+    Incoming,
+    Waiting,
+    Other(u8),
+}
+
+impl CallStatus {
+    fn value(self) -> u8 {
+        match self {
+            CallStatus::Active => 0,
+            CallStatus::Held => 1,
+            CallStatus::Dialing => 2,
+            CallStatus::Alerting => 3,
+            CallStatus::Incoming => 4,
+            CallStatus::Waiting => 5,
+            CallStatus::Other(value) => value,
+        }
+    }
+
+    fn from_value(value: u8) -> Self {
+        match value {
+            0 => CallStatus::Active,
+            1 => CallStatus::Held,
+            2 => CallStatus::Dialing,
+            3 => CallStatus::Alerting,
+            4 => CallStatus::Incoming,
+            5 => CallStatus::Waiting,
+            value => CallStatus::Other(value),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CallMode {
+    Voice,
+    Data,
+    Fax,
+    Unknown,
+    Other(u8),
+}
+
+impl CallMode {
+    fn value(self) -> u8 {
+        match self {
+            CallMode::Voice => 0,
+            CallMode::Data => 1,
+            CallMode::Fax => 2,
+            CallMode::Unknown => 9,
+            CallMode::Other(value) => value,
+        }
+    }
+
+    fn from_value(value: u8) -> Self {
+        match value {
+            0 => CallMode::Voice,
+            1 => CallMode::Data,
+            2 => CallMode::Fax,
+            9 => CallMode::Unknown,
+            value => CallMode::Other(value),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CallMultiParty {
+    NotInConference,
+    InConference,
+    Other(u8),
+}
+
+impl CallMultiParty {
+    fn value(self) -> u8 {
+        match self {
+            CallMultiParty::NotInConference => 0,
+            CallMultiParty::InConference => 1,
+            CallMultiParty::Other(value) => value,
+        }
+    }
+
+    fn from_value(value: u8) -> Self {
+        match value {
+            0 => CallMultiParty::NotInConference,
+            1 => CallMultiParty::InConference,
+            value => CallMultiParty::Other(value),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CallInfo {
+    pub index: u8,
+    pub direction: CallDirection,
+    pub status: CallStatus,
+    pub mode: CallMode,
+    pub multi_party: CallMultiParty,
+    pub number: Option<String>,
+    pub number_type: Option<u16>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HfEvent {
+    AgIndicatorChanged { indicator: AgIndicator, value: i32 },
+    Ring,
+    SpeakerVolume(u8),
+    MicrophoneVolume(u8),
+    CodecProposal(AudioCodec),
+    VoiceRecognition(u8),
+    CallerId { number: String, number_type: u16 },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AgEvent {
+    Answer,
+    Dial(String),
+    HangUp,
+    CallHold {
+        operation: CallHoldOperation,
+        call_index: Option<u8>,
+    },
+    HfIndicatorChanged {
+        indicator: HfIndicator,
+        value: i32,
+    },
+    CodecSelected(AudioCodec),
+    CodecConnectionRequest,
+    VoiceRecognition(u8),
+    SpeakerVolume(u8),
+    MicrophoneVolume(u8),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PendingKind {
     Brsf,
     Bac,
@@ -319,9 +492,18 @@ enum PendingKind {
     BindRead,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PendingPurpose {
+    Slc(PendingKind),
+    User {
+        id: u64,
+        expectation: ResponseExpectation,
+    },
+}
+
 #[derive(Debug)]
 struct PendingCommand {
-    kind: PendingKind,
+    purpose: PendingPurpose,
     responses: Vec<AtResponse>,
 }
 
@@ -331,11 +513,16 @@ pub struct HfProtocol {
     response_stream: ResponseStream,
     outbox: VecDeque<Vec<u8>>,
     pending: Option<PendingCommand>,
+    completed_commands: VecDeque<CommandResult>,
+    events: VecDeque<HfEvent>,
+    next_command_id: u64,
+    pending_codec_selection: Option<(u64, AudioCodec)>,
     pub supported_ag_features: AgFeatures,
     pub ag_indicators: Vec<AgIndicatorState>,
     pub hf_indicators: BTreeMap<HfIndicator, HfIndicatorState>,
     pub supported_ag_call_hold_operations: BTreeSet<CallHoldOperation>,
     pub slc_complete: bool,
+    pub active_codec: AudioCodec,
 }
 
 impl HfProtocol {
@@ -361,11 +548,16 @@ impl HfProtocol {
             response_stream: ResponseStream::default(),
             outbox: VecDeque::new(),
             pending: None,
+            completed_commands: VecDeque::new(),
+            events: VecDeque::new(),
+            next_command_id: 0,
+            pending_codec_selection: None,
             supported_ag_features: AgFeatures::default(),
             ag_indicators: Vec::new(),
             hf_indicators,
             supported_ag_call_hold_operations: BTreeSet::new(),
             slc_complete: false,
+            active_codec: AudioCodec::Cvsd,
         }
     }
 
@@ -383,19 +575,46 @@ impl HfProtocol {
         for response in self.response_stream.push(bytes)? {
             if is_status(&response.code) {
                 if response.code != "OK" {
+                    if let Some(PendingCommand {
+                        purpose: PendingPurpose::User { id, .. },
+                        ..
+                    }) = self.pending.take()
+                    {
+                        if self
+                            .pending_codec_selection
+                            .is_some_and(|(codec_id, _)| codec_id == id)
+                        {
+                            self.pending_codec_selection = None;
+                        }
+                    }
                     return Err(Error::Protocol(response.code));
                 }
-                let pending = self
-                    .pending
-                    .take()
-                    .ok_or_else(|| Error::Protocol("unexpected OK".into()))?;
-                self.on_command_complete(pending.kind, pending.responses)?;
+                let Some(pending) = self.pending.take() else {
+                    self.on_unsolicited(response)?;
+                    continue;
+                };
+                match pending.purpose {
+                    PendingPurpose::Slc(kind) => {
+                        self.on_slc_command_complete(kind, pending.responses)?
+                    }
+                    PendingPurpose::User { id, expectation } => {
+                        validate_response_count(expectation, &pending.responses)?;
+                        if let Some((codec_id, codec)) = self.pending_codec_selection {
+                            if codec_id == id {
+                                self.active_codec = codec;
+                                self.pending_codec_selection = None;
+                            }
+                        }
+                        self.completed_commands.push_back(CommandResult {
+                            id,
+                            responses: pending.responses,
+                        });
+                    }
+                }
+            } else if let Some(pending) = self.pending.as_mut() {
+                pending.responses.push(response);
             } else {
-                self.pending
-                    .as_mut()
-                    .ok_or_else(|| Error::Protocol("unsolicited response during SLC".into()))?
-                    .responses
-                    .push(response);
+                self.on_unsolicited(response)?;
             }
         }
         Ok(())
@@ -405,7 +624,92 @@ impl HfProtocol {
         self.outbox.drain(..).collect()
     }
 
+    /// Queue one post-SLC AT command. Only one command may be pending, matching
+    /// upstream's serialized command lock.
+    pub fn execute_command(
+        &mut self,
+        command: impl Into<String>,
+        expectation: ResponseExpectation,
+    ) -> Result<u64> {
+        if !self.slc_complete {
+            return Err(Error::InvalidState("SLC is not complete".into()));
+        }
+        if self.pending.is_some() {
+            return Err(Error::InvalidState("command already pending".into()));
+        }
+        let id = self.next_command_id;
+        self.next_command_id = self.next_command_id.wrapping_add(1);
+        self.queue_command(PendingPurpose::User { id, expectation }, command.into())?;
+        Ok(id)
+    }
+
+    pub fn answer(&mut self) -> Result<u64> {
+        self.execute_command("ATA", ResponseExpectation::None)
+    }
+
+    pub fn hang_up(&mut self) -> Result<u64> {
+        self.execute_command("AT+CHUP", ResponseExpectation::None)
+    }
+
+    pub fn dial(&mut self, number: &str) -> Result<u64> {
+        self.execute_command(format!("ATD{number}"), ResponseExpectation::None)
+    }
+
+    pub fn query_current_calls(&mut self) -> Result<u64> {
+        self.execute_command("AT+CLCC", ResponseExpectation::Multiple)
+    }
+
+    pub fn hold_call(&mut self, operation: CallHoldOperation, index: Option<u8>) -> Result<u64> {
+        let indexed = matches!(
+            operation,
+            CallHoldOperation::ReleaseSpecific | CallHoldOperation::HoldAllExcept
+        );
+        if indexed != index.is_some() {
+            return Err(Error::InvalidState(
+                "call index must be supplied only for indexed CHLD operations".into(),
+            ));
+        }
+        let code = match (operation, index) {
+            (CallHoldOperation::ReleaseSpecific, Some(index)) => format!("1{index}"),
+            (CallHoldOperation::HoldAllExcept, Some(index)) => format!("2{index}"),
+            _ => operation.code().to_owned(),
+        };
+        self.execute_command(format!("AT+CHLD={code}"), ResponseExpectation::None)
+    }
+
+    pub fn report_hf_indicator(&mut self, indicator: HfIndicator, value: i32) -> Result<u64> {
+        self.execute_command(
+            format!("AT+BIEV={},{}", indicator.value(), value),
+            ResponseExpectation::None,
+        )
+    }
+
+    pub fn select_codec(&mut self, codec: AudioCodec) -> Result<u64> {
+        let id = self.execute_command(
+            format!("AT+BCS={}", codec.value()),
+            ResponseExpectation::None,
+        )?;
+        self.pending_codec_selection = Some((id, codec));
+        Ok(id)
+    }
+
+    pub fn take_completed_commands(&mut self) -> Vec<CommandResult> {
+        self.completed_commands.drain(..).collect()
+    }
+
+    pub fn take_events(&mut self) -> Vec<HfEvent> {
+        self.events.drain(..).collect()
+    }
+
+    pub fn parse_current_calls(result: &CommandResult) -> Result<Vec<CallInfo>> {
+        result.responses.iter().map(parse_call_info).collect()
+    }
+
     fn send_command(&mut self, kind: PendingKind, command: String) -> Result<()> {
+        self.queue_command(PendingPurpose::Slc(kind), command)
+    }
+
+    fn queue_command(&mut self, purpose: PendingPurpose, command: String) -> Result<()> {
         if self.pending.is_some() {
             return Err(Error::InvalidState("command already pending".into()));
         }
@@ -413,13 +717,17 @@ impl HfProtocol {
         bytes.push(b'\r');
         self.outbox.push_back(bytes);
         self.pending = Some(PendingCommand {
-            kind,
+            purpose,
             responses: Vec::new(),
         });
         Ok(())
     }
 
-    fn on_command_complete(&mut self, kind: PendingKind, responses: Vec<AtResponse>) -> Result<()> {
+    fn on_slc_command_complete(
+        &mut self,
+        kind: PendingKind,
+        responses: Vec<AtResponse>,
+    ) -> Result<()> {
         match kind {
             PendingKind::Brsf => {
                 let response = single_response(&responses, "+BRSF")?;
@@ -506,6 +814,54 @@ impl HfProtocol {
         Ok(())
     }
 
+    fn on_unsolicited(&mut self, response: AtResponse) -> Result<()> {
+        match response.code.as_str() {
+            "+CIEV" => {
+                let index = parse_u16(value_at(&response, 0)?)? as usize;
+                let value = parse_i32(value_at(&response, 1)?)?;
+                let state = index
+                    .checked_sub(1)
+                    .and_then(|index| self.ag_indicators.get_mut(index))
+                    .ok_or_else(|| Error::Protocol("invalid CIEV indicator index".into()))?;
+                state.current_status = value;
+                self.events.push_back(HfEvent::AgIndicatorChanged {
+                    indicator: state.indicator,
+                    value,
+                });
+            }
+            "RING" => self.events.push_back(HfEvent::Ring),
+            "+VGS" => self
+                .events
+                .push_back(HfEvent::SpeakerVolume(parse_u8(value_at(&response, 0)?)?)),
+            "+VGM" => self
+                .events
+                .push_back(HfEvent::MicrophoneVolume(parse_u8(value_at(
+                    &response, 0,
+                )?)?)),
+            "+BCS" => {
+                let codec = AudioCodec::from_value(parse_u8(value_at(&response, 0)?)?);
+                self.events.push_back(HfEvent::CodecProposal(codec));
+            }
+            "+BVRA" => self
+                .events
+                .push_back(HfEvent::VoiceRecognition(parse_u8(value_at(
+                    &response, 0,
+                )?)?)),
+            "+CLIP" => {
+                self.events.push_back(HfEvent::CallerId {
+                    number: String::from_utf8_lossy(value_at(&response, 0)?).into_owned(),
+                    number_type: parse_u16(value_at(&response, 1)?)?,
+                });
+            }
+            code => {
+                return Err(Error::Protocol(format!(
+                    "unsupported unsolicited response {code}"
+                )))
+            }
+        }
+        Ok(())
+    }
+
     fn after_cmer(&mut self) -> Result<()> {
         if self
             .configuration
@@ -550,11 +906,14 @@ pub struct AgProtocol {
     configuration: AgConfiguration,
     command_stream: CommandStream,
     outbox: VecDeque<Vec<u8>>,
+    events: VecDeque<AgEvent>,
     pub supported_hf_features: HfFeatures,
     pub supported_audio_codecs: Vec<AudioCodec>,
     pub hf_indicators: BTreeMap<HfIndicator, HfIndicatorState>,
     pub indicator_report_enabled: bool,
     pub slc_complete: bool,
+    pub calls: Vec<CallInfo>,
+    pub active_codec: AudioCodec,
     core_setup_complete: bool,
     chld_complete: bool,
     bind_complete: bool,
@@ -566,11 +925,14 @@ impl AgProtocol {
             configuration,
             command_stream: CommandStream::default(),
             outbox: VecDeque::new(),
+            events: VecDeque::new(),
             supported_hf_features: HfFeatures::default(),
             supported_audio_codecs: Vec::new(),
             hf_indicators: BTreeMap::new(),
             indicator_report_enabled: false,
             slc_complete: false,
+            calls: Vec::new(),
+            active_codec: AudioCodec::Cvsd,
             core_setup_complete: false,
             chld_complete: false,
             bind_complete: false,
@@ -592,6 +954,58 @@ impl AgProtocol {
         &self.configuration
     }
 
+    pub fn take_events(&mut self) -> Vec<AgEvent> {
+        self.events.drain(..).collect()
+    }
+
+    pub fn update_ag_indicator(&mut self, indicator: AgIndicator, value: i32) -> Result<()> {
+        let (index, state) = self
+            .configuration
+            .indicators
+            .iter_mut()
+            .enumerate()
+            .find(|(_, state)| state.indicator == indicator)
+            .ok_or_else(|| Error::Protocol("AG indicator is not supported".into()))?;
+        if !state.supported_values.contains(&value) {
+            return Err(Error::Protocol(
+                "AG indicator value is not supported".into(),
+            ));
+        }
+        state.current_status = value;
+        if self.indicator_report_enabled && state.enabled {
+            self.send_response(&format!("+CIEV: {},{value}", index + 1));
+        }
+        Ok(())
+    }
+
+    pub fn send_ring(&mut self) {
+        self.send_response("RING");
+    }
+
+    pub fn set_speaker_volume(&mut self, level: u8) {
+        self.send_response(&format!("+VGS: {level}"));
+    }
+
+    pub fn set_microphone_volume(&mut self, level: u8) {
+        self.send_response(&format!("+VGM: {level}"));
+    }
+
+    pub fn send_caller_id(&mut self, number: &str, number_type: u16) {
+        self.send_response(&format!("+CLIP: \"{number}\",{number_type}"));
+    }
+
+    pub fn send_voice_recognition(&mut self, state: u8) {
+        self.send_response(&format!("+BVRA: {state}"));
+    }
+
+    pub fn propose_codec(&mut self, codec: AudioCodec) -> Result<()> {
+        if !self.supported_audio_codecs.contains(&codec) {
+            return Err(Error::Protocol("codec is not supported by HF".into()));
+        }
+        self.send_response(&format!("+BCS: {}", codec.value()));
+        Ok(())
+    }
+
     fn on_command(&mut self, command: AtCommand) -> Result<()> {
         match (command.code.as_str(), command.sub_code) {
             ("BRSF", CommandSubCode::Set) => self.on_brsf(&command.parameters),
@@ -603,6 +1017,17 @@ impl AgProtocol {
             ("BIND", CommandSubCode::Set) => self.on_bind(&command.parameters),
             ("BIND", CommandSubCode::Test) => self.on_bind_test(),
             ("BIND", CommandSubCode::Read) => self.on_bind_read(),
+            ("BIEV", CommandSubCode::Set) => self.on_biev(&command.parameters),
+            ("BCS", CommandSubCode::Set) => self.on_bcs(&command.parameters),
+            ("BCC", CommandSubCode::None) => self.on_bcc(),
+            ("BVRA", CommandSubCode::Set) => self.on_bvra(&command.parameters),
+            ("CHLD", CommandSubCode::Set) => self.on_chld(&command.parameters),
+            ("CHUP", CommandSubCode::None) => self.on_chup(),
+            ("CLCC", CommandSubCode::None) => self.on_clcc(),
+            ("VGS", CommandSubCode::Set) => self.on_vgs(&command.parameters),
+            ("VGM", CommandSubCode::Set) => self.on_vgm(&command.parameters),
+            ("A", CommandSubCode::None) => self.on_answer(),
+            ("D", CommandSubCode::None) => self.on_dial(&command.parameters),
             _ => {
                 self.send_response("ERROR");
                 Ok(())
@@ -742,6 +1167,134 @@ impl AgProtocol {
         Ok(())
     }
 
+    fn on_biev(&mut self, parameters: &[Parameter]) -> Result<()> {
+        let indicator = HfIndicator::from_value(parse_u16(first_value(parameters)?)?);
+        let value = parameters
+            .get(1)
+            .ok_or_else(|| Error::Protocol("missing BIEV value".into()))
+            .and_then(parameter_value)
+            .and_then(parse_i32)?;
+        let Some(state) = self.hf_indicators.get_mut(&indicator) else {
+            self.send_response("ERROR");
+            return Ok(());
+        };
+        state.current_status = value;
+        self.events
+            .push_back(AgEvent::HfIndicatorChanged { indicator, value });
+        self.send_ok();
+        Ok(())
+    }
+
+    fn on_bcs(&mut self, parameters: &[Parameter]) -> Result<()> {
+        let codec = AudioCodec::from_value(parse_u8(first_value(parameters)?)?);
+        if !self.supported_audio_codecs.contains(&codec) {
+            self.send_response("ERROR");
+            return Ok(());
+        }
+        self.active_codec = codec;
+        self.events.push_back(AgEvent::CodecSelected(codec));
+        self.send_ok();
+        Ok(())
+    }
+
+    fn on_bcc(&mut self) -> Result<()> {
+        self.events.push_back(AgEvent::CodecConnectionRequest);
+        self.send_ok();
+        Ok(())
+    }
+
+    fn on_bvra(&mut self, parameters: &[Parameter]) -> Result<()> {
+        let state = parse_u8(first_value(parameters)?)?;
+        self.events.push_back(AgEvent::VoiceRecognition(state));
+        self.send_ok();
+        Ok(())
+    }
+
+    fn on_chld(&mut self, parameters: &[Parameter]) -> Result<()> {
+        let code = first_value(parameters)?;
+        let (normalized, call_index) = if code.len() > 1 {
+            let prefix = code[0];
+            let index = parse_u8(&code[1..])?;
+            (vec![prefix, b'x'], Some(index))
+        } else {
+            (code.to_vec(), None)
+        };
+        let Some(operation) = CallHoldOperation::parse(&normalized) else {
+            self.send_response("ERROR");
+            return Ok(());
+        };
+        if !self.configuration.call_hold_operations.contains(&operation)
+            || call_index.is_some_and(|index| !self.calls.iter().any(|call| call.index == index))
+        {
+            self.send_response("ERROR");
+            return Ok(());
+        }
+        self.events.push_back(AgEvent::CallHold {
+            operation,
+            call_index,
+        });
+        self.send_ok();
+        Ok(())
+    }
+
+    fn on_chup(&mut self) -> Result<()> {
+        self.events.push_back(AgEvent::HangUp);
+        self.send_ok();
+        Ok(())
+    }
+
+    fn on_clcc(&mut self) -> Result<()> {
+        let calls = self.calls.clone();
+        for call in calls {
+            let mut response = format!(
+                "+CLCC: {},{},{},{},{}",
+                call.index,
+                call.direction.value(),
+                call.status.value(),
+                call.mode.value(),
+                call.multi_party.value()
+            );
+            if let Some(number) = &call.number {
+                response.push_str(&format!(",\"{number}\""));
+            }
+            if let Some(number_type) = call.number_type {
+                response.push_str(&format!(",{number_type}"));
+            }
+            self.send_response(&response);
+        }
+        self.send_ok();
+        Ok(())
+    }
+
+    fn on_vgs(&mut self, parameters: &[Parameter]) -> Result<()> {
+        self.events
+            .push_back(AgEvent::SpeakerVolume(parse_u8(first_value(parameters)?)?));
+        self.send_ok();
+        Ok(())
+    }
+
+    fn on_vgm(&mut self, parameters: &[Parameter]) -> Result<()> {
+        self.events
+            .push_back(AgEvent::MicrophoneVolume(parse_u8(first_value(
+                parameters,
+            )?)?));
+        self.send_ok();
+        Ok(())
+    }
+
+    fn on_answer(&mut self) -> Result<()> {
+        self.events.push_back(AgEvent::Answer);
+        self.send_ok();
+        Ok(())
+    }
+
+    fn on_dial(&mut self, parameters: &[Parameter]) -> Result<()> {
+        let number = String::from_utf8_lossy(first_value(parameters)?).into_owned();
+        self.events.push_back(AgEvent::Dial(number));
+        self.send_ok();
+        Ok(())
+    }
+
     fn update_slc_complete(&mut self) {
         let needs_chld = self
             .supported_hf_features
@@ -784,6 +1337,25 @@ fn is_status(code: &str) -> bool {
             | "NO CARRIER"
             | "OK"
     )
+}
+
+fn validate_response_count(
+    expectation: ResponseExpectation,
+    responses: &[AtResponse],
+) -> Result<()> {
+    let valid = match expectation {
+        ResponseExpectation::None => responses.is_empty(),
+        ResponseExpectation::Single => responses.len() == 1,
+        ResponseExpectation::Multiple => true,
+    };
+    if valid {
+        Ok(())
+    } else {
+        Err(Error::Protocol(format!(
+            "unexpected response count {} for {expectation:?}",
+            responses.len()
+        )))
+    }
 }
 
 fn single_response<'a>(responses: &'a [AtResponse], code: &str) -> Result<&'a AtResponse> {
@@ -872,4 +1444,30 @@ fn parse_ag_indicator_descriptions(parameters: &[Parameter]) -> Result<Vec<AgInd
             Ok(AgIndicatorState::new(indicator, supported, 0))
         })
         .collect()
+}
+
+fn parse_call_info(response: &AtResponse) -> Result<CallInfo> {
+    if response.code != "+CLCC" || response.parameters.len() < 5 {
+        return Err(Error::Protocol("invalid CLCC response".into()));
+    }
+    Ok(CallInfo {
+        index: parse_u8(value_at(response, 0)?)?,
+        direction: CallDirection::from_value(parse_u8(value_at(response, 1)?)?),
+        status: CallStatus::from_value(parse_u8(value_at(response, 2)?)?),
+        mode: CallMode::from_value(parse_u8(value_at(response, 3)?)?),
+        multi_party: CallMultiParty::from_value(parse_u8(value_at(response, 4)?)?),
+        number: response
+            .parameters
+            .get(5)
+            .map(parameter_value)
+            .transpose()?
+            .map(|number| String::from_utf8_lossy(number).into_owned()),
+        number_type: response
+            .parameters
+            .get(6)
+            .map(parameter_value)
+            .transpose()?
+            .map(parse_u16)
+            .transpose()?,
+    })
 }
