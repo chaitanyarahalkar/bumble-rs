@@ -19,6 +19,7 @@ members = [
     "bumble-avc",
     "bumble-avctp",
     "bumble-avrcp",
+    "bumble-hid",
 ]
 resolver = "2"
 

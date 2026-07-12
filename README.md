@@ -61,7 +61,8 @@ crate whose behavior is verified against the upstream Python.
 | 44. Complete AVRCP typed response and browseable-item catalog | `bumble-avrcp` | ✅ 23/23 Python-oracle vectors green |
 | 45. AVRCP controller/target runtime over live AVCTP/L2CAP | `bumble-avrcp` | ✅ command, notification, pass-through green |
 | 46. AVRCP controller/target SDP records and discovery | `bumble-avrcp` | ✅ SDP client/server green |
-| 47+. HID and remaining modules… | — | planned |
+| 47. HIDP host/device protocol and paired Classic L2CAP channels | `bumble-hid` | ✅ control + interrupt green |
+| 48+. Remaining modules… | — | planned |
 
 The LE lifecycle is now complete end-to-end through library APIs: **connect →
 discover → read/write → notify → disconnect** between two virtual devices — and
@@ -150,7 +151,7 @@ size, to convey remaining surface.
 | `sdp.py` (1.4k) | `bumble-sdp` | 🟡 | **Codec + client/server runtime + L2CAP binding**: all `DataElement` encodings, `ServiceAttribute`, and seven `SdpPdu` messages are oracle-pinned. Slice 20 adds `service::{SdpServer, SdpClient}` with matching, selection, and continuation; slice 22 adds `l2cap::{SdpL2capServer, L2capSdpTransport}`, including fallible transport propagation and continuation over negotiated Classic channels. Deferred: async/event convenience APIs. |
 | `at.py` (0.1k) + HFP AT models | `bumble-at` | ✅ | Parameter tokenizer/parser ported 1:1, nested values, HFP `AtCommand`/`AtResponse` forms, and incremental command (`\r`) / response (`\r\n`) stream framing. |
 | `hfp.py` (2.1k) | `bumble-hfp` | 🟡 | Normative HF/AG models and paired SLC state machines, serialized post-SLC command completion, call control/current-call listing, HF/AG indicators, ring/volume/typed caller-ID/typed voice events, codec request/selection, CMEE/CCWA/BIA/CLIP controls, HF/AG SDP record generation/discovery, and all eight upstream HFP 1.8 SCO/eSCO parameter presets. Control flows run end-to-end over RFCOMM/L2CAP and records through SDP client/server; negotiated CVSD/mSBC codecs establish and route audio through the host/controller link. The core synchronous protocol surface covers the upstream behavior families; deferred: asyncio/event-emitter convenience and actual CVSD/mSBC media encoding. |
-| `hid.py` (0.6k) | — | ⬜ | Human Interface Device. |
+| `hid.py` (0.6k) | `bumble-hid` | ✅ | Complete HIDP message codec (handshake/control/get+set report/get+set protocol/data), open protocol identifiers, exact little-endian GET_REPORT buffer sizing, host/device dispatch, callback-to-handshake mapping, suspend/unplug events, role-correct input/output reports, MTU enforcement, and paired control (`0x0011`) + interrupt (`0x0013`) transports over live Classic L2CAP. |
 | `avdtp.py` (2.4k) | `bumble-avdtp` | 🟡 | Slice 29 ports all 38 upstream signaling command/accept/reject forms, endpoint descriptors, generic and media-codec capability TLVs, open protocol enums, exact payload encoding/decoding, unknown-signal preservation, and safe single/fragmented PDU assembly. Slice 30 adds local endpoint registration, command dispatch, atomic multi-SEP validation, the configured/open/streaming/idle lifecycle, event capture, transaction labels, and a live Classic L2CAP binding. Deferred: initiator-side high-level stream proxy, RTP media channel/pump, listener convenience, and SDP discovery. |
 | `a2dp.py` (1.0k) | `bumble-a2dp` | ✅ | Open codec identifiers and exact SBC, MPEG-2/4 AAC, vendor-specific, and Opus capability models; upstream byte vectors; SBC/ADTS AAC/Ogg Opus parsers and RTP packet sources; live Classic L2CAP media transport; source/sink SDP records; and a high-level initiator that discovers SEPs, verifies media transport + codec compatibility, and drives configure/open/start/suspend/close over AVDTP. Async generators/listeners are represented by synchronous collections and a caller-supplied drive callback. |
 | `rtp.py` (0.1k) | `bumble-rtp` | ✅ | Slice 32 ports RTP v2 media packet parsing/serialization with marker/payload type, wrapping sequence/timestamp fields, SSRC and correctly spaced CSRC entries. It additionally implements standard header extensions and padding, validates bit fields/lengths, and returns errors for truncated input instead of upstream's unchecked indexing. |
@@ -1067,6 +1068,26 @@ AVRCP service advertisement and discovery now close the profile:
 This completes upstream `avrcp.py` in the synchronous Rust architecture. Work
 now moves to HID and the remaining unported modules.
 
+## Slice 47 — what's here
+
+Upstream `hid.py` is now complete in `bumble-hid`:
+
+- `Message` parses and serializes handshake, control, get/set report, get/set
+  protocol, and data transactions. Unknown message types are lossless, while
+  known fixed-size forms reject truncation and trailing bytes.
+- The exact wire details are pinned: report-type bits, GET_REPORT's buffer flag
+  and little-endian size, protocol-mode bit, all handshake results, and suspend,
+  exit-suspend, and virtual-cable-unplug control values.
+- `DeviceRuntime` dispatches report/protocol callbacks and maps every upstream
+  return status to the proper handshake. Successful GET_REPORT data includes
+  the report ID and observes upstream's strict peer-MTU check.
+- `HostRuntime` exposes the host commands and parses handshake/control/interrupt
+  results. `L2capTransport` binds the paired control PSM `0x0011` and interrupt
+  PSM `0x0013`, validates role/MTU/state, and carries live two-party traffic.
+
+The port now advances through the remaining partial core layers and unstarted
+profile families rather than stopping at the Classic media stack.
+
 ## Acceptance
 
 The port's contract is the upstream Python test suite, ported 1:1:
@@ -1201,6 +1222,11 @@ bumble-rs/
 │   ├── tests/responses.rs     # 23 Python-oracle response vectors
 │   ├── tests/runtime.rs       # live AVCTP/L2CAP + notifications/pass-through
 │   └── tests/sdp.rs           # role records + SDP client/server discovery
+├── bumble-hid/                # slice-47 Human Interface Device Profile
+│   ├── src/lib.rs             # HIDP codec + host/device callback dispatch
+│   ├── src/l2cap.rs           # paired control/interrupt Classic transport
+│   ├── tests/protocol.rs      # exact messages, callbacks, malformed inputs
+│   └── tests/l2cap.rs         # live host/device report flows
 └── docs/superpowers/          # design specs + implementation plans
 ```
 
