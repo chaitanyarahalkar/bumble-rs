@@ -46,7 +46,8 @@ crate whose behavior is verified against the upstream Python.
 | 29. AVDTP signaling catalog, capability codec, and safe PDU fragmentation | `bumble-avdtp` | ✅ 38 messages payload-pinned |
 | 30. AVDTP endpoint/session state machine and live Classic L2CAP binding | `bumble-avdtp` | ✅ full lifecycle, fragmented config green |
 | 31. A2DP SBC, AAC, and vendor Opus codec capability models | `bumble-a2dp` | ✅ upstream vectors + AVDTP integration green |
-| 32+. A2DP RTP/media, AVRCP, HID… | — | planned |
+| 32. RTP packet codec with CSRC, extension, padding, and malformed-input safety | `bumble-rtp` | ✅ exact round trips green |
+| 33+. A2DP media parsers, AVRCP, HID… | — | planned |
 
 The LE lifecycle is now complete end-to-end through library APIs: **connect →
 discover → read/write → notify → disconnect** between two virtual devices — and
@@ -138,7 +139,8 @@ size, to convey remaining surface.
 | `hid.py` (0.6k) | — | ⬜ | Human Interface Device. |
 | `avdtp.py` (2.4k) | `bumble-avdtp` | 🟡 | Slice 29 ports all 38 upstream signaling command/accept/reject forms, endpoint descriptors, generic and media-codec capability TLVs, open protocol enums, exact payload encoding/decoding, unknown-signal preservation, and safe single/fragmented PDU assembly. Slice 30 adds local endpoint registration, command dispatch, atomic multi-SEP validation, the configured/open/streaming/idle lifecycle, event capture, transaction labels, and a live Classic L2CAP binding. Deferred: initiator-side high-level stream proxy, RTP media channel/pump, listener convenience, and SDP discovery. |
 | `a2dp.py` (1.0k) | `bumble-a2dp` | 🟡 | Slice 31 ports open codec identifiers and exact SBC, MPEG-2/4 AAC, vendor-specific, and Opus codec information models. The upstream `3fff0235`, `f0018c83e800`, and `92` vectors round-trip, vendor headers use their specified little-endian layout, malformed fields are rejected, and typed codec information converts directly to AVDTP media-codec capabilities. Deferred: SBC/AAC/Opus frame parsers and packet sources, codec selection policy, SDP records, and RTP media flow. |
-| `avrcp` (2.9k), `avc` (0.5k), `avctp` (0.3k), `rtp` (0.1k), `codecs` (0.5k) | — | ⬜ | Remote control and common audio/media support above AVDTP/A2DP. |
+| `rtp.py` (0.1k) | `bumble-rtp` | ✅ | Slice 32 ports RTP v2 media packet parsing/serialization with marker/payload type, wrapping sequence/timestamp fields, SSRC and correctly spaced CSRC entries. It additionally implements standard header extensions and padding, validates bit fields/lengths, and returns errors for truncated input instead of upstream's unchecked indexing. |
+| `avrcp` (2.9k), `avc` (0.5k), `avctp` (0.3k), `codecs` (0.5k) | — | ⬜ | Remote control and remaining common audio/media support above AVDTP/A2DP. |
 
 ### Profiles & apps
 | Upstream | Rust crate | Status | Notes |
@@ -767,6 +769,22 @@ A2DP can now express and negotiate its codec-specific capabilities:
 The next slice ports RTP framing and the SBC/AAC/Opus frame parser/packet-source
 boundary used by the AVDTP media channel.
 
+## Slice 32 — what's here
+
+[`bumble-rtp`](bumble-rtp/) supplies the shared A/V media packet boundary:
+
+- RTP v2 fixed headers, marker/payload type, sequence number, timestamp, SSRC,
+  and up to 15 CSRC identifiers serialize and parse in network byte order.
+- Header extensions preserve their 16-bit profile and word-counted data.
+  Standard trailing padding is validated, removed from the exposed payload,
+  and restored byte-for-byte on serialization.
+- Tests pin a Bumble-style A2DP packet, a packet containing two CSRCs plus an
+  extension and padding, and truncated CSRC/extension inputs. This also fixes
+  the upstream parser's CSRC-offset typo by advancing four bytes per entry.
+
+The next slice uses this packet type for the SBC/AAC/Opus A2DP parsers and
+packet sources.
+
 ## Acceptance
 
 The port's contract is the upstream Python test suite, ported 1:1:
@@ -872,6 +890,9 @@ bumble-rs/
 ├── bumble-a2dp/               # slice-31 Advanced Audio Distribution Profile
 │   ├── src/lib.rs             # SBC/AAC/vendor Opus capability models
 │   └── tests/codecs.rs        # upstream exact vectors + invalid inputs
+├── bumble-rtp/                # slice-32 RTP media packet codec
+│   ├── src/lib.rs             # header, CSRC, extension, payload, padding
+│   └── tests/packets.rs       # exact, full-featured, and malformed packets
 └── docs/superpowers/          # design specs + implementation plans
 ```
 

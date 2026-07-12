@@ -116,6 +116,9 @@ crypto is pinned to Bluetooth-spec / RFC 4493 vectors.
   Opus codec capability models, pins the upstream byte vectors, validates
   malformed/range inputs, and converts typed codec information into AVDTP
   media-codec capabilities.
+- **`bumble-rtp`** — slice 32 adds safe RTP media packet parsing/serialization,
+  including CSRC lists, header extensions, padding, exact byte round trips, and
+  explicit errors for malformed remote input.
 
 ### Known limitations
 
