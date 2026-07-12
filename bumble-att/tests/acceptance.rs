@@ -162,3 +162,83 @@ fn test_op_code_bits() {
     }
     .is_command());
 }
+
+// --- GATT-client PDUs (slice 18) --------------------------------------------
+
+#[test]
+fn test_find_information() {
+    check(
+        AttPdu::FindInformationRequest {
+            starting_handle: 0x0001,
+            ending_handle: 0xffff,
+        },
+        "040100ffff",
+    );
+    // format 1 (16-bit UUIDs): handle 0x0003 → 0x2902, handle 0x0005 → 0x2903.
+    check(
+        AttPdu::FindInformationResponse {
+            format: 1,
+            information_data: unhex("0300022905000329"),
+        },
+        "05010300022905000329",
+    );
+}
+
+#[test]
+fn test_find_by_type_value() {
+    check(
+        AttPdu::FindByTypeValueRequest {
+            starting_handle: 0x0001,
+            ending_handle: 0xffff,
+            attribute_type: Uuid::from_16_bits(0x2800),
+            attribute_value: unhex("0018"),
+        },
+        "060100ffff00280018",
+    );
+    check(
+        AttPdu::FindByTypeValueResponse {
+            handles_information_list: unhex("01000500"),
+        },
+        "0701000500",
+    );
+}
+
+#[test]
+fn test_read_blob() {
+    check(
+        AttPdu::ReadBlobRequest {
+            attribute_handle: 0x0003,
+            value_offset: 0x0016,
+        },
+        "0c03001600",
+    );
+    check(
+        AttPdu::ReadBlobResponse {
+            part_attribute_value: b"world".to_vec(),
+        },
+        "0d776f726c64",
+    );
+}
+
+#[test]
+fn test_write_command() {
+    check(
+        AttPdu::WriteCommand {
+            attribute_handle: 0x0003,
+            attribute_value: b"hi".to_vec(),
+        },
+        "5203006869",
+    );
+}
+
+#[test]
+fn test_handle_value_indication_confirmation() {
+    check(
+        AttPdu::HandleValueIndication {
+            attribute_handle: 0x0003,
+            attribute_value: b"hello".to_vec(),
+        },
+        "1d030068656c6c6f",
+    );
+    check(AttPdu::HandleValueConfirmation, "1e");
+}

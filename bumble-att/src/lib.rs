@@ -8,12 +8,15 @@
 //! ## Scope
 //!
 //! Implemented: Error_Response, Exchange_MTU_Request/Response, Read_Request/
-//! Response, Read_By_Type_Request/Response, Read_By_Group_Type_Request/Response,
-//! Write_Request/Response, and Handle_Value_Notification, with an
-//! [`AttPdu::Generic`] fallback.
+//! Response, Read_Blob_Request/Response, Read_By_Type_Request/Response,
+//! Read_By_Group_Type_Request/Response, Find_Information_Request/Response,
+//! Find_By_Type_Value_Request/Response, Write_Request/Response, Write_Command,
+//! Handle_Value_Notification, and Handle_Value_Indication/Confirmation, with an
+//! [`AttPdu::Generic`] fallback. This is the set the GATT client (slice 18)
+//! drives for discovery, long reads, writes, and subscriptions.
 //!
-//! Deferred: the remaining ATT PDUs (Find_Information, prepared/queued writes,
-//! signed writes, indications).
+//! Deferred: prepared/queued writes (Prepare/Execute), Read_Multiple, and
+//! signed writes.
 
 use bumble::Uuid;
 use core::fmt;
@@ -23,15 +26,24 @@ pub mod codes {
     pub const ATT_ERROR_RESPONSE: u8 = 0x01;
     pub const ATT_EXCHANGE_MTU_REQUEST: u8 = 0x02;
     pub const ATT_EXCHANGE_MTU_RESPONSE: u8 = 0x03;
+    pub const ATT_FIND_INFORMATION_REQUEST: u8 = 0x04;
+    pub const ATT_FIND_INFORMATION_RESPONSE: u8 = 0x05;
+    pub const ATT_FIND_BY_TYPE_VALUE_REQUEST: u8 = 0x06;
+    pub const ATT_FIND_BY_TYPE_VALUE_RESPONSE: u8 = 0x07;
     pub const ATT_READ_BY_TYPE_REQUEST: u8 = 0x08;
     pub const ATT_READ_BY_TYPE_RESPONSE: u8 = 0x09;
     pub const ATT_READ_REQUEST: u8 = 0x0A;
     pub const ATT_READ_RESPONSE: u8 = 0x0B;
+    pub const ATT_READ_BLOB_REQUEST: u8 = 0x0C;
+    pub const ATT_READ_BLOB_RESPONSE: u8 = 0x0D;
     pub const ATT_READ_BY_GROUP_TYPE_REQUEST: u8 = 0x10;
     pub const ATT_READ_BY_GROUP_TYPE_RESPONSE: u8 = 0x11;
     pub const ATT_WRITE_REQUEST: u8 = 0x12;
     pub const ATT_WRITE_RESPONSE: u8 = 0x13;
+    pub const ATT_WRITE_COMMAND: u8 = 0x52;
     pub const ATT_HANDLE_VALUE_NOTIFICATION: u8 = 0x1B;
+    pub const ATT_HANDLE_VALUE_INDICATION: u8 = 0x1D;
+    pub const ATT_HANDLE_VALUE_CONFIRMATION: u8 = 0x1E;
 }
 
 /// A common ATT error code.
@@ -70,11 +82,41 @@ pub enum AttPdu {
     ExchangeMtuResponse {
         server_rx_mtu: u16,
     },
+    FindInformationRequest {
+        starting_handle: u16,
+        ending_handle: u16,
+    },
+    /// `format` is 1 for 16-bit UUIDs, 2 for 128-bit. `information_data` is a
+    /// sequence of `[handle(2), uuid(2 or 16)]` entries.
+    FindInformationResponse {
+        format: u8,
+        information_data: Vec<u8>,
+    },
+    /// `attribute_type` is always a 16-bit UUID on the wire (Vol 3, Part F -
+    /// 3.4.3.3).
+    FindByTypeValueRequest {
+        starting_handle: u16,
+        ending_handle: u16,
+        attribute_type: Uuid,
+        attribute_value: Vec<u8>,
+    },
+    /// `handles_information_list` is a sequence of `[found_handle(2),
+    /// group_end_handle(2)]` entries.
+    FindByTypeValueResponse {
+        handles_information_list: Vec<u8>,
+    },
     ReadRequest {
         attribute_handle: u16,
     },
     ReadResponse {
         attribute_value: Vec<u8>,
+    },
+    ReadBlobRequest {
+        attribute_handle: u16,
+        value_offset: u16,
+    },
+    ReadBlobResponse {
+        part_attribute_value: Vec<u8>,
     },
     ReadByTypeRequest {
         starting_handle: u16,
@@ -103,10 +145,20 @@ pub enum AttPdu {
         attribute_value: Vec<u8>,
     },
     WriteResponse,
+    /// Write without a response (op code has the command bit set).
+    WriteCommand {
+        attribute_handle: u16,
+        attribute_value: Vec<u8>,
+    },
     HandleValueNotification {
         attribute_handle: u16,
         attribute_value: Vec<u8>,
     },
+    HandleValueIndication {
+        attribute_handle: u16,
+        attribute_value: Vec<u8>,
+    },
+    HandleValueConfirmation,
     /// Any op code not decoded by this slice.
     Generic {
         op_code: u8,
@@ -132,15 +184,24 @@ impl AttPdu {
             AttPdu::ErrorResponse { .. } => codes::ATT_ERROR_RESPONSE,
             AttPdu::ExchangeMtuRequest { .. } => codes::ATT_EXCHANGE_MTU_REQUEST,
             AttPdu::ExchangeMtuResponse { .. } => codes::ATT_EXCHANGE_MTU_RESPONSE,
+            AttPdu::FindInformationRequest { .. } => codes::ATT_FIND_INFORMATION_REQUEST,
+            AttPdu::FindInformationResponse { .. } => codes::ATT_FIND_INFORMATION_RESPONSE,
+            AttPdu::FindByTypeValueRequest { .. } => codes::ATT_FIND_BY_TYPE_VALUE_REQUEST,
+            AttPdu::FindByTypeValueResponse { .. } => codes::ATT_FIND_BY_TYPE_VALUE_RESPONSE,
             AttPdu::ReadRequest { .. } => codes::ATT_READ_REQUEST,
             AttPdu::ReadResponse { .. } => codes::ATT_READ_RESPONSE,
+            AttPdu::ReadBlobRequest { .. } => codes::ATT_READ_BLOB_REQUEST,
+            AttPdu::ReadBlobResponse { .. } => codes::ATT_READ_BLOB_RESPONSE,
             AttPdu::ReadByTypeRequest { .. } => codes::ATT_READ_BY_TYPE_REQUEST,
             AttPdu::ReadByTypeResponse { .. } => codes::ATT_READ_BY_TYPE_RESPONSE,
             AttPdu::ReadByGroupTypeRequest { .. } => codes::ATT_READ_BY_GROUP_TYPE_REQUEST,
             AttPdu::ReadByGroupTypeResponse { .. } => codes::ATT_READ_BY_GROUP_TYPE_RESPONSE,
             AttPdu::WriteRequest { .. } => codes::ATT_WRITE_REQUEST,
             AttPdu::WriteResponse => codes::ATT_WRITE_RESPONSE,
+            AttPdu::WriteCommand { .. } => codes::ATT_WRITE_COMMAND,
             AttPdu::HandleValueNotification { .. } => codes::ATT_HANDLE_VALUE_NOTIFICATION,
+            AttPdu::HandleValueIndication { .. } => codes::ATT_HANDLE_VALUE_INDICATION,
+            AttPdu::HandleValueConfirmation => codes::ATT_HANDLE_VALUE_CONFIRMATION,
             AttPdu::Generic { op_code, .. } => *op_code,
         }
     }
@@ -160,8 +221,46 @@ impl AttPdu {
             }
             AttPdu::ExchangeMtuRequest { client_rx_mtu } => push_u16(&mut p, *client_rx_mtu),
             AttPdu::ExchangeMtuResponse { server_rx_mtu } => push_u16(&mut p, *server_rx_mtu),
+            AttPdu::FindInformationRequest {
+                starting_handle,
+                ending_handle,
+            } => {
+                push_u16(&mut p, *starting_handle);
+                push_u16(&mut p, *ending_handle);
+            }
+            AttPdu::FindInformationResponse {
+                format,
+                information_data,
+            } => {
+                p.push(*format);
+                p.extend_from_slice(information_data);
+            }
+            AttPdu::FindByTypeValueRequest {
+                starting_handle,
+                ending_handle,
+                attribute_type,
+                attribute_value,
+            } => {
+                push_u16(&mut p, *starting_handle);
+                push_u16(&mut p, *ending_handle);
+                p.extend_from_slice(&attribute_type.to_bytes(false));
+                p.extend_from_slice(attribute_value);
+            }
+            AttPdu::FindByTypeValueResponse {
+                handles_information_list,
+            } => p.extend_from_slice(handles_information_list),
             AttPdu::ReadRequest { attribute_handle } => push_u16(&mut p, *attribute_handle),
             AttPdu::ReadResponse { attribute_value } => p.extend_from_slice(attribute_value),
+            AttPdu::ReadBlobRequest {
+                attribute_handle,
+                value_offset,
+            } => {
+                push_u16(&mut p, *attribute_handle);
+                push_u16(&mut p, *value_offset);
+            }
+            AttPdu::ReadBlobResponse {
+                part_attribute_value,
+            } => p.extend_from_slice(part_attribute_value),
             AttPdu::ReadByTypeRequest {
                 starting_handle,
                 ending_handle,
@@ -202,6 +301,13 @@ impl AttPdu {
                 p.extend_from_slice(attribute_value);
             }
             AttPdu::WriteResponse => {}
+            AttPdu::WriteCommand {
+                attribute_handle,
+                attribute_value,
+            } => {
+                push_u16(&mut p, *attribute_handle);
+                p.extend_from_slice(attribute_value);
+            }
             AttPdu::HandleValueNotification {
                 attribute_handle,
                 attribute_value,
@@ -209,6 +315,14 @@ impl AttPdu {
                 push_u16(&mut p, *attribute_handle);
                 p.extend_from_slice(attribute_value);
             }
+            AttPdu::HandleValueIndication {
+                attribute_handle,
+                attribute_value,
+            } => {
+                push_u16(&mut p, *attribute_handle);
+                p.extend_from_slice(attribute_value);
+            }
+            AttPdu::HandleValueConfirmation => {}
             AttPdu::Generic { payload, .. } => p.extend_from_slice(payload),
         }
         p
@@ -244,11 +358,43 @@ impl AttPdu {
             codes::ATT_EXCHANGE_MTU_RESPONSE => AttPdu::ExchangeMtuResponse {
                 server_rx_mtu: le16(payload, 0)?,
             },
+            codes::ATT_FIND_INFORMATION_REQUEST => AttPdu::FindInformationRequest {
+                starting_handle: le16(payload, 0)?,
+                ending_handle: le16(payload, 2)?,
+            },
+            codes::ATT_FIND_INFORMATION_RESPONSE => AttPdu::FindInformationResponse {
+                format: *payload.first().ok_or_else(|| {
+                    Error::InvalidPacket("truncated Find_Information_Response".into())
+                })?,
+                information_data: payload.get(1..).unwrap_or(&[]).to_vec(),
+            },
+            codes::ATT_FIND_BY_TYPE_VALUE_REQUEST => {
+                let attribute_type = Uuid::from_bytes(payload.get(4..6).ok_or_else(|| {
+                    Error::InvalidPacket("truncated Find_By_Type_Value_Request".into())
+                })?)
+                .map_err(|e| Error::InvalidPacket(format!("bad type UUID: {e}")))?;
+                AttPdu::FindByTypeValueRequest {
+                    starting_handle: le16(payload, 0)?,
+                    ending_handle: le16(payload, 2)?,
+                    attribute_type,
+                    attribute_value: payload.get(6..).unwrap_or(&[]).to_vec(),
+                }
+            }
+            codes::ATT_FIND_BY_TYPE_VALUE_RESPONSE => AttPdu::FindByTypeValueResponse {
+                handles_information_list: payload.to_vec(),
+            },
             codes::ATT_READ_REQUEST => AttPdu::ReadRequest {
                 attribute_handle: le16(payload, 0)?,
             },
             codes::ATT_READ_RESPONSE => AttPdu::ReadResponse {
                 attribute_value: payload.to_vec(),
+            },
+            codes::ATT_READ_BLOB_REQUEST => AttPdu::ReadBlobRequest {
+                attribute_handle: le16(payload, 0)?,
+                value_offset: le16(payload, 2)?,
+            },
+            codes::ATT_READ_BLOB_RESPONSE => AttPdu::ReadBlobResponse {
+                part_attribute_value: payload.to_vec(),
             },
             codes::ATT_READ_BY_TYPE_REQUEST => {
                 let attribute_type = Uuid::from_bytes(payload.get(4..).unwrap_or(&[]))
@@ -285,10 +431,19 @@ impl AttPdu {
                 attribute_value: payload.get(2..).unwrap_or(&[]).to_vec(),
             },
             codes::ATT_WRITE_RESPONSE => AttPdu::WriteResponse,
+            codes::ATT_WRITE_COMMAND => AttPdu::WriteCommand {
+                attribute_handle: le16(payload, 0)?,
+                attribute_value: payload.get(2..).unwrap_or(&[]).to_vec(),
+            },
             codes::ATT_HANDLE_VALUE_NOTIFICATION => AttPdu::HandleValueNotification {
                 attribute_handle: le16(payload, 0)?,
                 attribute_value: payload.get(2..).unwrap_or(&[]).to_vec(),
             },
+            codes::ATT_HANDLE_VALUE_INDICATION => AttPdu::HandleValueIndication {
+                attribute_handle: le16(payload, 0)?,
+                attribute_value: payload.get(2..).unwrap_or(&[]).to_vec(),
+            },
+            codes::ATT_HANDLE_VALUE_CONFIRMATION => AttPdu::HandleValueConfirmation,
             _ => AttPdu::Generic {
                 op_code,
                 payload: payload.to_vec(),

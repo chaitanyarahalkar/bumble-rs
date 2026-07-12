@@ -20,12 +20,20 @@ crypto is pinned to Bluetooth-spec / RFC 4493 vectors.
   Complete), and ACL/SCO/ISO data packets.
 - **`bumble-l2cap`** — L2CAP frame codec: `L2capPdu` with FCS (CRC-16),
   variable-length PSM, and signaling `ControlFrame`s.
-- **`bumble-att`** — ATT protocol PDU codec, including the discovery
-  request/response PDUs.
+- **`bumble-att`** — ATT protocol PDU codec: discovery (Read_By_Type/Group_Type,
+  Find_Information, Find_By_Type_Value), reads (Read, Read_Blob), writes
+  (Write_Request, Write_Command), and notifications/indications with
+  confirmation — all oracle-pinned.
 - **`bumble-crypto`** — SMP cryptographic toolbox: `e`, AES-CMAC, `c1`, `s1`,
   `f4`/`f5`/`f6`, `g2`, `h6`/`h7`, `ah`.
 - **`bumble-gatt`** — a minimal ATT attribute server and a `GattServer` with a
-  service/characteristic model and primary discovery.
+  service/characteristic model, primary discovery, Find_Information /
+  Find_By_Type_Value discovery, a CCCD descriptor per notify/indicate
+  characteristic, MTU-sized reads with Read_Blob, and server-initiated
+  notify/indicate. Plus (slice 18) a synchronous `GattClient` — service /
+  characteristic / descriptor discovery, reads (with long-read), writes (with
+  and without response), and notify/indicate subscriptions — verified by a
+  two-party client↔server integration test.
 - **`bumble-smp`** — SMP PDU codec and LE Legacy pairing (`c1`/`s1`) helpers.
 - **`bumble-sdp`** — Service Discovery Protocol codec (the first Classic/BR-EDR
   piece): the recursive `DataElement` type-length-value format, the
@@ -48,7 +56,9 @@ crypto is pinned to Bluetooth-spec / RFC 4493 vectors.
 
 - LE Secure Connections pairing (ECDH + `f4`/`f5`/`f6`/`g2` handshake) is not
   wired, though the crypto primitives exist and are vector-verified.
-- No GATT descriptors/CCCD subscriptions or L2CAP fragmentation/reassembly.
+- GATT supports the CCCD descriptor and notify/indicate subscriptions, but not
+  the full descriptor set, included services, or prepared/queued writes; no
+  L2CAP fragmentation/reassembly.
 - Of Classic Bluetooth, only the SDP and RFCOMM codecs exist; A2DP/AVRCP/HFP/HID
   and the async runtimes — the SDP client/server + service-record database and
   the RFCOMM DLC/multiplexer credit-flow state machine — are not ported.

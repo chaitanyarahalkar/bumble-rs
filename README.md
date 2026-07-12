@@ -20,7 +20,7 @@ crate whose behavior is verified against the upstream Python.
 | 2. HCI packet codec (framing + **full** command/event catalog + return params) | `bumble-hci` | ✅ 320/320 tests green |
 | 3+7. Software controller + virtual link (advertising + LE connections + read/PHY/data-length commands) | `bumble-controller` | ✅ 17/17 tests green |
 | 4. L2CAP frame codec (PDU + signaling frames + FCS) | `bumble-l2cap` | ✅ 8/8 tests green |
-| 5. ATT protocol PDU codec | `bumble-att` | ✅ 8/8 tests green |
+| 5. ATT protocol PDU codec (incl. Find_Information, Read_Blob, indications) | `bumble-att` | ✅ 16/16 tests green |
 | 6. SMP cryptographic toolbox | `bumble-crypto` | ✅ 10/10 vectors green |
 | 7. LE connection establishment (in the controller) | `bumble-controller` | ✅ (see slice 3+7) |
 | 8. ACL data path (ATT-over-L2CAP-over-ACL, cross-layer) | `bumble-controller` | ✅ 8/8 controller tests |
@@ -32,7 +32,8 @@ crate whose behavior is verified against the upstream Python.
 | 14. SMP PDU codec + LE Legacy pairing (wires in `bumble-crypto`) | `bumble-smp` | ✅ 2/2 tests green |
 | 16. SDP codec (data elements + PDUs) — first Classic (BR/EDR) piece | `bumble-sdp` | ✅ 23/23 tests green |
 | 17. RFCOMM frame + MCC codec (serial-cable emulation over L2CAP) | `bumble-rfcomm` | ✅ 14/14 tests green |
-| 18+. LE Secure Connections pairing, GATT descriptors, more classic (A2DP/AVRCP/HFP…) | — | planned |
+| 18. GATT client (discovery, read/long-read, write, subscribe) | `bumble-gatt` | ✅ client tests green |
+| 19+. LE Secure Connections pairing, more classic (A2DP/AVRCP/HFP…), async runtimes | — | planned |
 
 The LE lifecycle is now complete end-to-end through library APIs: **connect →
 discover → read/write → notify → disconnect** between two virtual devices — and
@@ -98,9 +99,9 @@ size, to convey remaining surface.
 ### ATT / GATT
 | Upstream (LOC) | Rust crate | Status | Notes |
 |---|---|---|---|
-| `att.py` (1.1k) | `bumble-att` | 🟡 | Representative PDUs incl. discovery. Deferred: Find_Information, prepared/queued & signed writes, indications. |
-| `gatt.py` (0.6k), `gatt_server.py` (1.2k) | `bumble-gatt` | 🟡 | Attribute DB, service/characteristic model, primary discovery, read/write/notify. Deferred: descriptors/CCCD subscriptions, included services. |
-| `gatt_client.py` (1.2k), `gatt_adapters.py` (0.4k) | — | ⬜ | No client abstraction; discovery is driven request-by-request in tests. |
+| `att.py` (1.1k) | `bumble-att` | 🟡 | PDUs incl. discovery (Read_By_Type/Group_Type, Find_Information, Find_By_Type_Value), reads (Read/Read_Blob), writes (Request/Command), and notifications/indications + confirmation — all oracle-pinned. Deferred: prepared/queued (Prepare/Execute), Read_Multiple, and signed writes. |
+| `gatt.py` (0.6k), `gatt_server.py` (1.2k) | `bumble-gatt` | 🟡 | Attribute DB, service/characteristic model, primary discovery, read/write/notify, plus Find_Information/Find_By_Type_Value discovery, a CCCD descriptor per notify/indicate characteristic, MTU-sized reads with Read_Blob, and server-initiated notify/indicate. Deferred: included services, prepared writes. |
+| `gatt_client.py` (1.2k), `gatt_adapters.py` (0.4k) | `bumble-gatt` | 🟡 | **`GattClient` (slice 18)**: service / characteristic / descriptor discovery, reads (with long-read via Read_Blob), writes (with and without response), and notify/indicate subscriptions (CCCD write + notification/indication handling), over an `AttTransport`. Verified by a two-party client↔server integration test. Deferred (matching the synchronous port): the async bearer, `gatt_adapters` typed-value proxies, and event listeners. |
 
 ### Security (SMP + crypto)
 | Upstream (LOC) | Rust crate | Status | Notes |
@@ -132,13 +133,14 @@ size, to convey remaining surface.
 ### Roughly where that leaves things
 
 Fully or substantially covered for the **LE core data + security path**: core
-types, HCI framing, L2CAP/ATT/GATT/SMP codecs, the SMP crypto toolbox, and a
-controller/link/host that runs the LE lifecycle end-to-end. Classic Bluetooth
-has its **first two foundation pieces** — the SDP codec (`bumble-sdp`), which
-the classic profiles build service records on, and the RFCOMM frame codec
-(`bumble-rfcomm`), the serial-cable transport those profiles run over.
-Everything else — the full device/host/GATT-client abstractions, LE Secure
-Connections, real transports, and the **rest of Classic Bluetooth
+types, HCI framing, L2CAP/ATT/GATT/SMP codecs, the SMP crypto toolbox, both
+sides of GATT (server **and** a client that discovers, reads, writes, and
+subscribes), and a controller/link/host that runs the LE lifecycle end-to-end.
+Classic Bluetooth has its **first two foundation pieces** — the SDP codec
+(`bumble-sdp`), which the classic profiles build service records on, and the
+RFCOMM frame codec (`bumble-rfcomm`), the serial-cable transport those profiles
+run over. Everything else — the full high-level device/host orchestration, LE
+Secure Connections, real transports, and the **rest of Classic Bluetooth
 (A2DP/AVRCP/HFP/HID/…) and the profiles** — is still the large majority of the
 ~82k upstream lines and remains to do.
 
@@ -414,6 +416,35 @@ a single-nibble error in the hand-transcribed 256-byte table fails locally.
 Deferred, matching the codec-first approach: the asyncio `DLC`, `Multiplexer`,
 `Client`/`Server` credit-flow state machine and the SDP-record helpers.
 
+## Slice 18 — what's here
+
+The **GATT client** in [`bumble-gatt`](bumble-gatt/) — the read/write/subscribe
+counterpart to the server built in slices 9–12. `GattClient` is a synchronous
+port of the discovery and access logic in upstream `gatt_client.py`:
+
+- **Discovery** — all primary services (Read_By_Group_Type), service-by-UUID
+  (Find_By_Type_Value), a service's characteristics (Read_By_Type, computing
+  each characteristic's handle range the way upstream does), and a
+  characteristic's descriptors (Find_Information) — each with upstream's
+  iterate-until-`ATTRIBUTE_NOT_FOUND` termination.
+- **Read** — `read_value`, including the long-read fallback that continues with
+  Read_Blob when a value fills the MTU.
+- **Write** — `write_value` with response (Write_Request) or without
+  (Write_Command).
+- **Subscribe** — writes the CCCD (notification or indication bits) and handles
+  incoming notifications (cache) and indications (cache + return the required
+  Handle_Value_Confirmation).
+
+The client emits ATT PDUs through an `AttTransport`; a blanket impl makes any
+server usable as a transport, so the crate's
+[`tests/client.rs`](bumble-gatt/tests/client.rs) runs a real client against a
+real `GattServer` end-to-end — discover → read (short and long) → write (with
+and without response) → subscribe → notify/indicate. The nine ATT PDUs the
+client needs (Find_Information, Find_By_Type_Value, Read_Blob, Write_Command,
+Handle_Value_Indication/Confirmation) were added to `bumble-att` and
+oracle-pinned. Deferred, matching the synchronous port: the async bearer, the
+`gatt_adapters` typed-value proxies, and event listeners.
+
 ## Acceptance
 
 The port's contract is the upstream Python test suite, ported 1:1:
@@ -467,9 +498,11 @@ bumble-rs/
 ├── bumble-crypto/             # slice-6 SMP crypto toolbox crate
 │   ├── src/lib.rs
 │   └── tests/vectors.rs       # ported smp_test.py spec/RFC vectors
-├── bumble-gatt/               # slice-9 minimal GATT/ATT server crate
-│   ├── src/lib.rs
-│   └── tests/end_to_end.rs    # attribute write/read across the full stack
+├── bumble-gatt/               # slice-9 GATT/ATT server + slice-18 GATT client
+│   ├── src/lib.rs             # AttServer, GattServer
+│   ├── src/client.rs         # GattClient (slice 18)
+│   ├── tests/end_to_end.rs   # attribute write/read across the full stack
+│   └── tests/client.rs       # two-party client↔server discovery/read/write/subscribe
 ├── bumble-host/               # slice-10 Host/Device glue crate
 │   ├── src/lib.rs
 │   └── tests/gatt_over_host.rs # full LE lifecycle via the Device API

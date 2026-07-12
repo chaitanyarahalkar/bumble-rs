@@ -16,19 +16,46 @@
 //!   services, Read_By_Type for characteristics) as well as reads and writes.
 //!
 //! Both implement [`AttRequestHandler`] so the host layer can drive either.
+//! The [`GattServer`] also answers Find_Information / Find_By_Type_Value
+//! discovery, applies Write_Command, exposes a CCCD descriptor per
+//! notify/indicate characteristic, and can emit server-initiated
+//! notifications/indications ([`GattServer::notify`] / [`GattServer::indicate`]).
 //!
-//! Deferred: Find_Information discovery, descriptor discovery, notifications /
-//! indications, prepared/queued writes, and the GATT client.
+//! **Slice 18** adds the client side: [`GattClient`] drives service /
+//! characteristic / descriptor discovery, reads (with long-read via Read_Blob),
+//! writes (with and without response), and subscriptions (CCCD write plus
+//! notification/indication handling) over an [`AttTransport`]. A blanket impl
+//! makes any [`AttRequestHandler`] usable as a transport, so a client and server
+//! talk directly in the crate's `client` integration test.
+//!
+//! Deferred: prepared/queued writes (Prepare/Execute), Read_Multiple, signed
+//! writes, and the full async bearer.
 
 use std::collections::BTreeMap;
 
 use bumble::Uuid;
 use bumble_att::{codes, AttPdu};
 
+mod client;
+pub use client::{
+    AttTransport, CharacteristicProxy, DescriptorProxy, GattClient, GattError, ServiceProxy,
+};
+
 /// GATT Primary Service declaration attribute type.
 pub const GATT_PRIMARY_SERVICE_UUID: u16 = 0x2800;
 /// GATT Characteristic declaration attribute type.
 pub const GATT_CHARACTERISTIC_UUID: u16 = 0x2803;
+/// GATT Client Characteristic Configuration descriptor (CCCD) attribute type.
+pub const GATT_CLIENT_CHARACTERISTIC_CONFIGURATION_UUID: u16 = 0x2902;
+
+/// Characteristic property bits (Vol 3, Part G - 3.3.1.1).
+pub mod properties {
+    pub const READ: u8 = 0x02;
+    pub const WRITE_WITHOUT_RESPONSE: u8 = 0x04;
+    pub const WRITE: u8 = 0x08;
+    pub const NOTIFY: u8 = 0x10;
+    pub const INDICATE: u8 = 0x20;
+}
 
 /// Something that answers ATT requests. Lets the host layer hold any server
 /// (a bare [`AttServer`] or a full [`GattServer`]) behind one interface.
@@ -52,6 +79,8 @@ impl AttRequestHandler for GattServer {
 pub const ATT_ATTRIBUTE_NOT_FOUND_ERROR: u8 = 0x0A;
 /// ATT error: the request op code is not supported.
 pub const ATT_REQUEST_NOT_SUPPORTED_ERROR: u8 = 0x06;
+/// ATT error: the Read Blob offset is past the end of the attribute value.
+pub const ATT_INVALID_OFFSET_ERROR: u8 = 0x07;
 
 /// The default ATT MTU (Vol 3, Part F - 3.2.8).
 pub const ATT_DEFAULT_MTU: u16 = 23;
@@ -132,6 +161,11 @@ fn error(request_opcode_in_error: u8, attribute_handle_in_error: u16, error_code
     }
 }
 
+/// The first `max` bytes of `value` (all of it when shorter).
+fn truncate(value: &[u8], max: usize) -> Vec<u8> {
+    value[..value.len().min(max)].to_vec()
+}
+
 /// A GATT characteristic to expose on a [`GattServer`].
 #[derive(Clone, Debug)]
 pub struct Characteristic {
@@ -165,7 +199,10 @@ struct Attribute {
 #[derive(Clone, Debug)]
 pub struct GattServer {
     attributes: Vec<Attribute>,
+    /// The MTU this server can receive (returned in Exchange MTU Response).
     mtu: u16,
+    /// The negotiated MTU (min of both peers), used to size read responses.
+    negotiated_mtu: u16,
 }
 
 impl GattServer {
@@ -210,6 +247,21 @@ impl GattServer {
                     end_group_handle: value_handle,
                     value: ch.value,
                 });
+
+                // A notify/indicate characteristic gets a Client Characteristic
+                // Configuration descriptor, initialised to "disabled".
+                if ch.properties & (properties::NOTIFY | properties::INDICATE) != 0 {
+                    let cccd_handle = handle;
+                    handle += 1;
+                    attributes.push(Attribute {
+                        handle: cccd_handle,
+                        type_uuid: Uuid::from_16_bits(
+                            GATT_CLIENT_CHARACTERISTIC_CONFIGURATION_UUID,
+                        ),
+                        end_group_handle: cccd_handle,
+                        value: vec![0x00, 0x00],
+                    });
+                }
             }
 
             attributes[service_index].end_group_handle = handle - 1;
@@ -218,6 +270,7 @@ impl GattServer {
         GattServer {
             attributes,
             mtu: ATT_DEFAULT_MTU,
+            negotiated_mtu: ATT_DEFAULT_MTU,
         }
     }
 
@@ -232,15 +285,45 @@ impl GattServer {
     /// Turn an incoming ATT request into a response.
     pub fn on_request(&mut self, request: &AttPdu) -> AttPdu {
         match request {
-            AttPdu::ExchangeMtuRequest { .. } => AttPdu::ExchangeMtuResponse {
-                server_rx_mtu: self.mtu,
-            },
+            AttPdu::ExchangeMtuRequest { client_rx_mtu } => {
+                self.negotiated_mtu = (*client_rx_mtu).min(self.mtu).max(ATT_DEFAULT_MTU);
+                AttPdu::ExchangeMtuResponse {
+                    server_rx_mtu: self.mtu,
+                }
+            }
             AttPdu::ReadRequest { attribute_handle } => match self.find(*attribute_handle) {
                 Some(a) => AttPdu::ReadResponse {
-                    attribute_value: a.value.clone(),
+                    // A Read Response carries at most MTU-1 bytes; longer
+                    // values are fetched with Read Blob.
+                    attribute_value: truncate(&a.value, (self.negotiated_mtu - 1) as usize),
                 },
                 None => error(
                     codes::ATT_READ_REQUEST,
+                    *attribute_handle,
+                    ATT_ATTRIBUTE_NOT_FOUND_ERROR,
+                ),
+            },
+            AttPdu::ReadBlobRequest {
+                attribute_handle,
+                value_offset,
+            } => match self.find(*attribute_handle) {
+                Some(a) => {
+                    let offset = *value_offset as usize;
+                    if offset > a.value.len() {
+                        error(
+                            codes::ATT_READ_BLOB_REQUEST,
+                            *attribute_handle,
+                            ATT_INVALID_OFFSET_ERROR,
+                        )
+                    } else {
+                        let end = (offset + (self.negotiated_mtu - 1) as usize).min(a.value.len());
+                        AttPdu::ReadBlobResponse {
+                            part_attribute_value: a.value[offset..end].to_vec(),
+                        }
+                    }
+                }
+                None => error(
+                    codes::ATT_READ_BLOB_REQUEST,
                     *attribute_handle,
                     ATT_ATTRIBUTE_NOT_FOUND_ERROR,
                 ),
@@ -269,7 +352,113 @@ impl GattServer {
                 ending_handle,
                 attribute_type,
             } => self.read_by_type(*starting_handle, *ending_handle, attribute_type),
+            AttPdu::FindInformationRequest {
+                starting_handle,
+                ending_handle,
+            } => self.find_information(*starting_handle, *ending_handle),
+            AttPdu::FindByTypeValueRequest {
+                starting_handle,
+                ending_handle,
+                attribute_type,
+                attribute_value,
+            } => self.find_by_type_value(
+                *starting_handle,
+                *ending_handle,
+                attribute_type,
+                attribute_value,
+            ),
+            AttPdu::WriteCommand {
+                attribute_handle,
+                attribute_value,
+            } => {
+                // A command has no response; apply it best-effort.
+                if let Some(a) = self.find_mut(*attribute_handle) {
+                    a.value = attribute_value.clone();
+                }
+                // Callers ignore the returned PDU for commands; surface a no-op.
+                AttPdu::HandleValueConfirmation
+            }
             other => error(other.op_code(), 0, ATT_REQUEST_NOT_SUPPORTED_ERROR),
+        }
+    }
+
+    /// Build a server-initiated Handle Value Notification for `value_handle`.
+    pub fn notify(&self, value_handle: u16, value: Vec<u8>) -> AttPdu {
+        AttPdu::HandleValueNotification {
+            attribute_handle: value_handle,
+            attribute_value: value,
+        }
+    }
+
+    /// Build a server-initiated Handle Value Indication for `value_handle`.
+    pub fn indicate(&self, value_handle: u16, value: Vec<u8>) -> AttPdu {
+        AttPdu::HandleValueIndication {
+            attribute_handle: value_handle,
+            attribute_value: value,
+        }
+    }
+
+    /// Find Information: return the `(handle, type)` pairs in range. `format`
+    /// is 1 when every type is a 16-bit UUID, else 2 (Vol 3, Part F - 3.4.3.1).
+    fn find_information(&self, start: u16, end: u16) -> AttPdu {
+        let matches: Vec<&Attribute> = self
+            .attributes
+            .iter()
+            .filter(|a| a.handle >= start && a.handle <= end)
+            .collect();
+        let Some(first) = matches.first() else {
+            return error(
+                codes::ATT_FIND_INFORMATION_REQUEST,
+                start,
+                ATT_ATTRIBUTE_NOT_FOUND_ERROR,
+            );
+        };
+
+        // A response groups only entries whose UUID width matches the first.
+        let uuid_len = first.type_uuid.to_bytes(false).len();
+        let format = if uuid_len == 2 { 1u8 } else { 2u8 };
+        let mut data = Vec::new();
+        for a in matches
+            .iter()
+            .take_while(|a| a.type_uuid.to_bytes(false).len() == uuid_len)
+        {
+            data.extend_from_slice(&a.handle.to_le_bytes());
+            data.extend_from_slice(&a.type_uuid.to_bytes(false));
+        }
+        AttPdu::FindInformationResponse {
+            format,
+            information_data: data,
+        }
+    }
+
+    /// Find By Type Value: return the `(handle, group_end)` pairs whose
+    /// attribute type and value match (Vol 3, Part F - 3.4.3.3).
+    fn find_by_type_value(
+        &self,
+        start: u16,
+        end: u16,
+        attribute_type: &Uuid,
+        attribute_value: &[u8],
+    ) -> AttPdu {
+        let mut list = Vec::new();
+        for a in self.attributes.iter().filter(|a| {
+            a.handle >= start
+                && a.handle <= end
+                && a.type_uuid == *attribute_type
+                && a.value == attribute_value
+        }) {
+            list.extend_from_slice(&a.handle.to_le_bytes());
+            list.extend_from_slice(&a.end_group_handle.to_le_bytes());
+        }
+        if list.is_empty() {
+            return error(
+                codes::ATT_FIND_BY_TYPE_VALUE_REQUEST,
+                start,
+                ATT_ATTRIBUTE_NOT_FOUND_ERROR,
+            );
+        }
+        AttPdu::FindByTypeValueResponse {
+            handles_information_list: list,
         }
     }
 
