@@ -1,0 +1,15 @@
+[package]
+name = "bumble-avctp"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "Rust port of google/bumble AVCTP transport protocol"
+
+[dependencies]
+bumble-l2cap = { path = "../bumble-l2cap" }

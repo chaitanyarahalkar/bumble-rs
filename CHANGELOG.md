@@ -132,6 +132,9 @@ crypto is pinned to Bluetooth-spec / RFC 4493 vectors.
   command/response frames, extended subunit IDs, 24-bit vendor-dependent
   payloads, panel pass-through keys, exact upstream vectors, and malformed
   input validation.
+- **`bumble-avctp`** — slice 40 adds transaction/PID messages, safe
+  single/fragmented assembly, MTU-aware encoding, live Classic L2CAP delivery,
+  registered PID routing, and automatic IPID responses.
 
 ### Known limitations
 
