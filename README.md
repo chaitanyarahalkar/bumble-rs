@@ -55,7 +55,8 @@ crate whose behavior is verified against the upstream Python.
 | 38. High-level A2DP SEP discovery, codec selection, and stream orchestration | `bumble-a2dp` | ✅ live signaling lifecycle green |
 | 39. AV/C generic, vendor-dependent, and panel pass-through frame codec | `bumble-avc` | ✅ upstream vectors green |
 | 40. AVCTP fragmentation/reassembly and live Classic L2CAP protocol | `bumble-avctp` | ✅ upstream + two-party green |
-| 41+. AVRCP, HID, remaining modules… | — | planned |
+| 41. AVRCP vendor-PDU envelope and independent fragmentation assembler | `bumble-avrcp` | ✅ upstream vectors green |
+| 42+. AVRCP typed catalog/runtime, HID, remaining modules… | — | planned |
 
 The LE lifecycle is now complete end-to-end through library APIs: **connect →
 discover → read/write → notify → disconnect** between two virtual devices — and
@@ -150,7 +151,8 @@ size, to convey remaining surface.
 | `rtp.py` (0.1k) | `bumble-rtp` | ✅ | Slice 32 ports RTP v2 media packet parsing/serialization with marker/payload type, wrapping sequence/timestamp fields, SSRC and correctly spaced CSRC entries. It additionally implements standard header extensions and padding, validates bit fields/lengths, and returns errors for truncated input instead of upstream's unchecked indexing. |
 | `avc.py` (0.5k) | `bumble-avc` | 🟡 | Slice 39 ports open subunit/opcode/command/response/operation identifiers; generic command and response frames; single and double-extended subunit IDs; 24-bit-company vendor-dependent frames; and panel pass-through press/release operations with bounded operation data. Upstream AVRCP vectors are byte-pinned and malformed frames return errors. Deferred: additional typed AV/C opcode subclasses beyond the two used by AVRCP. |
 | `avctp.py` (0.3k) | `bumble-avctp` | 🟡 | Slice 40 ports transaction labels, single/start/continue/end packets, command/response and IPID flags, 16-bit PIDs, safe fragmented-message assembly, MTU-aware outbound fragmentation, and a live Classic L2CAP binding. Registered PIDs receive commands; unknown PIDs automatically produce IPID responses. Deferred: handler callbacks and browsing-channel policy are provided by the higher AVRCP runtime. |
-| `avrcp` (2.9k), `codecs` (0.5k) | — | ⬜ | Remote control and remaining common audio/media support above AV/C and AVCTP. |
+| `avrcp` (2.9k) | `bumble-avrcp` | 🟡 | Slice 41 ports the Bluetooth SIG company envelope, all 25 open PDU identifiers, the `>BBH` vendor-PDU header, safe length validation, independent single/start/continue/end fragmentation and reassembly, and AV/C panel command wrapping. Upstream assembler/reset vectors are pinned. Deferred: the typed command/event/response catalog, controller/target runtime, browsing channel, and SDP. |
+| `codecs` (0.5k) | — | ⬜ | Remaining common audio/media support. |
 
 ### Profiles & apps
 | Upstream | Rust crate | Status | Notes |
@@ -945,6 +947,25 @@ AV/C frames can now cross the AVRCP transport:
 The next slice begins AVRCP's vendor-dependent PDU assembler and typed command,
 event, and response catalog on this transport.
 
+## Slice 41 — what's here
+
+AVRCP's protocol-specific envelope now sits above AV/C and AVCTP:
+
+- `VendorPdu` implements the exact `pdu_id`, packet type, big-endian parameter
+  length, and parameter byte layout, preserving unknown PDU identifiers.
+- `PduAssembler` ports upstream's independent single/start/continue/end state
+  machine, including a new single/start replacing an unfinished PDU and stray
+  or mismatched continuation fragments being discarded safely.
+- Malformed lengths reset assembly and return a typed error rather than relying
+  on unchecked Python indexing. MTU-oriented outbound fragmentation generates
+  the matching packet sequence and round-trips through the assembler.
+- AV/C helpers wrap and extract Bluetooth SIG company `0x001958` vendor data on
+  the panel subunit. The upstream GET_CAPABILITIES command envelope is
+  byte-exact, and AVRCP's AVCTP PID `0x110E` is exposed for the runtime layer.
+
+The next slice ports the complete typed command catalog before adding typed
+responses/events and the controller/target runtime.
+
 ## Acceptance
 
 The port's contract is the upstream Python test suite, ported 1:1:
@@ -1067,6 +1088,8 @@ bumble-rs/
 ├── bumble-avctp/              # slice-40 AV/C transport over Classic L2CAP
 │   ├── src/lib.rs             # messages, fragmentation, L2CAP protocol
 │   └── tests/protocol.rs      # upstream assembler + live PID/IPID flows
+├── bumble-avrcp/              # slice-41 AVRCP vendor-PDU foundation
+│   └── src/lib.rs             # PDU codec/assembler, AV/C envelope, tests
 └── docs/superpowers/          # design specs + implementation plans
 ```
 

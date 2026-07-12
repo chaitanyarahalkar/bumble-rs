@@ -1,0 +1,16 @@
+[package]
+name = "bumble-avrcp"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "Rust port of google/bumble AVRCP remote-control protocol"
+
+[dependencies]
+bumble-avc = { path = "../bumble-avc" }
+bumble-avctp = { path = "../bumble-avctp" }
