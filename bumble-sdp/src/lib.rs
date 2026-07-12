@@ -26,7 +26,8 @@
 //! The request/response runtime that drives this codec lives in [`service`]
 //! (**slice 20**): a synchronous port of upstream's asyncio `Client`/`Server` —
 //! a service-record database, the matching and attribute-selection logic, and
-//! the continuation-state chunking and reassembly on both sides.
+//! the continuation-state chunking and reassembly on both sides. [`l2cap`]
+//! (**slice 22**) binds that runtime to a live Classic L2CAP channel.
 //!
 //! ## Oracle
 //!
@@ -43,6 +44,8 @@
 
 use bumble::Uuid;
 use core::fmt;
+
+pub mod l2cap;
 
 /// SDP PDU identifiers (Vol 3, Part B - 4.2).
 pub mod pdu_id {

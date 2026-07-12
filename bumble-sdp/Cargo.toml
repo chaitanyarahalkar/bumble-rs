@@ -13,3 +13,4 @@ description = "Rust port of google/bumble Service Discovery Protocol (SDP) codec
 
 [dependencies]
 bumble = { path = "../bumble" }
+bumble-l2cap = { path = "../bumble-l2cap" }

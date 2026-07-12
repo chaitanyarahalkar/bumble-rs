@@ -98,17 +98,29 @@ pub trait SdpRequestHandler {
     fn handle_request(&mut self, request: &SdpPdu) -> SdpPdu;
 }
 
+/// A failure below the SDP protocol layer while exchanging a request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TransportError(pub String);
+
+impl core::fmt::Display for TransportError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for TransportError {}
+
 /// The transport an [`SdpClient`] issues requests through. Every
 /// [`SdpRequestHandler`] is one (blanket impl below), so a client can wrap a
 /// server directly.
 pub trait SdpTransport {
     /// Send a request and return the response.
-    fn request(&mut self, request: &SdpPdu) -> SdpPdu;
+    fn request(&mut self, request: &SdpPdu) -> core::result::Result<SdpPdu, TransportError>;
 }
 
 impl<H: SdpRequestHandler> SdpTransport for H {
-    fn request(&mut self, request: &SdpPdu) -> SdpPdu {
-        self.handle_request(request)
+    fn request(&mut self, request: &SdpPdu) -> core::result::Result<SdpPdu, TransportError> {
+        Ok(self.handle_request(request))
     }
 }
 
@@ -500,6 +512,8 @@ pub enum ClientError {
     Unexpected,
     /// A response payload could not be parsed.
     Parse(crate::Error),
+    /// The underlying channel or transport failed.
+    Transport(TransportError),
 }
 
 impl core::fmt::Display for ClientError {
@@ -508,11 +522,18 @@ impl core::fmt::Display for ClientError {
             ClientError::Protocol(code) => write!(f, "SDP error response: {code:#06x}"),
             ClientError::Unexpected => write!(f, "unexpected SDP response PDU"),
             ClientError::Parse(e) => write!(f, "failed to parse SDP response: {e}"),
+            ClientError::Transport(e) => write!(f, "SDP transport failed: {e}"),
         }
     }
 }
 
 impl std::error::Error for ClientError {}
+
+impl From<TransportError> for ClientError {
+    fn from(value: TransportError) -> Self {
+        ClientError::Transport(value)
+    }
+}
 
 /// An SDP client: issues queries through a [`SdpTransport`] and reassembles
 /// answers across continuation state.
@@ -568,7 +589,7 @@ impl<T: SdpTransport> SdpClient<T> {
                 attribute_id_list: ids.clone(),
                 continuation_state: continuation_state.clone(),
             };
-            match self.transport.request(&request) {
+            match self.transport.request(&request)? {
                 SdpPdu::ServiceSearchAttributeResponse {
                     attribute_lists,
                     continuation_state: cs,
@@ -608,7 +629,7 @@ impl<T: SdpTransport> SdpClient<T> {
                 attribute_id_list: ids.clone(),
                 continuation_state: continuation_state.clone(),
             };
-            match self.transport.request(&request) {
+            match self.transport.request(&request)? {
                 SdpPdu::ServiceAttributeResponse {
                     attribute_list,
                     continuation_state: cs,
@@ -641,7 +662,7 @@ impl<T: SdpTransport> SdpClient<T> {
                 maximum_service_record_count: 0xFFFF,
                 continuation_state: continuation_state.clone(),
             };
-            match self.transport.request(&request) {
+            match self.transport.request(&request)? {
                 SdpPdu::ServiceSearchResponse {
                     service_record_handle_list,
                     continuation_state: cs,

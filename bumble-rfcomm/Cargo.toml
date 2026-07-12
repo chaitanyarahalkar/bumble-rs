@@ -10,3 +10,6 @@ homepage.workspace = true
 keywords.workspace = true
 categories.workspace = true
 description = "Rust port of google/bumble RFCOMM frame + MCC codec (slice 17)"
+
+[dependencies]
+bumble-l2cap = { path = "../bumble-l2cap" }

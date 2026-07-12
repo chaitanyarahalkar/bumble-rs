@@ -36,7 +36,8 @@ crate whose behavior is verified against the upstream Python.
 | 19. LE Secure Connections pairing (P-256 ECDH + JustWorks derivation) | `bumble-crypto` / `bumble-smp` | ✅ oracle + two-party green |
 | 20. RFCOMM + SDP session runtimes (Multiplexer/DLC credit flow, SDP client/server) | `bumble-rfcomm` / `bumble-sdp` | ✅ oracle + two-party green |
 | 21. Classic L2CAP channels (PSM/CID allocation, configure/MTU, data, disconnect) | `bumble-l2cap` | ✅ oracle + two-party green |
-| 22+. More classic profiles (A2DP/AVRCP/HFP/HID…) | — | planned |
+| 22. RFCOMM + SDP bindings over live Classic L2CAP channels | `bumble-rfcomm` / `bumble-sdp` | ✅ two-party green |
+| 23+. More classic profiles (A2DP/AVRCP/HFP/HID…) | — | planned |
 
 The LE lifecycle is now complete end-to-end through library APIs: **connect →
 discover → read/write → notify → disconnect** between two virtual devices — and
@@ -121,8 +122,8 @@ size, to convey remaining surface.
 ### Classic Bluetooth (BR/EDR)
 | Upstream (LOC) | Rust crate | Status | Notes |
 |---|---|---|---|
-| `rfcomm.py` (1.2k) | `bumble-rfcomm` | 🟡 | **Frame codec + session runtime**: the `RfcommFrame` TS 07.10 framing (SABM/UA/DM/DISC/UIH, 1- and 2-byte length indicators, credit-based UIH flow control), the CRC-8 `compute_fcs`, and the `RfcommMccPn`/`RfcommMccMsc` MCC messages, all oracle-pinned. Slice 20 adds `mux::{Multiplexer, Dlc}` — a synchronous, sans-I/O port of the asyncio `Multiplexer`/`DLC`: session open (SABM/UA), DLC PN/SABM/MSC open handshake, and the `process_tx` credit-flow engine. The open-handshake frames are pinned to the real upstream state machine. Deferred: retransmission (upstream also uses `max_retransmissions = 0`), aggregate flow control, and the `Client`/`Server` wrappers that bind to a live L2CAP channel (none is ported). |
-| `sdp.py` (1.4k) | `bumble-sdp` | 🟡 | **Codec + client/server runtime**: the recursive `DataElement` type-length-value format (all nine element types, all eight size-index encodings, 16/32/128-bit UUIDs), the `ServiceAttribute` service-record model, and all seven `SdpPdu` messages, all oracle-pinned. Slice 20 adds `service::{SdpServer, SdpClient}` — a synchronous port of the asyncio `Server`/`Client`: the service-record database, UUID matching, attribute selection, and continuation-state chunking + reassembly on both sides, for all three query types (Service Search / Service Attribute / Service Search Attribute). Server responses are pinned to the real upstream server. Deferred: the `register`/`on_connection` L2CAP glue. |
+| `rfcomm.py` (1.2k) | `bumble-rfcomm` | 🟡 | **Frame codec + session runtime + L2CAP binding**: the `RfcommFrame` TS 07.10 framing (SABM/UA/DM/DISC/UIH, 1- and 2-byte length indicators, credit-based UIH flow control), CRC-8, and PN/MSC MCC messages are oracle-pinned. Slice 20 adds `mux::{Multiplexer, Dlc}` for session/DLC open and credit flow; slice 22 adds `l2cap::L2capMultiplexer`, which derives its frame ceiling from the negotiated peer MTU and runs the complete session, DLC, replenishment, data, and disconnect flows over a live Classic channel. Deferred: retransmission (upstream also uses `max_retransmissions = 0`), aggregate flow control, and socket/async convenience APIs. |
+| `sdp.py` (1.4k) | `bumble-sdp` | 🟡 | **Codec + client/server runtime + L2CAP binding**: all `DataElement` encodings, `ServiceAttribute`, and seven `SdpPdu` messages are oracle-pinned. Slice 20 adds `service::{SdpServer, SdpClient}` with matching, selection, and continuation; slice 22 adds `l2cap::{SdpL2capServer, L2capSdpTransport}`, including fallible transport propagation and continuation over negotiated Classic channels. Deferred: async/event convenience APIs. |
 | `hfp.py` (2.1k), `at.py` (0.1k) | — | ⬜ | Hands-Free Profile. |
 | `hid.py` (0.6k) | — | ⬜ | Human Interface Device. |
 | `a2dp` (1.0k), `avdtp` (2.4k), `avrcp` (2.9k), `avc` (0.5k), `avctp` (0.3k), `rtp` (0.1k), `codecs` (0.5k) | — | ⬜ | A/V distribution + remote control + audio. |
@@ -145,8 +146,8 @@ layer** — SDP
 profiles build service records on, and RFCOMM (`bumble-rfcomm`: frame codec + a
 `Multiplexer`/`DLC` credit-flow session runtime), the serial-cable transport
 those profiles run over, plus a Classic L2CAP connection-oriented runtime with
-configuration and MTU negotiation. RFCOMM/SDP convenience wrappers that own and
-drive those channels are still pending. Everything else — the full high-level device/host
+configuration and MTU negotiation. Both protocol runtimes now bind directly to
+those channels. Everything else — the full high-level device/host
 orchestration, LE Secure Connections state machine, real transports, and the
 **rest of Classic Bluetooth (A2DP/AVRCP/HFP/HID/…) and the profiles** — is still
 the large majority of the ~82k upstream lines and remains to do.
@@ -488,10 +489,10 @@ bonding storage.
 The **session runtimes** for the two Classic codecs — the state machines that
 drive a live exchange over the wire formats from slices 16–17. Both were
 introduced as **sans-I/O** state machines: neither runtime touches a socket —
-they consume and produce PDUs, and a caller relays the bytes. Slice 21 now
-supplies the Classic L2CAP channel state machine beneath them; convenience
-wrappers that bind each runtime to a channel remain follow-on work. Each runtime
-is verified peer-to-peer over an in-memory relay.
+they consume and produce PDUs, and a caller relays the bytes. Slice 21 supplies
+the Classic L2CAP channel state machine beneath them, and slice 22 binds both
+runtimes to it. Each runtime is also verified independently over an in-memory
+relay.
 
 - **RFCOMM `Multiplexer`/`DLC` in [`bumble-rfcomm`](bumble-rfcomm/)** (module
   [`mux`](bumble-rfcomm/src/mux.rs)) — a synchronous port of the asyncio
@@ -519,8 +520,8 @@ explicitly: RFCOMM credit **exhaustion + replenishment** (a write past the
 transmit budget stalls with data buffered, then drains once the peer grants
 credits), and SDP **continuation across four round-trips** (a small server MTU
 splits the answer; the client reassembles the identical record set it gets in
-the single-PDU case). Deferred: RFCOMM retransmission and the `Client`/`Server`
-L2CAP-binding wrappers; the SDP `register`/`on_connection` L2CAP glue.
+the single-PDU case). Deferred: RFCOMM retransmission and aggregate flow
+control; async/event convenience APIs for both protocols.
 
 ## Slice 21 — what's here
 
@@ -544,7 +545,29 @@ The synchronous Classic connection-oriented channel runtime in
 The manager stays sans-I/O and emits/consumes complete `L2capPdu` values, so a
 host can place it over an ACL data path without coupling L2CAP to a socket or
 async runtime. Deferred: ACL fragmentation/reassembly, enhanced retransmission
-mode, LE credit-based channels, and RFCOMM/SDP owning wrappers.
+mode, and LE credit-based channels.
+
+## Slice 22 — what's here
+
+The Classic protocol runtimes now operate over the slice-21 channel layer:
+
+- `bumble-rfcomm::l2cap::L2capMultiplexer` binds a `Multiplexer` to an open
+  Classic channel, derives RFCOMM's frame ceiling from the negotiated peer MTU,
+  preserves one-frame-per-SDU ordering, parses received frames, and flushes
+  state-machine responses. Its integration test performs session and DLC open,
+  crosses a two-credit flow-control boundary, delivers 100 ordered bytes, and
+  disconnects through two L2CAP peers.
+- `bumble-sdp::l2cap::SdpL2capServer` parses request SDUs and returns server
+  responses on the same channel. `L2capSdpTransport` plugs that exchange into
+  the existing high-level `SdpClient`; transport failures are now explicit
+  `ClientError::Transport` values instead of being impossible to represent.
+  Its integration test performs service discovery and attribute retrieval over
+  L2CAP and proves that the negotiated 48-byte MTU forces a continuation across
+  multiple request/response SDUs.
+
+The adapters remain executor-neutral: their caller drives the surrounding ACL
+link through a callback, so they work with the in-process controller today and
+can sit above future socket/USB transports without an API split.
 
 ## Acceptance
 
@@ -613,16 +636,20 @@ bumble-rs/
 │   └── tests/smp_sc_pairing.rs # two-party LE Secure Connections handshake (slice 19)
 ├── bumble-smp/                # slice-14 SMP codec + legacy pairing + slice-19 SC
 │   └── src/lib.rs             # wires bumble-crypto; sc:: JustWorks derivation
-├── bumble-sdp/                # slice-16 SDP codec + slice-20 client/server runtime
+├── bumble-sdp/                # codec + runtime + slice-22 L2CAP binding
 │   ├── src/{lib,pdu}.rs       # DataElement + ServiceAttribute + SdpPdu
 │   ├── src/service.rs         # SdpServer + SdpClient (continuation runtime, slice 20)
+│   ├── src/l2cap.rs           # live Classic channel server/client transport
 │   ├── tests/acceptance.rs    # ported sdp_test.py cases (oracle-pinned)
-│   └── tests/service.rs       # client↔server, responses pinned to upstream (slice 20)
-├── bumble-rfcomm/             # slice-17 RFCOMM codec + slice-20 session runtime
+│   ├── tests/service.rs       # client↔server, responses pinned to upstream (slice 20)
+│   └── tests/l2cap_binding.rs # continuation over negotiated Classic L2CAP
+├── bumble-rfcomm/             # codec + session runtime + slice-22 L2CAP binding
 │   ├── src/lib.rs             # RfcommFrame + compute_fcs + MCC PN/MSC
 │   ├── src/mux.rs             # Multiplexer + DLC credit-flow state machine (slice 20)
+│   ├── src/l2cap.rs           # Multiplexer bound to a live Classic channel
 │   ├── tests/acceptance.rs    # ported rfcomm_test.py frame check (oracle-pinned)
-│   └── tests/session.rs       # two-party session, handshake pinned to upstream (slice 20)
+│   ├── tests/session.rs       # two-party session, handshake pinned to upstream (slice 20)
+│   └── tests/l2cap_binding.rs # session/DLC/data/disconnect over Classic L2CAP
 └── docs/superpowers/          # design specs + implementation plans
 ```
 

@@ -60,6 +60,9 @@ crypto is pinned to Bluetooth-spec / RFC 4493 vectors.
   + reassembly for all three query types — verified by a two-party in-process
   test in which the server's response PDUs are pinned to the real upstream
   Python `Server` (single-PDU and a forced four-round continuation).
+  Slice 22 adds `SdpL2capServer` and `L2capSdpTransport`, carrying those same
+  requests and continuation responses over negotiated Classic L2CAP channels
+  with explicit transport-error propagation.
 - **`bumble-rfcomm`** — RFCOMM frame + MCC codec (serial-cable emulation over
   L2CAP): the `RfcommFrame` TS 07.10 framing (SABM/UA/DM/DISC/UIH, 1- and
   2-byte length indicators, credit-based UIH flow control), the CRC-8
@@ -69,7 +72,10 @@ crypto is pinned to Bluetooth-spec / RFC 4493 vectors.
   the PN/SABM/MSC DLC handshake, and the `process_tx` credit-flow engine —
   verified by a two-party in-memory relay test in which the open-handshake
   frames are pinned to the real upstream state machine and credit exhaustion +
-  replenishment is forced explicitly.
+  replenishment is forced explicitly. Slice 22 adds `L2capMultiplexer`, binding
+  the runtime to a Classic channel and verifying session/DLC open, credit
+  replenishment, ordered application data, and disconnect across two L2CAP
+  peers.
 - **`bumble-controller`** — a synchronous software controller and in-process
   `LocalLink`: advertising/scanning, LE connection establishment, ACL routing,
   and disconnection.
@@ -93,7 +99,7 @@ crypto is pinned to Bluetooth-spec / RFC 4493 vectors.
 - Of Classic Bluetooth, the SDP and RFCOMM codecs plus their session runtimes
   (SDP client/server + service-record database; the RFCOMM multiplexer/DLC
   credit-flow state machine) and the basic-mode Classic L2CAP channel runtime
-  exist as synchronous, sans-I/O components. The convenience wrappers binding
-  RFCOMM/SDP ownership to those channels, enhanced retransmission and aggregate
-  flow control are omitted, and A2DP/AVRCP/HFP/HID are not ported.
+  exist as synchronous, sans-I/O components with live channel bindings.
+  Enhanced retransmission, aggregate RFCOMM flow control, socket/async
+  convenience APIs, and A2DP/AVRCP/HFP/HID are not ported.
 - The controller/link are synchronous (no async runtime) by design.

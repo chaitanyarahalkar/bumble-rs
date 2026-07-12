@@ -27,10 +27,9 @@
 //! The session runtime that drives this codec lives in [`mux`] (**slice 20**):
 //! a synchronous, sans-I/O port of upstream's asyncio `Multiplexer` and `DLC`,
 //! including the open handshake (SABM/UA, PN, MSC) and credit-based flow
-//! control. Still deferred: retransmission (upstream sets `max_retransmissions
-//! = 0` too), aggregate flow control, and the `Client`/`Server` convenience
-//! wrappers that bind a session to a live L2CAP channel (no Classic L2CAP
-//! connection-oriented channel is ported to bind to).
+//! control. [`l2cap`] (**slice 22**) binds that runtime to a live Classic L2CAP
+//! channel. Still deferred: retransmission (upstream sets `max_retransmissions
+//! = 0` too), aggregate flow control, and socket/async convenience APIs.
 //!
 //! ## Oracle
 //!
@@ -51,6 +50,7 @@
 
 use core::fmt;
 
+pub mod l2cap;
 pub mod mux;
 
 /// RFCOMM's fixed L2CAP PSM (Protocol/Service Multiplexer).
