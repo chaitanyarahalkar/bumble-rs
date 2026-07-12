@@ -3,8 +3,10 @@
 use core::fmt;
 
 mod command;
+mod event;
 
 pub use command::*;
+pub use event::*;
 
 pub const AVRCP_PID: u16 = 0x110E;
 pub const BLUETOOTH_SIG_COMPANY_ID: u32 = 0x001958;
