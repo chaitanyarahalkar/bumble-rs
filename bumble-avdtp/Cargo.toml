@@ -1,0 +1,14 @@
+[package]
+name = "bumble-avdtp"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "Rust port of google/bumble AVDTP signaling and stream transport"
+
+[dependencies]

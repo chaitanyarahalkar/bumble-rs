@@ -13,6 +13,7 @@ members = [
     "bumble-rfcomm",
     "bumble-at",
     "bumble-hfp",
+    "bumble-avdtp",
 ]
 resolver = "2"
 

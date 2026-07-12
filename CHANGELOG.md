@@ -106,6 +106,10 @@ crypto is pinned to Bluetooth-spec / RFC 4493 vectors.
   exchange, `f4` confirm, `f6` DHKey checks) in which both peers derive the same
   LTK. Slice 27 adds Classic ACL and SCO/eSCO connection/request/data APIs and
   verifies an HFP mSBC audio link through the complete host/controller boundary.
+- **`bumble-avdtp`** — slice 29 starts the Classic A/V stack with all 38 AVDTP
+  signaling message forms, endpoint and capability codecs, exact payload
+  vectors, lossless unknown signals, and MTU-aware single/fragmented PDU
+  encoding and safe reassembly.
 
 ### Known limitations
 
@@ -121,7 +125,9 @@ crypto is pinned to Bluetooth-spec / RFC 4493 vectors.
   credit-flow state machine) and the basic-mode Classic L2CAP channel runtime
   exist as synchronous, sans-I/O components with live channel bindings.
   Enhanced retransmission, aggregate RFCOMM flow control, socket/async
-  convenience APIs, and A2DP/AVRCP/HID profile behavior are not ported. HFP's
+  convenience APIs, and A2DP/AVRCP/HID profile behavior are not ported. The
+  AVDTP signaling codec exists, but its transaction/stream runtime and L2CAP
+  binding remain. HFP's
   AT grammar, stream framing, service-level connection, SDP records, and
   SCO/eSCO HCI audio-link orchestration are available. Its synchronous command
   behavior now covers the upstream HFP test families; executor conveniences and
