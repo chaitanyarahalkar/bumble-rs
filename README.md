@@ -237,6 +237,7 @@ size, to convey remaining surface.
 | `apps/gg_bridge.py` | `bumble-gg-bridge` (`bumble-transport`) | ✅ | Runnable Golden Gate Gattlink bridge with the complete upstream transport/address/role and UDP endpoint CLI. Node mode publishes the RX, TX, and CoC-PSM GATT service and advertises; hub mode discovers/subscribes and prefers LE CoC. Both roles retain GATT fallback, exact one-byte packet framing, bounded UDP queues, and controller-aware backpressure. |
 | `apps/player/player.py` | `bumble-player` (`bumble-transport`) | ✅ | Runnable Classic A2DP source with the complete upstream `discover`, `inquire`, `pair`, and `play` command surface. It publishes the source SDP record, persists SSP link keys, discovers sink endpoints, configures SBC/AAC/vendor Opus, opens and controls AVDTP streams, paces RTP media with controller backpressure, and serves AVRCP over incoming AVCTP. |
 | `apps/speaker/speaker.py` | `bumble-speaker` (`bumble-transport`) | ✅ | Runnable Classic A2DP sink with the complete upstream codec, sampling-frequency, bitrate, VBR, discovery, output, UI, peer, device-config, and transport surface. It accepts incoming Classic connections or initiates authenticated/encrypted ones, publishes the sink SDP record, negotiates SBC/AAC/vendor Opus through AVDTP, extracts received RTP audio to files or `ffplay`, and serves the live browser UI over HTTP/WebSocket. |
+| `apps/console.py` | `bumble-console` (`bumble-transport`) | ✅ | Runnable scriptable interactive LE console over external controllers. It preserves the upstream scan/filter/RSSI, advertising, connect/disconnect, parameter, encryption, MTU, PHY, GATT discovery/read/write/subscription, local-write, status-view, and exit command grammar. The Python fullscreen widgets become terminal views while live controller events remain continuously pumped. |
 | `apps/pair.py` | `bumble-pair` (`bumble-transport`) | ✅ | Runnable LE, Classic, and simultaneous dual-mode listener paths over external controllers with the complete upstream option surface. LE supports direct address/name connection or configurable advertising, Legacy/SC pairing, and OOB data. Classic supports inquiry/name resolution, incoming/outgoing ACL setup, PIN and Secure Simple Pairing delegates, stored link-key reuse, controller encryption, and best-effort SMP-over-BR/EDR CTKD for P-256 link keys. Both paths provide bond policy, JSON key persistence/printing, and linger behavior. |
 | `apps/scan.py` | `bumble-scan` (`bumble-transport`) | ✅ | Runnable external HCI scanner with upstream RSSI/passive/interval/window/PHY/duplicate/raw/IRK/key-store/device-config options, extended scanning with legacy fallback, typed legacy + extended report decoding, exact active/passive scan-response accumulation, labeled AD rendering, RSSI bars, and real RPA identity resolution. |
 | `apps/usb_probe.py` | `bumble-usb-probe` (`bumble-transport`) | ✅ | Runnable libusb device inventory with upstream `--verbose`, `--hci-only`, manufacturer, and product filters; device/interface-level Bluetooth HCI classification; stable index, VID/PID, duplicate, and serial transport names; string-descriptor error tolerance; and verbose configuration/interface/endpoint details including isochronous packet sizes. |
@@ -2844,6 +2845,30 @@ The upstream Classic A2DP speaker now runs over external controllers:
   configuration, open, media-channel attachment, start, and exact RTP packet
   receipt. Focused tests also pin the complete CLI, default codec capability
   masks, payload extraction, and embedded UI delivery.
+
+## Slice 133 — what's here
+
+The upstream interactive LE console now runs over external controllers:
+
+- `bumble-console` preserves the upstream `--device-config` plus transport CLI
+  and all interactive commands: scan/filter/RSSI, advertising, connect,
+  disconnect, connection-parameter updates, pairing/encryption, PHY reads and
+  writes, MTU exchange, GATT service/attribute discovery, remote reads/writes,
+  subscription management, local writes, status views, and exit aliases.
+- A dedicated input worker keeps the console scriptable through standard input
+  while the main loop continuously pumps HCI, advertising reports, incoming LE
+  connections, passive SMP pairing, notifications, indications, and
+  disconnections. The prompt-toolkit fullscreen tabs are represented as
+  explicit terminal views without changing the command grammar.
+- Remote GATT state retains service, characteristic, descriptor, cached-value,
+  and CCCD metadata across commands. Selectors accept upstream-style
+  `service.characteristic`, wildcard-service, and hexadecimal-handle forms;
+  writes accept hex, integer, or text values.
+- The local GAP database exposes dynamic Device Name and Appearance values
+  shared with the live ATT server, so `local-write` updates subsequent remote
+  reads. A two-controller integration test proves discovery and dynamic reads
+  across real HCI, ACL, L2CAP, and ATT; focused tests cover the CLI, complete
+  command parser, PHY/value parsing, scan rendering, and selector behavior.
 
 ## Acceptance
 
