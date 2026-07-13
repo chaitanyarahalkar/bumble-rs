@@ -67,7 +67,8 @@ crate whose behavior is verified against the upstream Python.
 | 50. GATT multiple reads and atomic queued writes | `bumble-gatt` | ✅ fixed/variable + prepare/execute green |
 | 51. Pairing key JSON/memory stores and resolving-list extraction | `bumble` | ✅ atomic persistence green |
 | 52. Complete GATT database definitions and access security | `bumble-gatt` | ✅ include/secondary/descriptor/permission green |
-| 53+. Remaining modules… | — | planned |
+| 53. Bearer-aware dynamic GATT value accessors | `bumble-gatt` | ✅ read/write/error callbacks green |
+| 54+. Remaining modules… | — | planned |
 
 The LE lifecycle is now complete end-to-end through library APIs: **connect →
 discover → read/write → notify → disconnect** between two virtual devices — and
@@ -134,7 +135,7 @@ size, to convey remaining surface.
 | Upstream (LOC) | Rust crate | Status | Notes |
 |---|---|---|---|
 | `att.py` (1.1k) | `bumble-att` | ✅ | Complete typed catalog for every upstream `ATT_PDU` subclass: discovery, MTU, Read/Blob/Multiple/Multiple Variable/By Type/By Group, Write/Command/Signed, Prepare/Execute Write, notifications/indications, and confirmation. All added forms are Python-oracle pinned; variable tuples and handle sets add safe truncation/shape checks. |
-| `gatt.py` (0.6k), `gatt_server.py` (1.2k) | `bumble-gatt` | 🟡 | Attribute DB, primary/secondary services, include declarations, characteristic descriptors, automatic CCCDs, explicit access/security permissions, primary discovery, read/write/notify, Find_Information/Find_By_Type_Value, MTU-sized Read/Blob, fixed + variable Read Multiple, and atomic Prepare/Execute Write with cancel/rollback. Signed writes are deliberately ignored until a connection CSRK/counter can authenticate them. Deferred: dynamic value accessors and the async bearer/event layer. |
+| `gatt.py` (0.6k), `gatt_server.py` (1.2k) | `bumble-gatt` | 🟡 | Attribute DB, primary/secondary services, include declarations, characteristic descriptors, automatic CCCDs, explicit access/security permissions, bearer-aware dynamic read/write callbacks, primary discovery, read/write/notify, Find_Information/Find_By_Type_Value, MTU-sized Read/Blob, fixed + variable Read Multiple, and atomic Prepare/Execute Write with cancel/rollback. Signed writes are deliberately ignored until a connection CSRK/counter can authenticate them. Deferred: the async bearer/event convenience layer. |
 | `gatt_client.py` (1.2k), `gatt_adapters.py` (0.4k) | `bumble-gatt` | 🟡 | **`GattClient` (slice 18)**: service / characteristic / descriptor discovery, reads (with long-read via Read_Blob), writes (with and without response), and notify/indicate subscriptions (CCCD write + notification/indication handling), over an `AttTransport`. Verified by a two-party client↔server integration test. Deferred (matching the synchronous port): the async bearer, `gatt_adapters` typed-value proxies, and event listeners. |
 
 ### Security (SMP + crypto)
@@ -1185,9 +1186,32 @@ The GATT database can now represent the complete static upstream service model:
   The compact pre-permission `GattServer::new` API retains its original
   permissive read/write behavior for compatibility.
 
-The remaining GATT model gap is dynamic read/write value accessors; after that,
-work continues through the larger controller, L2CAP, SMP, profile, and transport
+The next slice adds dynamic read/write value accessors; after that, work
+continues through the larger controller, L2CAP, SMP, profile, and transport
 surfaces.
+
+## Slice 53 — what's here
+
+Dynamic GATT values complete the synchronous attribute model:
+
+- `DynamicValue` binds read-only, write-only, or read/write callbacks to any
+  database handle. `AccessContext` supplies a stable bearer ID together with
+  encryption, authentication, and authorization state, allowing per-peer
+  values such as CCCDs.
+- Direct and blob reads, both Read Multiple forms, Read By Type, and Find By
+  Type Value resolve callbacks instead of stale placeholder bytes. Writes and
+  write commands invoke the write callback.
+- Callback failures are caller-selected ATT error codes and are returned with
+  the original opcode and attribute handle. Missing callback directions map to
+  Read/Write Not Permitted.
+- Cloned servers share callback state through thread-safe reference counting.
+  Clearing a binding restores its retained static value. Prepare Write rejects
+  dynamic values as Attribute Not Long, preserving the static queued-write
+  path's atomic rollback guarantee.
+
+The remaining GATT difference is its asynchronous bearer/event convenience
+surface rather than database expressiveness. Porting now continues through the
+larger partial subsystems.
 
 ## Acceptance
 

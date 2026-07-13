@@ -3,20 +3,20 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use bumble::keys::{JsonKeyStore, Key, KeyStore, PairingKeys};
 use bumble::AddressType;
 
-fn path() -> std::path::PathBuf {
+fn path(test_name: &str) -> std::path::PathBuf {
     let unique = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
     std::env::temp_dir().join(format!(
-        "bumble-rs-keys-{}-{unique}.json",
-        std::process::id()
+        "bumble-rs-keys-{}-{test_name}-{unique}.json",
+        std::process::id(),
     ))
 }
 
 #[test]
 fn json_store_is_atomic_namespaced_and_merges_partial_updates() {
-    let filename = path();
+    let filename = path("atomic");
     let mut first = JsonKeyStore::new(Some("controller-a"), &filename);
     first
         .update(
@@ -51,7 +51,7 @@ fn json_store_is_atomic_namespaced_and_merges_partial_updates() {
 
 #[test]
 fn corrupt_json_and_invalid_hex_are_reported() {
-    let filename = path();
+    let filename = path("invalid");
     std::fs::write(&filename, b"not-json").unwrap();
     let store = JsonKeyStore::new(None, &filename);
     assert!(store.get_all().is_err());

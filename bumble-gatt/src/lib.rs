@@ -33,6 +33,7 @@
 //! bearer/event convenience layer.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use bumble::Uuid;
 use bumble_att::{codes, AttPdu};
@@ -114,6 +115,8 @@ pub const ATT_INSUFFICIENT_AUTHENTICATION_ERROR: u8 = 0x05;
 pub const ATT_INSUFFICIENT_AUTHORIZATION_ERROR: u8 = 0x08;
 /// ATT error: the connection is not encrypted.
 pub const ATT_INSUFFICIENT_ENCRYPTION_ERROR: u8 = 0x0F;
+/// ATT error: queued writes are not supported for this attribute.
+pub const ATT_ATTRIBUTE_NOT_LONG_ERROR: u8 = 0x0B;
 
 /// The default ATT MTU (Vol 3, Part F - 3.2.8).
 pub const ATT_DEFAULT_MTU: u16 = 23;
@@ -347,9 +350,73 @@ pub struct Service {
 /// Security state associated with the ATT bearer handling a request.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct AccessContext {
+    /// Stable caller-supplied identity for per-bearer values such as CCCDs.
+    pub bearer_id: u64,
     pub encrypted: bool,
     pub authenticated: bool,
     pub authorized: bool,
+}
+
+/// A synchronous dynamic attribute read callback.
+pub type ReadCallback = dyn Fn(AccessContext) -> Result<Vec<u8>, u8> + Send + Sync + 'static;
+/// A synchronous dynamic attribute write callback.
+pub type WriteCallback = dyn Fn(AccessContext, &[u8]) -> Result<(), u8> + Send + Sync + 'static;
+
+/// Read/write callbacks backing a dynamic attribute value.
+#[derive(Clone, Default)]
+pub struct DynamicValue {
+    read: Option<Arc<ReadCallback>>,
+    write: Option<Arc<WriteCallback>>,
+}
+
+impl core::fmt::Debug for DynamicValue {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("DynamicValue")
+            .field("read", &self.read.is_some())
+            .field("write", &self.write.is_some())
+            .finish()
+    }
+}
+
+impl DynamicValue {
+    pub fn read_only<F>(read: F) -> Self
+    where
+        F: Fn(AccessContext) -> Result<Vec<u8>, u8> + Send + Sync + 'static,
+    {
+        Self {
+            read: Some(Arc::new(read)),
+            write: None,
+        }
+    }
+
+    pub fn write_only<F>(write: F) -> Self
+    where
+        F: Fn(AccessContext, &[u8]) -> Result<(), u8> + Send + Sync + 'static,
+    {
+        Self {
+            read: None,
+            write: Some(Arc::new(write)),
+        }
+    }
+
+    pub fn read_write<R, W>(read: R, write: W) -> Self
+    where
+        R: Fn(AccessContext) -> Result<Vec<u8>, u8> + Send + Sync + 'static,
+        W: Fn(AccessContext, &[u8]) -> Result<(), u8> + Send + Sync + 'static,
+    {
+        Self {
+            read: Some(Arc::new(read)),
+            write: Some(Arc::new(write)),
+        }
+    }
+
+    fn read(&self, context: AccessContext) -> Result<Vec<u8>, u8> {
+        self.read.as_ref().ok_or(ATT_READ_NOT_PERMITTED_ERROR)?(context)
+    }
+
+    fn write(&self, context: AccessContext, value: &[u8]) -> Result<(), u8> {
+        self.write.as_ref().ok_or(ATT_WRITE_NOT_PERMITTED_ERROR)?(context, value)
+    }
 }
 
 /// A descriptor in the complete GATT database-definition API.
@@ -384,6 +451,7 @@ pub struct ServiceDefinition {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DatabaseError {
     InvalidIncludedService { service: usize, included: usize },
+    UnknownAttribute(u16),
     TooManyAttributes,
 }
 
@@ -394,6 +462,9 @@ impl core::fmt::Display for DatabaseError {
                 f,
                 "service {service} includes missing service index {included}"
             ),
+            Self::UnknownAttribute(handle) => {
+                write!(f, "attribute handle 0x{handle:04X} does not exist")
+            }
             Self::TooManyAttributes => f.write_str("GATT database exceeds 65535 attributes"),
         }
     }
@@ -412,6 +483,26 @@ struct Attribute {
     end_group_handle: u16,
     permissions: u8,
     value: Vec<u8>,
+    dynamic_value: Option<DynamicValue>,
+}
+
+impl Attribute {
+    fn read_value(&self, context: AccessContext) -> Result<Vec<u8>, u8> {
+        match &self.dynamic_value {
+            Some(dynamic) => dynamic.read(context),
+            None => Ok(self.value.clone()),
+        }
+    }
+
+    fn write_value(&mut self, context: AccessContext, value: &[u8]) -> Result<(), u8> {
+        match &self.dynamic_value {
+            Some(dynamic) => dynamic.write(context, value),
+            None => {
+                self.value = value.to_vec();
+                Ok(())
+            }
+        }
+    }
 }
 
 /// A GATT server: builds a proper attribute database (service and
@@ -532,6 +623,7 @@ impl GattServer {
                 end_group_handle: service_layout.end,
                 permissions: permissions::READABLE,
                 value: service.uuid.to_bytes(false),
+                dynamic_value: None,
             });
             handle += 1;
 
@@ -550,6 +642,7 @@ impl GattServer {
                     end_group_handle: handle as u16,
                     permissions: permissions::READABLE,
                     value,
+                    dynamic_value: None,
                 });
                 handle += 1;
             }
@@ -570,6 +663,7 @@ impl GattServer {
                     end_group_handle: decl_handle as u16,
                     permissions: permissions::READABLE,
                     value: declaration,
+                    dynamic_value: None,
                 });
                 attributes.push(Attribute {
                     handle: value_handle as u16,
@@ -577,6 +671,7 @@ impl GattServer {
                     end_group_handle: value_handle as u16,
                     permissions: ch.permissions,
                     value: ch.value,
+                    dynamic_value: None,
                 });
 
                 let has_cccd = ch.descriptors.iter().any(|descriptor| {
@@ -592,6 +687,7 @@ impl GattServer {
                         end_group_handle: descriptor_handle as u16,
                         permissions: descriptor.permissions,
                         value: descriptor.value,
+                        dynamic_value: None,
                     });
                 }
 
@@ -608,6 +704,7 @@ impl GattServer {
                         end_group_handle: cccd_handle as u16,
                         permissions: permissions::READABLE | permissions::WRITEABLE,
                         value: vec![0x00, 0x00],
+                        dynamic_value: None,
                     });
                 }
             }
@@ -628,6 +725,30 @@ impl GattServer {
 
     fn find_mut(&mut self, handle: u16) -> Option<&mut Attribute> {
         self.attributes.iter_mut().find(|a| a.handle == handle)
+    }
+
+    /// Replace an attribute's static value with synchronous read/write
+    /// callbacks. The callbacks remain shared when the server is cloned.
+    pub fn set_dynamic_value(
+        &mut self,
+        handle: u16,
+        value: DynamicValue,
+    ) -> Result<(), DatabaseError> {
+        let attribute = self
+            .find_mut(handle)
+            .ok_or(DatabaseError::UnknownAttribute(handle))?;
+        attribute.dynamic_value = Some(value);
+        Ok(())
+    }
+
+    /// Restore the retained static value (the most recent value from before
+    /// the dynamic binding was installed).
+    pub fn clear_dynamic_value(&mut self, handle: u16) -> Result<(), DatabaseError> {
+        let attribute = self
+            .find_mut(handle)
+            .ok_or(DatabaseError::UnknownAttribute(handle))?;
+        attribute.dynamic_value = None;
+        Ok(())
     }
 
     pub fn prepared_write_count(&self) -> usize {
@@ -651,10 +772,13 @@ impl GattServer {
             }
             AttPdu::ReadRequest { attribute_handle } => match self.find(*attribute_handle) {
                 Some(a) => match check_read_access(a.permissions, context) {
-                    Ok(()) => AttPdu::ReadResponse {
-                        // A Read Response carries at most MTU-1 bytes; longer
-                        // values are fetched with Read Blob.
-                        attribute_value: truncate(&a.value, (self.negotiated_mtu - 1) as usize),
+                    Ok(()) => match a.read_value(context) {
+                        Ok(value) => AttPdu::ReadResponse {
+                            // A Read Response carries at most MTU-1 bytes; longer
+                            // values are fetched with Read Blob.
+                            attribute_value: truncate(&value, (self.negotiated_mtu - 1) as usize),
+                        },
+                        Err(code) => error(codes::ATT_READ_REQUEST, *attribute_handle, code),
                     },
                     Err(code) => error(codes::ATT_READ_REQUEST, *attribute_handle, code),
                 },
@@ -672,17 +796,23 @@ impl GattServer {
                     if let Err(code) = check_read_access(a.permissions, context) {
                         return error(codes::ATT_READ_BLOB_REQUEST, *attribute_handle, code);
                     }
+                    let value = match a.read_value(context) {
+                        Ok(value) => value,
+                        Err(code) => {
+                            return error(codes::ATT_READ_BLOB_REQUEST, *attribute_handle, code);
+                        }
+                    };
                     let offset = *value_offset as usize;
-                    if offset > a.value.len() {
+                    if offset > value.len() {
                         error(
                             codes::ATT_READ_BLOB_REQUEST,
                             *attribute_handle,
                             ATT_INVALID_OFFSET_ERROR,
                         )
                     } else {
-                        let end = (offset + (self.negotiated_mtu - 1) as usize).min(a.value.len());
+                        let end = (offset + (self.negotiated_mtu - 1) as usize).min(value.len());
                         AttPdu::ReadBlobResponse {
-                            part_attribute_value: a.value[offset..end].to_vec(),
+                            part_attribute_value: value[offset..end].to_vec(),
                         }
                     }
                 }
@@ -703,12 +833,14 @@ impl GattServer {
                 attribute_value,
             } => match self.find(*attribute_handle) {
                 Some(a) => match check_write_access(a.permissions, context) {
-                    Ok(()) => {
-                        self.find_mut(*attribute_handle)
-                            .expect("attribute was just found")
-                            .value = attribute_value.clone();
-                        AttPdu::WriteResponse
-                    }
+                    Ok(()) => match self
+                        .find_mut(*attribute_handle)
+                        .expect("attribute was just found")
+                        .write_value(context, attribute_value)
+                    {
+                        Ok(()) => AttPdu::WriteResponse,
+                        Err(code) => error(codes::ATT_WRITE_REQUEST, *attribute_handle, code),
+                    },
                     Err(code) => error(codes::ATT_WRITE_REQUEST, *attribute_handle, code),
                 },
                 None => error(
@@ -755,9 +887,10 @@ impl GattServer {
                 // A command has no response; apply it best-effort.
                 if let Some(a) = self.find(*attribute_handle) {
                     if check_write_access(a.permissions, context).is_ok() {
-                        self.find_mut(*attribute_handle)
+                        let _ = self
+                            .find_mut(*attribute_handle)
                             .expect("attribute was just found")
-                            .value = attribute_value.clone();
+                            .write_value(context, attribute_value);
                     }
                 }
                 // Callers ignore the returned PDU for commands; surface a no-op.
@@ -777,6 +910,11 @@ impl GattServer {
                 ),
                 Some(attribute) => match check_write_access(attribute.permissions, context) {
                     Err(code) => error(codes::ATT_PREPARE_WRITE_REQUEST, *attribute_handle, code),
+                    Ok(()) if attribute.dynamic_value.is_some() => error(
+                        codes::ATT_PREPARE_WRITE_REQUEST,
+                        *attribute_handle,
+                        ATT_ATTRIBUTE_NOT_LONG_ERROR,
+                    ),
                     Ok(()) => {
                         self.prepared_writes.push((
                             *attribute_handle,
@@ -811,15 +949,18 @@ impl GattServer {
                 if let Err(code) = check_read_access(attribute.permissions, context) {
                     return error(codes::ATT_READ_MULTIPLE_VARIABLE_REQUEST, *handle, code);
                 }
-                let part = truncate(
-                    &attribute.value,
-                    usize::from(self.negotiated_mtu - 3).min(251),
-                );
+                let value = match attribute.read_value(context) {
+                    Ok(value) => value,
+                    Err(code) => {
+                        return error(codes::ATT_READ_MULTIPLE_VARIABLE_REQUEST, *handle, code);
+                    }
+                };
+                let part = truncate(&value, usize::from(self.negotiated_mtu - 3).min(251));
                 if part.len() + 2 > remaining {
                     break;
                 }
                 remaining -= part.len() + 2;
-                tuples.push((attribute.value.len().min(u16::MAX as usize) as u16, part));
+                tuples.push((value.len().min(u16::MAX as usize) as u16, part));
             }
             AttPdu::ReadMultipleVariableResponse {
                 length_value_tuples: tuples,
@@ -837,10 +978,11 @@ impl GattServer {
                 if let Err(code) = check_read_access(attribute.permissions, context) {
                     return error(codes::ATT_READ_MULTIPLE_REQUEST, *handle, code);
                 }
-                let part = truncate(
-                    &attribute.value,
-                    usize::from(self.negotiated_mtu - 1).min(251),
-                );
+                let value = match attribute.read_value(context) {
+                    Ok(value) => value,
+                    Err(code) => return error(codes::ATT_READ_MULTIPLE_REQUEST, *handle, code),
+                };
+                let part = truncate(&value, usize::from(self.negotiated_mtu - 1).min(251));
                 if part.len() > remaining {
                     break;
                 }
@@ -877,6 +1019,13 @@ impl GattServer {
             };
             if let Err(code) = check_write_access(attribute.permissions, context) {
                 return error(codes::ATT_EXECUTE_WRITE_REQUEST, *handle, code);
+            }
+            if attribute.dynamic_value.is_some() {
+                return error(
+                    codes::ATT_EXECUTE_WRITE_REQUEST,
+                    *handle,
+                    ATT_ATTRIBUTE_NOT_LONG_ERROR,
+                );
             }
             let Some(value) = staged.get_mut(handle) else {
                 return error(
@@ -967,17 +1116,24 @@ impl GattServer {
         context: AccessContext,
     ) -> AttPdu {
         let mut list = Vec::new();
-        for a in self.attributes.iter().filter(|a| {
-            a.handle >= start
-                && a.handle <= end
-                && a.type_uuid == *attribute_type
-                && a.value == attribute_value
-        }) {
+        for a in self
+            .attributes
+            .iter()
+            .filter(|a| a.handle >= start && a.handle <= end && a.type_uuid == *attribute_type)
+        {
             if let Err(code) = check_read_access(a.permissions, context) {
                 return error(codes::ATT_FIND_BY_TYPE_VALUE_REQUEST, a.handle, code);
             }
-            list.extend_from_slice(&a.handle.to_le_bytes());
-            list.extend_from_slice(&a.end_group_handle.to_le_bytes());
+            match a.read_value(context) {
+                Ok(value) if value == attribute_value => {
+                    list.extend_from_slice(&a.handle.to_le_bytes());
+                    list.extend_from_slice(&a.end_group_handle.to_le_bytes());
+                }
+                Ok(_) => {}
+                Err(code) => {
+                    return error(codes::ATT_FIND_BY_TYPE_VALUE_REQUEST, a.handle, code);
+                }
+            }
         }
         if list.is_empty() {
             return error(
@@ -1004,27 +1160,50 @@ impl GattServer {
             .iter()
             .filter(|a| a.handle >= start && a.handle <= end && a.type_uuid == *group_type)
             .collect();
-        let Some(first) = matches.first() else {
+        if matches.is_empty() {
             return error(
                 codes::ATT_READ_BY_GROUP_TYPE_REQUEST,
                 start,
                 ATT_ATTRIBUTE_NOT_FOUND_ERROR,
             );
-        };
-        if let Err(code) = check_read_access(first.permissions, context) {
-            return error(codes::ATT_READ_BY_GROUP_TYPE_REQUEST, first.handle, code);
         }
 
         // A response groups only entries whose value has the same length.
-        let value_len = first.value.len();
-        let mut adl = Vec::new();
-        for a in matches.iter().take_while(|a| a.value.len() == value_len) {
-            if let Err(code) = check_read_access(a.permissions, context) {
-                return error(codes::ATT_READ_BY_GROUP_TYPE_REQUEST, a.handle, code);
+        let mut selected = Vec::new();
+        for attribute in matches {
+            if let Err(code) = check_read_access(attribute.permissions, context) {
+                return error(
+                    codes::ATT_READ_BY_GROUP_TYPE_REQUEST,
+                    attribute.handle,
+                    code,
+                );
             }
-            adl.extend_from_slice(&a.handle.to_le_bytes());
-            adl.extend_from_slice(&a.end_group_handle.to_le_bytes());
-            adl.extend_from_slice(&a.value);
+            let value = match attribute.read_value(context) {
+                Ok(value) => value,
+                Err(code) => {
+                    return error(
+                        codes::ATT_READ_BY_GROUP_TYPE_REQUEST,
+                        attribute.handle,
+                        code,
+                    );
+                }
+            };
+            if selected
+                .first()
+                .is_some_and(|(_, _, first_value): &(u16, u16, Vec<u8>)| {
+                    first_value.len() != value.len()
+                })
+            {
+                break;
+            }
+            selected.push((attribute.handle, attribute.end_group_handle, value));
+        }
+        let value_len = selected[0].2.len();
+        let mut adl = Vec::new();
+        for (handle, end_group_handle, value) in selected {
+            adl.extend_from_slice(&handle.to_le_bytes());
+            adl.extend_from_slice(&end_group_handle.to_le_bytes());
+            adl.extend_from_slice(&value);
         }
         AttPdu::ReadByGroupTypeResponse {
             length: (4 + value_len) as u8,
@@ -1044,25 +1223,36 @@ impl GattServer {
             .iter()
             .filter(|a| a.handle >= start && a.handle <= end && a.type_uuid == *attribute_type)
             .collect();
-        let Some(first) = matches.first() else {
+        if matches.is_empty() {
             return error(
                 codes::ATT_READ_BY_TYPE_REQUEST,
                 start,
                 ATT_ATTRIBUTE_NOT_FOUND_ERROR,
             );
-        };
-        if let Err(code) = check_read_access(first.permissions, context) {
-            return error(codes::ATT_READ_BY_TYPE_REQUEST, first.handle, code);
         }
 
-        let value_len = first.value.len();
-        let mut adl = Vec::new();
-        for a in matches.iter().take_while(|a| a.value.len() == value_len) {
-            if let Err(code) = check_read_access(a.permissions, context) {
-                return error(codes::ATT_READ_BY_TYPE_REQUEST, a.handle, code);
+        let mut selected = Vec::new();
+        for attribute in matches {
+            if let Err(code) = check_read_access(attribute.permissions, context) {
+                return error(codes::ATT_READ_BY_TYPE_REQUEST, attribute.handle, code);
             }
-            adl.extend_from_slice(&a.handle.to_le_bytes());
-            adl.extend_from_slice(&a.value);
+            let value = match attribute.read_value(context) {
+                Ok(value) => value,
+                Err(code) => return error(codes::ATT_READ_BY_TYPE_REQUEST, attribute.handle, code),
+            };
+            if selected
+                .first()
+                .is_some_and(|(_, first_value): &(u16, Vec<u8>)| first_value.len() != value.len())
+            {
+                break;
+            }
+            selected.push((attribute.handle, value));
+        }
+        let value_len = selected[0].1.len();
+        let mut adl = Vec::new();
+        for (handle, value) in selected {
+            adl.extend_from_slice(&handle.to_le_bytes());
+            adl.extend_from_slice(&value);
         }
         AttPdu::ReadByTypeResponse {
             length: (2 + value_len) as u8,

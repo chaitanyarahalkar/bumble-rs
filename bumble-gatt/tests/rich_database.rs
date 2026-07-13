@@ -130,6 +130,7 @@ fn enforces_access_and_security_requirements_in_order() {
         server.on_request_with_context(
             &read,
             AccessContext {
+                bearer_id: 0,
                 encrypted: true,
                 ..AccessContext::default()
             },
@@ -142,6 +143,7 @@ fn enforces_access_and_security_requirements_in_order() {
         server.on_request_with_context(
             &read,
             AccessContext {
+                bearer_id: 0,
                 encrypted: true,
                 authenticated: true,
                 authorized: false,
@@ -153,6 +155,7 @@ fn enforces_access_and_security_requirements_in_order() {
     );
 
     let granted = AccessContext {
+        bearer_id: 0,
         encrypted: true,
         authenticated: true,
         authorized: true,
@@ -236,6 +239,7 @@ fn queued_and_multiple_operations_share_permission_checks() {
     assert_eq!(server.prepared_write_count(), 0);
 
     let granted = AccessContext {
+        bearer_id: 0,
         encrypted: true,
         authenticated: true,
         authorized: true,
