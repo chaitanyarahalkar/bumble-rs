@@ -19,6 +19,10 @@ use std::collections::VecDeque;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, TryRecvError};
 use std::time::{Duration, Instant};
 
+/// Upstream host event mask: all host events consumed by Bumble, including
+/// Classic connection, SSP, link-key, synchronous-audio, and LE Meta events.
+const HOST_EVENT_MASK: [u8; 8] = [0xFF, 0x9F, 0xFF, 0xBF, 0x07, 0xF8, 0xBF, 0x3D];
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ExternalHostState {
     Running,
@@ -167,6 +171,22 @@ impl LePairingSession {
         Ok(())
     }
 
+    /// Wait for the peer to initiate pairing without emitting a Security
+    /// Request. This is primarily used by connectable peripherals.
+    pub fn listen(&mut self, device: &Device) -> Result<()> {
+        if self.started {
+            return Err(Error::Remote("pairing session already started".into()));
+        }
+        if !device.is_connected_on_handle(self.connection_handle) {
+            return Err(Error::Remote(format!(
+                "LE connection {:#06x} is not active",
+                self.connection_handle
+            )));
+        }
+        self.started = true;
+        Ok(())
+    }
+
     /// Advance pairing without blocking. Returns the completed keys once key
     /// distribution has finished.
     pub fn drive_once(
@@ -269,6 +289,19 @@ impl LePairingSession {
         timeout: Duration,
     ) -> Result<PairingKeys> {
         self.begin(host, device)?;
+        self.run_to_completion(host, device, timeout)
+    }
+
+    /// Drive an already begun or listening session to completion.
+    pub fn run_to_completion(
+        &mut self,
+        host: &mut ExternalHost,
+        device: &mut Device,
+        timeout: Duration,
+    ) -> Result<PairingKeys> {
+        if !self.started {
+            return Err(Error::Remote("pairing session has not been started".into()));
+        }
         let deadline = Instant::now() + timeout;
         loop {
             if let Some(keys) = self.drive_once(host, device)? {
@@ -641,7 +674,7 @@ impl ExternalHost {
 
         self.send_successful_command(
             Command::SetEventMask {
-                event_mask: event_mask(&[0x05, 0x08, 0x10, 0x13, 0x1A, 0x30, 0x3E]),
+                event_mask: HOST_EVENT_MASK,
             },
             timeout,
         )?;
@@ -1415,7 +1448,7 @@ mod tests {
                 .unwrap(),
         ];
         sessions[0].begin(&mut link, &mut devices[0]).unwrap();
-        sessions[1].begin(&mut link, &mut devices[1]).unwrap();
+        sessions[1].listen(&devices[1]).unwrap();
 
         let mut completed: [Option<PairingKeys>; 2] = [None, None];
         for _ in 0..200 {

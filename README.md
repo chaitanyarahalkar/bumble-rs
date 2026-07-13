@@ -231,6 +231,7 @@ size, to convey remaining surface.
 | `apps/controllers.py` | `bumble-controllers` (`bumble-transport`) | ✅ | Runnable two-controller software radio over arbitrary split external HCI transports. A serialized shared-link pump routes host commands, ACL/SCO/ISO payloads, advertising and connections, LE control/PAST, Classic LMP, and all resulting host events without aliasing controller state. |
 | `apps/hci_bridge.py` | `bumble-hci-bridge` (`bumble-transport`) | ✅ | Runnable full-duplex host/controller bridge with upstream direct-opcode and OGF:OCF success short circuits. Independent read/write halves cover every external transport: file, raw HCI socket, serial, TCP, UDP, USB, VHCI, PTY, Unix, WebSocket, Android emulator, and Android netsim. |
 | `apps/gatt_dump.py` | `bumble-gatt-dump` (`bumble-transport`) | ✅ | Runnable external-controller GATT dump in initiator or advertising/listener mode, with address-or-active-name resolution, device-config local address selection, complete service/characteristic/descriptor and all-attribute discovery, per-attribute reads, bounded transport/procedure errors, and real `--encrypt` LE Secure Connections pairing. |
+| `apps/pair.py` | `bumble-pair` (`bumble-transport`) | 🟡 | LE mode is runnable over external controllers with the complete upstream option surface, direct address/name connection or configurable advertising, active or peer-initiated pairing, Legacy/SC, MITM I/O delegates, OOB data, CT2/bond policy, JSON key persistence/printing, and linger behavior. Classic/dual mode is parsed but explicitly gated on the external SSP runtime. |
 | `apps/scan.py` | `bumble-scan` (`bumble-transport`) | ✅ | Runnable external HCI scanner with upstream RSSI/passive/interval/window/PHY/duplicate/raw/IRK/key-store/device-config options, extended scanning with legacy fallback, typed legacy + extended report decoding, exact active/passive scan-response accumulation, labeled AD rendering, RSSI bars, and real RPA identity resolution. |
 | `apps/usb_probe.py` | `bumble-usb-probe` (`bumble-transport`) | ✅ | Runnable libusb device inventory with upstream `--verbose`, `--hci-only`, manufacturer, and product filters; device/interface-level Bluetooth HCI classification; stable index, VID/PID, duplicate, and serial transport names; string-descriptor error tolerance; and verbose configuration/interface/endpoint details including isochronous packet sizes. |
 | `apps/ble_rpa_tool.py` | `bumble-rpa-tool` (`bumble-smp`) | ✅ | Runnable `gen-irk`, `gen-rpa`, and `verify-rpa` commands backed by the OS RNG and the real SMP `ah` primitive. Flexible Python-style hex input, address validation, colored verification results, and malformed/extra argument errors are covered. |
@@ -2672,6 +2673,24 @@ LE SMP pairing and encryption now run over the external-controller host path:
   GATT discovery. Deterministic two-controller tests cover both roles, matching
   LTKs, encryption state, and bond persistence; external HCI tests cover LTK
   request/reply routing.
+
+## Slice 125 — what's here
+
+The LE half of upstream `apps/pair.py` is now runnable as `bumble-pair`:
+
+- The complete upstream CLI shape is parsed, including Legacy/SC, MITM,
+  bonding/CT2, I/O capability, OOB, identity/address selection, pairing-request,
+  linger, key-store, service UUID, and appearance controls. Classic/dual requests
+  fail explicitly until the controller SSP event path lands.
+- Direct address or active-name connections and advertising/listener mode share
+  the external host and `LePairingSession` runtime. Listener sessions may remain
+  passive for peer-initiated pairing; active peripherals send an SMP Security
+  Request.
+- Interactive accept, numeric comparison, passkey input/display, OOB share/TK,
+  controller-confirmed encryption, JSON bond persistence, pre-pair key listing,
+  and deterministic advertisement construction are covered. External host
+  initialization now enables the full upstream Classic/LE host event mask in
+  preparation for SSP.
 
 ## Acceptance
 
