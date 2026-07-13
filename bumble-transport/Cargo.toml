@@ -20,6 +20,8 @@ bumble-controller = { path = "../bumble-controller" }
 bumble-host = { path = "../bumble-host" }
 bumble-l2cap = { path = "../bumble-l2cap" }
 bumble-profiles = { path = "../bumble-profiles" }
+bumble-rfcomm = { path = "../bumble-rfcomm" }
+bumble-sdp = { path = "../bumble-sdp" }
 bumble-smp = { path = "../bumble-smp" }
 prost = "0.13.5"
 serde_json = "1"

@@ -129,6 +129,7 @@ struct Dlc {
     /// Application data delivered to this DLC, in arrival order (upstream's sink
     /// / receive queue).
     rx_packets: Vec<Vec<u8>>,
+    reading_paused: bool,
 }
 
 impl Dlc {
@@ -152,6 +153,7 @@ impl Dlc {
             tx_buffer: Vec::new(),
             mtu,
             rx_packets: Vec::new(),
+            reading_paused: false,
         }
     }
 
@@ -239,6 +241,15 @@ impl Dlc {
         }
     }
 
+    fn disconnect(&mut self, outbox: &mut Vec<RfcommFrame>) -> Result<()> {
+        if self.state != DlcState::Connected {
+            return Err(Error::InvalidArgument("DLC not connected".into()));
+        }
+        self.state = DlcState::Disconnecting;
+        outbox.push(RfcommFrame::disc(self.c_r, self.dlci));
+        Ok(())
+    }
+
     fn on_uih(&mut self, frame: &RfcommFrame, outbox: &mut Vec<RfcommFrame>) {
         let data: &[u8] = if frame.p_f {
             // Credit-bearing: the first octet is a credit grant, not data.
@@ -277,7 +288,7 @@ impl Dlc {
 
     /// How many credits to grant the peer, or 0 if it still has enough.
     fn rx_credits_needed(&self) -> u16 {
-        if self.rx_credits <= self.rx_credits_threshold {
+        if !self.reading_paused && self.rx_credits <= self.rx_credits_threshold {
             self.rx_max_credits - self.rx_credits
         } else {
             0
@@ -431,6 +442,15 @@ impl Multiplexer {
         Ok(())
     }
 
+    /// Disconnect one DLC while leaving the RFCOMM session available for
+    /// subsequent channels.
+    pub fn disconnect_dlc(&mut self, dlci: u8) -> Result<()> {
+        self.dlcs
+            .get_mut(&dlci)
+            .ok_or_else(|| Error::InvalidArgument(format!("no DLC for DLCI {dlci}")))?
+            .disconnect(&mut self.outbox)
+    }
+
     /// Queue application data on an open DLC and flush what credits allow.
     pub fn write(&mut self, dlci: u8, data: &[u8]) -> Result<()> {
         let dlc = self
@@ -488,6 +508,24 @@ impl Multiplexer {
     /// credits).
     pub fn dlc_pending_tx(&self, dlci: u8) -> Option<usize> {
         self.dlcs.get(&dlci).map(|d| d.tx_buffer.len())
+    }
+
+    /// Withhold or restore receive-credit grants for one DLC. Existing credits
+    /// remain valid, bounding additional buffering by the advertised window.
+    pub fn set_dlc_reading_paused(&mut self, dlci: u8, paused: bool) -> Result<()> {
+        let dlc = self
+            .dlcs
+            .get_mut(&dlci)
+            .ok_or_else(|| Error::InvalidArgument(format!("no DLC for DLCI {dlci}")))?;
+        dlc.reading_paused = paused;
+        if !paused {
+            dlc.process_tx(&mut self.outbox);
+        }
+        Ok(())
+    }
+
+    pub fn dlc_is_reading_paused(&self, dlci: u8) -> Option<bool> {
+        self.dlcs.get(&dlci).map(|dlc| dlc.reading_paused)
     }
 
     /// Take the application data delivered to a DLC since the last call.

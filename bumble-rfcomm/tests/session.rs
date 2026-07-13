@@ -235,3 +235,49 @@ fn credit_flow_blocks_then_resumes() {
         "credits replenished by the peer's grant"
     );
 }
+
+#[test]
+fn paused_reading_withholds_rfcomm_credits_until_the_sink_resumes() {
+    let mut a = Multiplexer::new(Role::Initiator, PEER_MTU);
+    let mut b = Multiplexer::new(Role::Responder, PEER_MTU);
+    b.listen(1, 8, 2);
+    open_dlc(&mut a, &mut b, 1, 8, 7);
+    let dlci = 2;
+
+    b.set_dlc_reading_paused(dlci, true).unwrap();
+    assert_eq!(b.dlc_is_reading_paused(dlci), Some(true));
+    let data: Vec<u8> = (0..20).collect();
+    a.write(dlci, &data).unwrap();
+    for frame in a.drain_outgoing() {
+        b.on_pdu(&frame);
+    }
+    assert!(b.drain_outgoing().is_empty());
+    assert_eq!(a.dlc_tx_credits(dlci), Some(0));
+    assert!(a.dlc_pending_tx(dlci).unwrap() > 0);
+
+    b.set_dlc_reading_paused(dlci, false).unwrap();
+    assert_eq!(b.dlc_is_reading_paused(dlci), Some(false));
+    pump(&mut a, &mut b);
+    assert_eq!(b.take_rx(dlci).concat(), data);
+    assert_eq!(a.dlc_pending_tx(dlci), Some(0));
+}
+
+#[test]
+fn disconnecting_one_dlc_keeps_the_session_reusable() {
+    let mut a = Multiplexer::new(Role::Initiator, PEER_MTU);
+    let mut b = Multiplexer::new(Role::Responder, PEER_MTU);
+    b.listen(1, 64, 5);
+    open_dlc(&mut a, &mut b, 1, 48, 4);
+    let dlci = 2;
+
+    a.disconnect_dlc(dlci).unwrap();
+    pump(&mut a, &mut b);
+    assert_eq!(a.state(), MultiplexerState::Connected);
+    assert_eq!(b.state(), MultiplexerState::Connected);
+    assert_eq!(a.dlc_state(dlci), None);
+
+    a.open_dlc(1, 48, 4).unwrap();
+    pump(&mut a, &mut b);
+    assert_eq!(a.dlc_state(dlci), Some(DlcState::Connected));
+    assert_eq!(b.dlc_state(dlci), Some(DlcState::Connected));
+}

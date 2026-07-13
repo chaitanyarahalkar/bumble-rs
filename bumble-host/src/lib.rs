@@ -38,9 +38,10 @@ use bumble_hci::{
     SynchronousDataPacket,
 };
 use bumble_l2cap::{
+    ChannelManager as ClassicChannelManager, ClassicChannel, ClassicChannelSpec,
     Error as L2capError, L2capPdu, LeCreditBasedChannel, LeCreditBasedChannelSpec,
     LeCreditChannelManager, L2CAP_LE_PSM_DYNAMIC_RANGE_END, L2CAP_LE_PSM_DYNAMIC_RANGE_START,
-    L2CAP_LE_SIGNALING_CID,
+    L2CAP_LE_SIGNALING_CID, L2CAP_SIGNALING_CID,
 };
 
 mod data_queue;
@@ -466,6 +467,9 @@ pub struct Device {
     classic_connection_handle: Option<u16>,
     classic_connection_role: Option<u8>,
     classic_connections: BTreeMap<u16, ClassicConnectionInfo>,
+    classic_channel_managers: BTreeMap<u16, ClassicChannelManager>,
+    classic_channel_server_specs: BTreeMap<u32, ClassicChannelSpec>,
+    classic_channel_errors: Vec<(u16, String)>,
     classic_connection_requests: Vec<Address>,
     classic_inquiry_results: Vec<Address>,
     classic_inquiry_complete: Vec<u8>,
@@ -516,6 +520,9 @@ impl Device {
             classic_connection_handle: None,
             classic_connection_role: None,
             classic_connections: BTreeMap::new(),
+            classic_channel_managers: BTreeMap::new(),
+            classic_channel_server_specs: BTreeMap::new(),
+            classic_channel_errors: Vec::new(),
             classic_connection_requests: Vec::new(),
             classic_inquiry_results: Vec::new(),
             classic_inquiry_complete: Vec::new(),
@@ -566,6 +573,9 @@ impl Device {
             classic_connection_handle: None,
             classic_connection_role: None,
             classic_connections: BTreeMap::new(),
+            classic_channel_managers: BTreeMap::new(),
+            classic_channel_server_specs: BTreeMap::new(),
+            classic_channel_errors: Vec::new(),
             classic_connection_requests: Vec::new(),
             classic_inquiry_results: Vec::new(),
             classic_inquiry_complete: Vec::new(),
@@ -1322,6 +1332,108 @@ impl Device {
             .map(|connection| connection.connection_handle)
     }
 
+    pub fn classic_channel(
+        &self,
+        connection_handle: u16,
+        source_cid: u16,
+    ) -> Option<&ClassicChannel> {
+        self.classic_channel_managers
+            .get(&connection_handle)?
+            .channel(source_cid)
+    }
+
+    pub fn register_classic_channel_server(
+        &mut self,
+        psm: Option<u32>,
+        spec: ClassicChannelSpec,
+    ) -> bumble_l2cap::Result<u32> {
+        let mut registry = ClassicChannelManager::new();
+        for (registered_psm, registered_spec) in &self.classic_channel_server_specs {
+            registry.register_server(Some(*registered_psm), *registered_spec)?;
+        }
+        let psm = registry.register_server(psm, spec)?;
+        for manager in self.classic_channel_managers.values_mut() {
+            manager.register_server(Some(psm), spec)?;
+        }
+        self.classic_channel_server_specs.insert(psm, spec);
+        Ok(psm)
+    }
+
+    pub fn unregister_classic_channel_server(&mut self, psm: u32) -> bool {
+        let removed = self.classic_channel_server_specs.remove(&psm).is_some();
+        for manager in self.classic_channel_managers.values_mut() {
+            manager.unregister_server(psm);
+        }
+        removed
+    }
+
+    pub fn connect_classic_channel(
+        &mut self,
+        link: &mut LocalLink,
+        connection_handle: u16,
+        psm: u32,
+        spec: ClassicChannelSpec,
+    ) -> bumble_l2cap::Result<u16> {
+        let source_cid = self
+            .classic_channel_manager_mut(connection_handle)?
+            .connect(psm, spec)?;
+        self.flush_classic_channel_manager(link, connection_handle)?;
+        Ok(source_cid)
+    }
+
+    pub fn take_accepted_classic_channels(&mut self, connection_handle: u16) -> Vec<u16> {
+        let Some(manager) = self.classic_channel_managers.get_mut(&connection_handle) else {
+            return Vec::new();
+        };
+        std::iter::from_fn(|| manager.poll_accepted_channel()).collect()
+    }
+
+    pub fn send_classic_channel_sdu(
+        &mut self,
+        link: &mut LocalLink,
+        connection_handle: u16,
+        source_cid: u16,
+        data: &[u8],
+    ) -> bumble_l2cap::Result<()> {
+        self.classic_channel_manager_mut(connection_handle)?
+            .send(source_cid, data)?;
+        self.flush_classic_channel_manager(link, connection_handle)
+    }
+
+    pub fn take_classic_channel_sdus(
+        &mut self,
+        connection_handle: u16,
+        source_cid: u16,
+    ) -> Vec<Vec<u8>> {
+        let Some(channel) = self
+            .classic_channel_managers
+            .get_mut(&connection_handle)
+            .and_then(|manager| manager.channel_mut(source_cid))
+        else {
+            return Vec::new();
+        };
+        std::iter::from_fn(|| channel.pop_received()).collect()
+    }
+
+    pub fn disconnect_classic_channel(
+        &mut self,
+        link: &mut LocalLink,
+        connection_handle: u16,
+        source_cid: u16,
+    ) -> bumble_l2cap::Result<()> {
+        self.classic_channel_manager_mut(connection_handle)?
+            .disconnect(source_cid)?;
+        self.flush_classic_channel_manager(link, connection_handle)
+    }
+
+    pub fn classic_channel_output_is_drained(&self, connection_handle: u16) -> bool {
+        self.acl_packet_queue.is_drained(connection_handle)
+    }
+
+    pub fn take_classic_channel_errors(&mut self) -> Vec<(u16, String)> {
+        std::mem::take(&mut self.classic_channel_errors)
+    }
+
     pub fn select_classic_connection(&mut self, connection_handle: u16) -> bool {
         let Some(connection) = self.classic_connections.get(&connection_handle).cloned() else {
             return false;
@@ -1958,6 +2070,37 @@ impl Device {
         std::mem::take(&mut self.le_credit_errors)
     }
 
+    fn classic_channel_manager_mut(
+        &mut self,
+        connection_handle: u16,
+    ) -> bumble_l2cap::Result<&mut ClassicChannelManager> {
+        self.classic_channel_managers
+            .get_mut(&connection_handle)
+            .ok_or_else(|| {
+                L2capError::InvalidPacket(format!(
+                    "unknown Classic connection handle {connection_handle:#06x}"
+                ))
+            })
+    }
+
+    fn flush_classic_channel_manager(
+        &mut self,
+        link: &mut LocalLink,
+        connection_handle: u16,
+    ) -> bumble_l2cap::Result<()> {
+        let outbound = self
+            .classic_channel_manager_mut(connection_handle)?
+            .drain_outbound();
+        for pdu in outbound {
+            if !self.send_l2cap_on_handle(link, connection_handle, pdu.cid, &pdu.payload) {
+                return Err(L2capError::InvalidPacket(format!(
+                    "failed to send Classic channel PDU on handle {connection_handle:#06x}"
+                )));
+            }
+        }
+        Ok(())
+    }
+
     fn le_credit_manager_mut(
         &mut self,
         connection_handle: u16,
@@ -2325,6 +2468,9 @@ impl Device {
                     self.le_credit_managers.remove(&connection_handle);
                     self.le_credit_errors
                         .retain(|(handle, _)| *handle != connection_handle);
+                    self.classic_channel_managers.remove(&connection_handle);
+                    self.classic_channel_errors
+                        .retain(|(handle, _)| *handle != connection_handle);
                     self.inbox
                         .retain(|(handle, _)| *handle != connection_handle);
                     self.l2cap_inbox
@@ -2409,6 +2555,14 @@ impl Device {
                                 peer_address: bd_addr,
                             },
                         );
+                        let mut manager = ClassicChannelManager::new();
+                        for (psm, spec) in &self.classic_channel_server_specs {
+                            manager
+                                .register_server(Some(*psm), *spec)
+                                .expect("stored Classic channel server spec is valid");
+                        }
+                        self.classic_channel_managers
+                            .insert(connection_handle, manager);
                         self.select_classic_connection(connection_handle);
                     } else {
                         self.pending_classic_roles
@@ -2604,6 +2758,29 @@ impl Device {
         let Ok(l2cap) = L2capPdu::from_bytes(&data) else {
             return;
         };
+        let managed_classic_pdu =
+            self.classic_channel_managers
+                .get(&handle)
+                .is_some_and(|manager| {
+                    l2cap.cid == L2CAP_SIGNALING_CID || manager.channel(l2cap.cid).is_some()
+                });
+        if managed_classic_pdu {
+            if let Err(error) = self
+                .classic_channel_managers
+                .get_mut(&handle)
+                .expect("manager was just found")
+                .process_pdu(l2cap)
+            {
+                self.classic_channel_errors
+                    .push((handle, error.to_string()));
+                return;
+            }
+            if let Err(error) = self.flush_classic_channel_manager(link, handle) {
+                self.classic_channel_errors
+                    .push((handle, error.to_string()));
+            }
+            return;
+        }
         let managed_le_credit_pdu = self.le_credit_managers.get(&handle).is_some_and(|manager| {
             l2cap.cid == L2CAP_LE_SIGNALING_CID || manager.channel(l2cap.cid).is_some()
         });

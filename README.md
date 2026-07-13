@@ -233,6 +233,7 @@ size, to convey remaining surface.
 | `apps/gatt_dump.py` | `bumble-gatt-dump` (`bumble-transport`) | ✅ | Runnable external-controller GATT dump in initiator or advertising/listener mode, with address-or-active-name resolution, device-config local address selection, complete service/characteristic/descriptor and all-attribute discovery, per-attribute reads, bounded transport/procedure errors, and real `--encrypt` LE Secure Connections pairing. |
 | `apps/device_info.py` | `bumble-device-info` (`bumble-transport`) | ✅ | Runnable external-controller device inspection in initiator or advertising/listener mode, with address-or-active-name resolution, optional real LE encryption, complete service/characteristic discovery, and typed GAP, Device Information, Battery, TMAP, PACS, and VCS reads. Profile-specific protocol errors are reported without suppressing later sections. |
 | `apps/l2cap_bridge.py` | `bumble-l2cap-bridge` (`bumble-transport`) | ✅ | Runnable LE credit-based L2CAP-to-TCP bridge with the full upstream client/server, device-config, transport, PSM, credit, MTU/MPS, TCP host, and TCP port surface. The client accepts repeated local TCP connections over one LE ACL; the server accepts CoC channels and opens remote TCP connections. Both directions honor controller flow control and withhold CoC receive credits under TCP backpressure. |
+| `apps/rfcomm_bridge.py` | `bumble-rfcomm-bridge` (`bumble-transport`) | ✅ | Runnable Classic RFCOMM-to-TCP bridge with the full upstream client/server, device-config, transport, trace, channel, UUID, TCP, authentication, and encryption surface. Channel zero advertises or resolves the configured UUID through SDP, repeated DLCs reuse one RFCOMM session, and receive credits are withheld under TCP backpressure. |
 | `apps/pair.py` | `bumble-pair` (`bumble-transport`) | ✅ | Runnable LE, Classic, and simultaneous dual-mode listener paths over external controllers with the complete upstream option surface. LE supports direct address/name connection or configurable advertising, Legacy/SC pairing, and OOB data. Classic supports inquiry/name resolution, incoming/outgoing ACL setup, PIN and Secure Simple Pairing delegates, stored link-key reuse, controller encryption, and best-effort SMP-over-BR/EDR CTKD for P-256 link keys. Both paths provide bond policy, JSON key persistence/printing, and linger behavior. |
 | `apps/scan.py` | `bumble-scan` (`bumble-transport`) | ✅ | Runnable external HCI scanner with upstream RSSI/passive/interval/window/PHY/duplicate/raw/IRK/key-store/device-config options, extended scanning with legacy fallback, typed legacy + extended report decoding, exact active/passive scan-response accumulation, labeled AD rendering, RSSI bars, and real RPA identity resolution. |
 | `apps/usb_probe.py` | `bumble-usb-probe` (`bumble-transport`) | ✅ | Runnable libusb device inventory with upstream `--verbose`, `--hci-only`, manufacturer, and product filters; device/interface-level Bluetooth HCI classification; stable index, VID/PID, duplicate, and serial transport names; string-descriptor error tolerance; and verbose configuration/interface/endpoint details including isochronous packet sizes. |
@@ -2751,6 +2752,26 @@ The LE credit-based L2CAP/TCP bridge now runs over external controllers:
   TCP-to-CoC reads wait for both channel framing and controller ACL queues to
   drain. A live two-controller plus loopback-TCP test verifies both directions;
   the lower-level test pins credit withholding and restoration.
+
+## Slice 129 — what's here
+
+The Classic RFCOMM/TCP bridge now runs over external controllers:
+
+- `bumble-rfcomm-bridge` preserves the upstream device-config, transport,
+  tracing, channel, UUID, TCP, authentication, and encryption CLI. Server mode
+  accepts Classic ACLs and RFCOMM DLCs before opening outbound TCP streams;
+  client mode lazily establishes and reuses one ACL/RFCOMM session across
+  repeated local TCP connections.
+- Channel zero publishes the configured service UUID and allocated RFCOMM
+  channel through a live SDP endpoint on the server, and resolves the same UUID
+  through an SDP client on the initiator. Explicit channels bypass discovery.
+- `Device` now owns Classic dynamic L2CAP managers for every ACL handle, so SDP
+  and RFCOMM run over arbitrary external host transports. Individual RFCOMM
+  DLCs can close without tearing down the multiplexer, and paused sinks withhold
+  receive-credit replenishment to bound TCP backpressure.
+- A real loopback TCP test drives the production pipe in both directions across
+  two in-memory controllers, Classic L2CAP, and RFCOMM. Focused tests also pin
+  Classic channel lifecycle, DLC reuse, and receive-credit pause/resume.
 
 ## Acceptance
 
