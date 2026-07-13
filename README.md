@@ -227,6 +227,7 @@ size, to convey remaining surface.
 | `bridge.py` (0.1k) | `bumble-transport::HciBridge` | ✅ | Separate host/controller sources and sinks, directional single-packet pumping, typed replacement filters, responses short-circuited to the sender, post-filter directional tracing, EOF reporting, and transport-error propagation. |
 | `apps/show.py` | `bumble-show` (`bumble-transport`) | ✅ | Runnable H4/BTSnoop capture decoder with upstream `--format` and repeatable Android/Zephyr `--vendor` options, typed HCI parsing, direction/timestamp output, and explicit truncated-record reporting. Rust vendor codecs are statically linked rather than dynamically registered. |
 | `apps/controller_info.py` | `bumble-controller-info` (`bumble-transport`) | ✅ | Runnable external-controller inspection with reset, optional primed latency probes, symbolic local version/address/name, LE features, all 338 upstream Supported Commands labels, Classic + LE buffers, data/advertising limits, minimum connection intervals, named standard/vendor codecs and transports, typed voice fields, and V2-to-V1 LE buffer fallback. Unsupported commands are skipped and interleaved asynchronous packets are preserved. |
+| `apps/controller_loopback.py` | `bumble-controller-loopback` (`bumble-transport`) | ✅ | Runnable local-controller loopback benchmark with the full packet-size/count, ACL/SCO, throughput/RTT, interval, and transport CLI. It validates advertised loopback support, controller buffer limits, the written/read-back mode, waits for the matching connection type, sends bounded in-flight data, validates ordered echoed counters/handles, reassembles ACL/L2CAP packets, and reports RX/TX or RTT statistics. |
 | `apps/scan.py` | `bumble-scan` (`bumble-transport`) | ✅ | Runnable external HCI scanner with upstream RSSI/passive/interval/window/PHY/duplicate/raw/IRK/key-store/device-config options, extended scanning with legacy fallback, typed legacy + extended report decoding, exact active/passive scan-response accumulation, labeled AD rendering, RSSI bars, and real RPA identity resolution. |
 | `apps/usb_probe.py` | `bumble-usb-probe` (`bumble-transport`) | ✅ | Runnable libusb device inventory with upstream `--verbose`, `--hci-only`, manufacturer, and product filters; device/interface-level Bluetooth HCI classification; stable index, VID/PID, duplicate, and serial transport names; string-descriptor error tolerance; and verbose configuration/interface/endpoint details including isochronous packet sizes. |
 | `apps/ble_rpa_tool.py` | `bumble-rpa-tool` (`bumble-smp`) | ✅ | Runnable `gen-irk`, `gen-rpa`, and `verify-rpa` commands backed by the OS RNG and the real SMP `ah` primitive. Flexible Python-style hex input, address validation, colored verification results, and malformed/extra argument errors are covered. |
@@ -2508,6 +2509,23 @@ Controller inspection now has full symbolic report parity:
   combined codec transports, and voice-setting round trips. The scripted
   controller test exercises the complete report instead of only numeric query
   payloads.
+
+## Slice 116 — what's here
+
+Local controller loopback testing is now runnable over external transports:
+
+- `bumble-controller-loopback` implements the upstream packet-size/count,
+  ACL/SCO, throughput/RTT, interval, and transport surface. It rejects invalid
+  ranges and SCO payloads above 255 bytes before opening a controller.
+- Startup resets the controller, enables only the required event classes,
+  checks the Supported Commands bitmap, derives a bounded send window and
+  maximum payload from Classic or LE buffer queries, writes local loopback mode,
+  and verifies the typed Read Loopback Mode response.
+- ACL payloads use CID 0 L2CAP framing and reassembly; SCO payloads use typed
+  synchronous packets. Both paths validate the connection handle, packet size,
+  and monotonically increasing 16-bit counter before producing receive,
+  throughput, and RTT statistics. Scripted controllers exercise asynchronous
+  connection events interleaved with command responses and both data paths.
 
 ## Acceptance
 

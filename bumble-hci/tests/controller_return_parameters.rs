@@ -59,6 +59,14 @@ fn classic_controller_information_returns_are_typed() {
         },
         &[0, 0x60, 0],
     );
+    round_trip(
+        HCI_READ_LOOPBACK_MODE_COMMAND,
+        ReturnParameters::ReadLoopbackMode {
+            status: 0,
+            loopback_mode: 1,
+        },
+        &[0, 1],
+    );
 }
 
 #[test]

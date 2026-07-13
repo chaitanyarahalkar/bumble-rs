@@ -70,6 +70,10 @@ pub enum ReturnParameters {
         status: u8,
         voice_setting: u16,
     },
+    ReadLoopbackMode {
+        status: u8,
+        loopback_mode: u8,
+    },
     LeReadSuggestedDefaultDataLength {
         status: u8,
         suggested_max_tx_octets: u16,
@@ -137,6 +141,7 @@ impl ReturnParameters {
             | ReturnParameters::LeReadLocalSupportedFeatures { status, .. }
             | ReturnParameters::ReadBufferSize { status, .. }
             | ReturnParameters::ReadVoiceSetting { status, .. }
+            | ReturnParameters::ReadLoopbackMode { status, .. }
             | ReturnParameters::LeReadSuggestedDefaultDataLength { status, .. }
             | ReturnParameters::LeReadMaximumDataLength { status, .. }
             | ReturnParameters::LeReadMaximumAdvertisingDataLength { status, .. }
@@ -232,6 +237,13 @@ impl ReturnParameters {
             } => {
                 p.push(*status);
                 p.extend_from_slice(&voice_setting.to_le_bytes());
+            }
+            ReturnParameters::ReadLoopbackMode {
+                status,
+                loopback_mode,
+            } => {
+                p.push(*status);
+                p.push(*loopback_mode);
             }
             ReturnParameters::LeReadSuggestedDefaultDataLength {
                 status,
@@ -357,6 +369,7 @@ impl ReturnParameters {
                 | HCI_LE_READ_LOCAL_SUPPORTED_FEATURES_COMMAND
                 | HCI_READ_BUFFER_SIZE_COMMAND
                 | HCI_READ_VOICE_SETTING_COMMAND
+                | HCI_READ_LOOPBACK_MODE_COMMAND
                 | HCI_LE_READ_SUGGESTED_DEFAULT_DATA_LENGTH_COMMAND
                 | HCI_LE_READ_MAXIMUM_DATA_LENGTH_COMMAND
                 | HCI_LE_READ_MAXIMUM_ADVERTISING_DATA_LENGTH_COMMAND
@@ -432,6 +445,10 @@ impl ReturnParameters {
             HCI_READ_VOICE_SETTING_COMMAND => ReturnParameters::ReadVoiceSetting {
                 status,
                 voice_setting: r.u16_le()?,
+            },
+            HCI_READ_LOOPBACK_MODE_COMMAND => ReturnParameters::ReadLoopbackMode {
+                status,
+                loopback_mode: r.u8()?,
             },
             HCI_LE_READ_SUGGESTED_DEFAULT_DATA_LENGTH_COMMAND => {
                 ReturnParameters::LeReadSuggestedDefaultDataLength {
