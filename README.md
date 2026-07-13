@@ -111,7 +111,8 @@ crate whose behavior is verified against the upstream Python.
 | 94. Apple Media and Notification Center profiles | `bumble-profiles` | ✅ 128-bit GATT + commands/fragmented data/live clients green |
 | 95. Extended advertising sets, scanning, reports, and connection setup | `bumble-controller` / `bumble-host` | ✅ fragmented 1650-byte data + live two-device flow green |
 | 96. Connected ISO data paths and SDU streaming | `bumble-controller` / `bumble-host` / `bumble-hci` | ✅ setup/remove + fragmentation/reassembly + live CIS routing green |
-| 97+. Repository completion audit and remaining gaps | workspace | in progress |
+| 97. G.722 64 kbit/s audio decoder | `bumble-codecs` | ✅ upstream fixture PCM byte-exact + incremental-state green |
+| 98+. Repository completion audit and remaining gaps | workspace | in progress |
 
 The LE lifecycle is now complete end-to-end through library APIs: **connect →
 discover → read/write → notify → disconnect** between two virtual devices — and
@@ -156,7 +157,8 @@ size, to convey remaining surface.
 | `company_ids.py` (3.3k) | `bumble::company_ids` | ✅ | 3,327-entry SIG company table + `company_name()` binary-search lookup. |
 | `keys.py` (0.4k) | `bumble::keys` | ✅ | Complete `PairingKeys` / `Key` JSON model, replacement-style memory store, namespaced JSON store with upstream merge/default-namespace semantics and atomic replacement, delete/get/get-all/delete-all, platform data-path selection, and IRK resolving-list extraction to typed addresses. Rust uses synchronous filesystem calls rather than wrapping them in nominal async methods. |
 | `utils.py` (0.5k) | `bumble::util` (+ spread) | ✅ | Generic helpers (`bit_flags_to_strings`, `name_or_number`); `crc_16` lives in `bumble-l2cap`; the open-enum/flag pattern is realized as newtypes throughout. The asyncio event infra (`EventEmitter`/`AsyncRunner`/`FlowControlAsyncPipe`) is **N/A** for this synchronous port. |
-| `colors`, `logging`, `helpers`, `snoop`, `decoder` | — | N/A | Debug/logging tooling with idiomatic Rust equivalents rather than library surface: `colors` (ANSI), `logging` (→ `log`/`tracing`), `helpers.PacketTracer` (debug trace), `snoop` (BTSnoop/pcap capture). `decoder.py` is a **G.722 audio codec** — it belongs with the audio subsystem, not core. |
+| `colors`, `logging`, `helpers`, `snoop` | — | N/A | Debug/logging tooling with idiomatic Rust equivalents rather than library surface: `colors` (ANSI), `logging` (→ `log`/`tracing`), `helpers.PacketTracer` (debug trace), and `snoop` (BTSnoop/pcap capture). |
+| `decoder.py` (0.4k) | `bumble-codecs::g722` | ✅ | Stateful integer G.722 64 kbit/s lower/higher sub-band decoder, receive QMF, predictor adaptation, saturating arithmetic, signed PCM sample API, and little-endian byte output. The upstream sample's first 80-byte frame produces all 320 oracle PCM bytes exactly; split-frame decoding proves state continuity. |
 
 ### HCI, controller & link — 🟡 HCI codec complete (full catalog, oracle-pinned); controller/link behavior partial
 | Upstream (LOC) | Rust crate | Status | Notes |
@@ -208,7 +210,7 @@ size, to convey remaining surface.
 | `avc.py` (0.5k) | `bumble-avc` | ✅ | Open subunit/opcode/command/response/operation identifiers; generic command and response frames; single and double-extended subunit IDs; 24-bit-company vendor-dependent frames; and panel pass-through press/release operations with bounded operation data. These are the only two typed opcode subclasses upstream defines; all other opcodes round-trip through the generic raw form. Upstream AVRCP vectors are byte-pinned and malformed frames return errors. |
 | `avctp.py` (0.3k) | `bumble-avctp` | ✅ | Transaction labels, single/start/continue/end packets, command/response and IPID flags, 16-bit PIDs, safe fragmented-message assembly, MTU-aware outbound fragmentation, and a live Classic L2CAP binding are complete. Registered PIDs receive commands, unknown PIDs automatically produce IPID responses, and explicit message queues plus the higher AVRCP runtime replace Python callback registration. |
 | `avrcp` (2.9k) | `bumble-avrcp` | ✅ | Slices 41–46 port the complete typed wire catalog, bounded controller/target runtime, delegate behavior, interim→changed notifications, pass-through keys, both fragmentation layers over live Classic L2CAP, and controller/target SDP records + discovery. The browsing PSM is advertised exactly when supported; upstream itself does not implement a separate browsing-channel runtime. Async iterators are represented by explicit `RuntimeEvent` values. |
-| `codecs.py` (0.5k) | `bumble-codecs` | ✅ | Complete bit reader/writer plus MPEG-4 LATM `AudioMuxElement`, `StreamMuxConfig`, `AudioSpecificConfig`, GA config, AAC-LC constructor, arbitrary-length payload framing, and ADTS conversion. Upstream's long LATM fixture produces the exact ADTS oracle; unaligned bit chunks and 255/510-byte length boundaries round-trip safely. |
+| `codecs.py` (0.5k) | `bumble-codecs` | ✅ | Complete bit reader/writer plus MPEG-4 LATM `AudioMuxElement`, `StreamMuxConfig`, `AudioSpecificConfig`, GA config, AAC-LC constructor, arbitrary-length payload framing, and ADTS conversion. Upstream's long LATM fixture produces the exact ADTS oracle; unaligned bit chunks and 255/510-byte length boundaries round-trip safely. The same crate also owns the separately tracked G.722 decoder. |
 
 ### Profiles & apps
 | Upstream | Rust crate | Status | Notes |
@@ -2180,6 +2182,20 @@ control-plane handshake:
 - The HCI ISO decoder now validates its declared data length against timestamp,
   SDU-info, and fragment bytes, rejecting both truncation and trailing data.
   Live tests carry a 2500-byte SDU and a second sequenced SDU across two hosts.
+
+## Slice 97 — what's here
+
+The previously unported `decoder.py` audio path is now part of
+`bumble-codecs::g722`:
+
+- The stateful 64 kbit/s decoder ports both adaptive sub-band decoders, lower
+  and higher quantizers, scale-factor adaptation, Block 4 predictors, receive
+  QMF, saturation, and signed 16-bit PCM output.
+- Callers can receive native `i16` samples or upstream-compatible little-endian
+  PCM bytes; state is retained across successive frame calls.
+- All 320 PCM bytes generated from the first 80-byte upstream G.722 fixture
+  frame match Python Bumble exactly, and decoding the frame in two chunks gives
+  the same output as a single call.
 
 ## Acceptance
 

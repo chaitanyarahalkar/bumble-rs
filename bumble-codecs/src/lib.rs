@@ -1,5 +1,7 @@
 //! Common media bitstream codecs from `google/bumble`.
 
+pub mod g722;
+
 use core::fmt;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
