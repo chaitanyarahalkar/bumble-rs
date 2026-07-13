@@ -1,5 +1,8 @@
 use crate::{CommandResponse, Error, PacketSink, Result, SplitOpenedTransport};
+use bumble::keys::{KeyStore, PairingKeys};
+use bumble::Address;
 use bumble_att::AttPdu;
+use bumble_controller::ROLE_CENTRAL;
 use bumble_gatt::AttTransport;
 use bumble_hci::metadata::supported_command_names;
 use bumble_hci::{
@@ -7,6 +10,11 @@ use bumble_hci::{
     SynchronousDataPacket,
 };
 use bumble_host::{Device, HostTransport};
+use bumble_smp::{
+    security_request, AcceptAllDelegate, AuthReq, ManagedPairingState, PairingConfig,
+    PairingConnection, PairingDelegateFactory, PairingManager, PairingRole, PairingState,
+    ScPairingState, SmpPdu, SMP_CID,
+};
 use std::collections::VecDeque;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, TryRecvError};
 use std::time::{Duration, Instant};
@@ -34,6 +42,313 @@ pub struct ExternalControllerInfo {
     pub total_num_le_acl_data_packets: u8,
     pub iso_data_packet_length: u16,
     pub total_num_iso_data_packets: u8,
+}
+
+/// Transport-neutral LE SMP orchestration for a live [`Device`] connection.
+///
+/// The cryptographic and protocol state remains owned by
+/// [`bumble_smp::PairingManager`]. This adapter only moves SMP PDUs over the
+/// fixed L2CAP channel and translates the controller encryption handshake into
+/// pairing-manager lifecycle events.
+pub struct LePairingSession {
+    manager: PairingManager,
+    connection_handle: u16,
+    role: PairingRole,
+    auth_req: AuthReq,
+    started: bool,
+    encryption_started: bool,
+    marked_encrypted: bool,
+}
+
+impl LePairingSession {
+    pub fn new(
+        device: &Device,
+        connection_handle: u16,
+        local_address: Address,
+        config: PairingConfig,
+        delegate_factory: PairingDelegateFactory,
+    ) -> Result<Self> {
+        let connection = device.le_connection(connection_handle).ok_or_else(|| {
+            Error::Remote(format!(
+                "unknown LE connection handle {connection_handle:#06x}"
+            ))
+        })?;
+        let role = if connection.role == ROLE_CENTRAL {
+            PairingRole::Initiator
+        } else {
+            PairingRole::Responder
+        };
+        let auth_req = AuthReq::from_booleans(
+            config.bonding,
+            config.secure_connections,
+            config.mitm,
+            false,
+            config.ct2,
+        );
+        let mut manager = PairingManager::new(config, delegate_factory);
+        manager
+            .register_connection(PairingConnection::le(
+                connection_handle,
+                role,
+                local_address,
+                connection.peer_address.clone(),
+            ))
+            .map_err(|error| Error::Remote(error.to_string()))?;
+        Ok(Self {
+            manager,
+            connection_handle,
+            role,
+            auth_req,
+            started: false,
+            encryption_started: false,
+            marked_encrypted: false,
+        })
+    }
+
+    pub fn accept_all(
+        device: &Device,
+        connection_handle: u16,
+        local_address: Address,
+        config: PairingConfig,
+    ) -> Result<Self> {
+        Self::new(
+            device,
+            connection_handle,
+            local_address,
+            config,
+            Box::new(|_, _| Box::new(AcceptAllDelegate)),
+        )
+    }
+
+    pub fn connection_handle(&self) -> u16 {
+        self.connection_handle
+    }
+
+    pub fn role(&self) -> PairingRole {
+        self.role
+    }
+
+    pub fn state(&self) -> Option<ManagedPairingState> {
+        self.manager.state(self.connection_handle)
+    }
+
+    /// Start pairing. A central emits Pairing Request; a peripheral emits
+    /// Security Request so that its central peer starts the feature exchange.
+    pub fn begin(&mut self, link: &mut bumble_host::LocalLink, device: &mut Device) -> Result<()> {
+        if self.started {
+            return Err(Error::Remote("pairing session already started".into()));
+        }
+        if !device.is_connected_on_handle(self.connection_handle) {
+            return Err(Error::Remote(format!(
+                "LE connection {:#06x} is not active",
+                self.connection_handle
+            )));
+        }
+        match self.role {
+            PairingRole::Initiator => self
+                .manager
+                .pair(self.connection_handle)
+                .map_err(|error| Error::Remote(error.to_string()))?,
+            PairingRole::Responder => {
+                if !device.send_l2cap_on_handle(
+                    link,
+                    self.connection_handle,
+                    SMP_CID,
+                    &security_request(self.auth_req).to_bytes(),
+                ) {
+                    return Err(Error::Remote(format!(
+                        "failed to send SMP Security Request on handle {:#06x}",
+                        self.connection_handle
+                    )));
+                }
+            }
+        }
+        self.started = true;
+        Ok(())
+    }
+
+    /// Advance pairing without blocking. Returns the completed keys once key
+    /// distribution has finished.
+    pub fn drive_once(
+        &mut self,
+        link: &mut bumble_host::LocalLink,
+        device: &mut Device,
+    ) -> Result<Option<PairingKeys>> {
+        if !self.started {
+            return Err(Error::Remote("pairing session has not been started".into()));
+        }
+        if !device.is_connected_on_handle(self.connection_handle) {
+            return Err(Error::Remote(format!(
+                "LE connection {:#06x} ended during pairing",
+                self.connection_handle
+            )));
+        }
+
+        self.flush_outbound(link, device)?;
+        device.poll(link);
+        for payload in device.take_l2cap_on_handle(self.connection_handle, SMP_CID) {
+            let pdu =
+                SmpPdu::from_bytes(&payload).map_err(|error| Error::Remote(error.to_string()))?;
+            self.manager
+                .receive(self.connection_handle, pdu)
+                .map_err(|error| Error::Remote(error.to_string()))?;
+        }
+
+        while self.manager.poll_security_request().is_some() {
+            if self.role == PairingRole::Initiator
+                && self.manager.state(self.connection_handle).is_none()
+            {
+                self.manager
+                    .pair(self.connection_handle)
+                    .map_err(|error| Error::Remote(error.to_string()))?;
+            }
+        }
+
+        for request in device.take_long_term_key_requests_on_handle(self.connection_handle) {
+            let Some(key) = self.manager.encryption_key(self.connection_handle) else {
+                device.reject_long_term_key_request(link, request.connection_handle);
+                return Err(Error::Remote(format!(
+                    "controller requested an LTK before pairing produced one on handle {:#06x}",
+                    request.connection_handle
+                )));
+            };
+            if !device.reply_long_term_key_request(link, request.connection_handle, key) {
+                return Err(Error::Remote(format!(
+                    "failed to answer controller LTK request on handle {:#06x}",
+                    request.connection_handle
+                )));
+            }
+        }
+
+        if self.waiting_for_encryption() {
+            if self.role == PairingRole::Initiator && !self.encryption_started {
+                let key = self
+                    .manager
+                    .encryption_key(self.connection_handle)
+                    .ok_or_else(|| {
+                        Error::Remote("pairing reached encryption without a key".into())
+                    })?;
+                if !device.enable_encryption_on_handle(link, self.connection_handle, key) {
+                    return Err(Error::Remote(format!(
+                        "failed to start encryption on handle {:#06x}",
+                        self.connection_handle
+                    )));
+                }
+                self.encryption_started = true;
+            }
+            if device.is_encrypted_on_handle(self.connection_handle) && !self.marked_encrypted {
+                self.manager
+                    .mark_encrypted(self.connection_handle)
+                    .map_err(|error| Error::Remote(error.to_string()))?;
+                self.marked_encrypted = true;
+            }
+        }
+
+        self.flush_outbound(link, device)?;
+        if self.failed() {
+            return Err(Error::Remote(format!(
+                "SMP pairing failed: {:?}",
+                self.manager.failure(self.connection_handle)
+            )));
+        }
+        if self.complete() {
+            return self
+                .manager
+                .pairing_keys(self.connection_handle)
+                .map(Some)
+                .ok_or_else(|| Error::Remote("pairing completed without keys".into()));
+        }
+        Ok(None)
+    }
+
+    /// Run pairing to completion over an external HCI transport.
+    pub fn pair(
+        &mut self,
+        host: &mut ExternalHost,
+        device: &mut Device,
+        timeout: Duration,
+    ) -> Result<PairingKeys> {
+        self.begin(host, device)?;
+        let deadline = Instant::now() + timeout;
+        loop {
+            if let Some(keys) = self.drive_once(host, device)? {
+                return Ok(keys);
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(Error::Remote(format!(
+                    "timed out pairing LE connection {:#06x}",
+                    self.connection_handle
+                )));
+            }
+            match host.wait_for_activity(remaining)? {
+                ExternalHostActivity::Packet => {}
+                ExternalHostActivity::Timeout => {
+                    return Err(Error::Remote(format!(
+                        "timed out pairing LE connection {:#06x}",
+                        self.connection_handle
+                    )))
+                }
+                ExternalHostActivity::Ended => {
+                    return Err(Error::Remote(format!(
+                        "transport ended while pairing LE connection {:#06x}",
+                        self.connection_handle
+                    )))
+                }
+            }
+        }
+    }
+
+    pub fn store_bond(&self, store: &mut dyn KeyStore) -> Result<bool> {
+        self.manager
+            .store_bond(self.connection_handle, store)
+            .map_err(|error| Error::Remote(error.to_string()))
+    }
+
+    fn flush_outbound(
+        &mut self,
+        link: &mut bumble_host::LocalLink,
+        device: &mut Device,
+    ) -> Result<()> {
+        for (handle, pdu) in self.manager.drain_outbound() {
+            if !device.send_l2cap_on_handle(link, handle, SMP_CID, &pdu.to_bytes()) {
+                return Err(Error::Remote(format!(
+                    "failed to send SMP PDU on handle {handle:#06x}"
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    fn waiting_for_encryption(&self) -> bool {
+        matches!(
+            self.state(),
+            Some(ManagedPairingState::Legacy(PairingState::WaitEncryption))
+                | Some(ManagedPairingState::SecureConnections(
+                    ScPairingState::WaitEncryption
+                ))
+        )
+    }
+
+    fn complete(&self) -> bool {
+        matches!(
+            self.state(),
+            Some(ManagedPairingState::Legacy(PairingState::Complete))
+                | Some(ManagedPairingState::SecureConnections(
+                    ScPairingState::Complete
+                ))
+        )
+    }
+
+    fn failed(&self) -> bool {
+        matches!(
+            self.state(),
+            Some(ManagedPairingState::Legacy(PairingState::Failed))
+                | Some(ManagedPairingState::SecureConnections(
+                    ScPairingState::Failed
+                ))
+        )
+    }
 }
 
 /// Synchronous ATT bearer over an initialized [`ExternalHost`] and connected
@@ -961,5 +1276,172 @@ mod tests {
             .unwrap()
             .iter()
             .any(|packet| matches!(packet, HciPacket::AclData(_))));
+    }
+
+    #[test]
+    fn device_surfaces_and_answers_external_ltk_requests() {
+        let address =
+            Address::parse("C4:F2:17:1A:1D:BB", bumble::AddressType::RANDOM_DEVICE).unwrap();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let sink = RecordingSink::default();
+        let recorded = sink.clone();
+        let mut host = ExternalHost::new(SplitOpenedTransport {
+            source: Box::new(ChannelSource(receiver)),
+            sink: Box::new(sink),
+            metadata: BTreeMap::new(),
+        });
+        let mut device = Device::new(0);
+        sender
+            .send(HciPacket::Event(Event::LeMeta(
+                LeMetaEvent::ConnectionComplete {
+                    status: 0,
+                    connection_handle: 0x123,
+                    role: 1,
+                    peer_address_type: 1,
+                    peer_address: address,
+                    connection_interval: 24,
+                    peripheral_latency: 0,
+                    supervision_timeout: 42,
+                    central_clock_accuracy: 0,
+                },
+            )))
+            .unwrap();
+        sender
+            .send(HciPacket::Event(Event::LeMeta(
+                LeMetaEvent::LongTermKeyRequest {
+                    connection_handle: 0x123,
+                    random_number: [0x22; 8],
+                    encryption_diversifier: 0x3344,
+                },
+            )))
+            .unwrap();
+
+        let deadline = Instant::now() + Duration::from_secs(1);
+        let request = loop {
+            device.poll(&mut host);
+            if let Some(request) = device.take_long_term_key_requests().pop() {
+                break request;
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            assert!(!remaining.is_zero(), "LTK request was not surfaced");
+            assert_eq!(
+                host.wait_for_activity(remaining).unwrap(),
+                ExternalHostActivity::Packet
+            );
+        };
+        assert_eq!(request.connection_handle, 0x123);
+        assert_eq!(request.random_number, [0x22; 8]);
+        assert_eq!(request.encryption_diversifier, 0x3344);
+        assert!(device.reply_long_term_key_request(&mut host, 0x123, [0xA5; 16]));
+        assert!(recorded.0.lock().unwrap().iter().any(|packet| matches!(
+            packet,
+            HciPacket::Command(Command::LeLongTermKeyRequestReply {
+                connection_handle: 0x123,
+                long_term_key,
+            }) if long_term_key == &[0xA5; 16]
+        )));
+    }
+
+    #[test]
+    fn le_pairing_session_drives_secure_connections_and_stores_bonds() {
+        use bumble::keys::{KeyStore, MemoryKeyStore};
+        use bumble::AddressType;
+        use bumble_controller::{Controller, LocalLink as ControllerLink};
+        use bumble_host::pump;
+
+        let central_address =
+            Address::parse("C4:F2:17:1A:1D:AA", AddressType::RANDOM_DEVICE).unwrap();
+        let peripheral_address =
+            Address::parse("C4:F2:17:1A:1D:BB", AddressType::RANDOM_DEVICE).unwrap();
+        let mut link = ControllerLink::new();
+        let central = link.add_controller(Controller::new(
+            "central",
+            Address::parse("00:00:00:00:00:01", AddressType::PUBLIC_DEVICE).unwrap(),
+        ));
+        let peripheral = link.add_controller(Controller::new(
+            "peripheral",
+            Address::parse("00:00:00:00:00:02", AddressType::PUBLIC_DEVICE).unwrap(),
+        ));
+        link.handle_command(
+            peripheral,
+            Command::LeSetRandomAddress {
+                random_address: peripheral_address.clone(),
+            },
+        );
+        link.handle_command(
+            peripheral,
+            Command::LeSetAdvertisingEnable {
+                advertising_enable: 1,
+            },
+        );
+        link.handle_command(
+            central,
+            Command::LeSetRandomAddress {
+                random_address: central_address.clone(),
+            },
+        );
+        link.handle_command(
+            central,
+            Command::LeCreateConnection {
+                le_scan_interval: 16,
+                le_scan_window: 16,
+                initiator_filter_policy: 0,
+                peer_address_type: 1,
+                peer_address: peripheral_address.clone(),
+                own_address_type: 1,
+                connection_interval_min: 24,
+                connection_interval_max: 40,
+                max_latency: 0,
+                supervision_timeout: 42,
+                min_ce_length: 0,
+                max_ce_length: 0,
+            },
+        );
+        link.establish_connections();
+        let mut devices = [Device::new(central), Device::new(peripheral)];
+        pump(&mut link, &mut devices);
+        let handles = [
+            devices[0].connection_handle().unwrap(),
+            devices[1].connection_handle().unwrap(),
+        ];
+        let config = || PairingConfig {
+            mitm: false,
+            ..PairingConfig::default()
+        };
+        let mut sessions = [
+            LePairingSession::accept_all(&devices[0], handles[0], central_address, config())
+                .unwrap(),
+            LePairingSession::accept_all(&devices[1], handles[1], peripheral_address, config())
+                .unwrap(),
+        ];
+        sessions[0].begin(&mut link, &mut devices[0]).unwrap();
+        sessions[1].begin(&mut link, &mut devices[1]).unwrap();
+
+        let mut completed: [Option<PairingKeys>; 2] = [None, None];
+        for _ in 0..200 {
+            for index in 0..2 {
+                if let Some(keys) = sessions[index]
+                    .drive_once(&mut link, &mut devices[index])
+                    .unwrap()
+                {
+                    completed[index] = Some(keys);
+                }
+            }
+            if completed.iter().all(Option::is_some) {
+                break;
+            }
+            pump(&mut link, &mut devices);
+        }
+
+        let central_keys = completed[0].as_ref().expect("central pairing completed");
+        let peripheral_keys = completed[1].as_ref().expect("peripheral pairing completed");
+        assert_eq!(central_keys.ltk, peripheral_keys.ltk);
+        assert!(devices[0].is_encrypted_on_handle(handles[0]));
+        assert!(devices[1].is_encrypted_on_handle(handles[1]));
+        let mut stores = [MemoryKeyStore::new(), MemoryKeyStore::new()];
+        assert!(sessions[0].store_bond(&mut stores[0]).unwrap());
+        assert!(sessions[1].store_bond(&mut stores[1]).unwrap());
+        assert_eq!(stores[0].get_all().unwrap().len(), 1);
+        assert_eq!(stores[1].get_all().unwrap().len(), 1);
     }
 }

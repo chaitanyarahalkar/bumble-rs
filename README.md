@@ -230,7 +230,7 @@ size, to convey remaining surface.
 | `apps/controller_loopback.py` | `bumble-controller-loopback` (`bumble-transport`) | ✅ | Runnable local-controller loopback benchmark with the full packet-size/count, ACL/SCO, throughput/RTT, interval, and transport CLI. It validates advertised loopback support, controller buffer limits, the written/read-back mode, waits for the matching connection type, sends bounded in-flight data, validates ordered echoed counters/handles, reassembles ACL/L2CAP packets, and reports RX/TX or RTT statistics. |
 | `apps/controllers.py` | `bumble-controllers` (`bumble-transport`) | ✅ | Runnable two-controller software radio over arbitrary split external HCI transports. A serialized shared-link pump routes host commands, ACL/SCO/ISO payloads, advertising and connections, LE control/PAST, Classic LMP, and all resulting host events without aliasing controller state. |
 | `apps/hci_bridge.py` | `bumble-hci-bridge` (`bumble-transport`) | ✅ | Runnable full-duplex host/controller bridge with upstream direct-opcode and OGF:OCF success short circuits. Independent read/write halves cover every external transport: file, raw HCI socket, serial, TCP, UDP, USB, VHCI, PTY, Unix, WebSocket, Android emulator, and Android netsim. |
-| `apps/gatt_dump.py` | `bumble-gatt-dump` (`bumble-transport`) | 🟡 | Runnable external-controller GATT dump in initiator or advertising/listener mode, with address-or-active-name resolution, device-config local address selection, complete service/characteristic/descriptor and all-attribute discovery, per-attribute reads, and bounded transport/procedure errors. `--encrypt` is parsed but remains blocked on the external SMP pairing runtime. |
+| `apps/gatt_dump.py` | `bumble-gatt-dump` (`bumble-transport`) | ✅ | Runnable external-controller GATT dump in initiator or advertising/listener mode, with address-or-active-name resolution, device-config local address selection, complete service/characteristic/descriptor and all-attribute discovery, per-attribute reads, bounded transport/procedure errors, and real `--encrypt` LE Secure Connections pairing. |
 | `apps/scan.py` | `bumble-scan` (`bumble-transport`) | ✅ | Runnable external HCI scanner with upstream RSSI/passive/interval/window/PHY/duplicate/raw/IRK/key-store/device-config options, extended scanning with legacy fallback, typed legacy + extended report decoding, exact active/passive scan-response accumulation, labeled AD rendering, RSSI bars, and real RPA identity resolution. |
 | `apps/usb_probe.py` | `bumble-usb-probe` (`bumble-transport`) | ✅ | Runnable libusb device inventory with upstream `--verbose`, `--hci-only`, manufacturer, and product filters; device/interface-level Bluetooth HCI classification; stable index, VID/PID, duplicate, and serial transport names; string-descriptor error tolerance; and verbose configuration/interface/endpoint details including isochronous packet sizes. |
 | `apps/ble_rpa_tool.py` | `bumble-rpa-tool` (`bumble-smp`) | ✅ | Runnable `gen-irk`, `gen-rpa`, and `verify-rpa` commands backed by the OS RNG and the real SMP `ah` primitive. Flexible Python-style hex input, address validation, colored verification results, and malformed/extra argument errors are covered. |
@@ -2654,6 +2654,24 @@ using that path is runnable:
   modes, complete hierarchy rendering, and readable per-attribute values over
   every split HCI transport. Its `--encrypt` path remains explicitly gated on
   the external SMP runtime rather than silently running unencrypted.
+
+## Slice 124 — what's here
+
+LE SMP pairing and encryption now run over the external-controller host path:
+
+- `Device` preserves controller Long Term Key Request events and exposes
+  positive/negative LTK replies, alongside handle-scoped request collection and
+  disconnect cleanup.
+- `LePairingSession` drives the existing `PairingManager` over the SMP fixed
+  channel without duplicating protocol or cryptographic state. It supports both
+  central-initiated Pairing Requests and peripheral Security Requests, handles
+  Legacy or Secure Connections encryption transitions, completes key
+  distribution, and can persist the resulting bond in any `KeyStore`.
+- `bumble-gatt-dump --encrypt` now performs real Just Works Secure Connections
+  pairing, waits for controller-confirmed link encryption, and only then starts
+  GATT discovery. Deterministic two-controller tests cover both roles, matching
+  LTKs, encryption state, and bond persistence; external HCI tests cover LTK
+  request/reply routing.
 
 ## Acceptance
 

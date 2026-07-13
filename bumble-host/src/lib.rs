@@ -172,6 +172,14 @@ pub struct LeConnectionInfo {
     pub peer_address: Address,
 }
 
+/// Controller request for the key needed to complete LE link encryption.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LongTermKeyRequestInfo {
+    pub connection_handle: u16,
+    pub random_number: [u8; 8],
+    pub encryption_diversifier: u16,
+}
+
 /// Host-owned metadata for one established Classic ACL connection.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ClassicConnectionInfo {
@@ -379,6 +387,7 @@ pub struct Device {
     /// Received payloads on non-ATT L2CAP channels, as `(handle, cid, payload)`.
     l2cap_inbox: Vec<(u16, u16, Vec<u8>)>,
     security_requests: Vec<(u16, u8)>,
+    long_term_key_requests: Vec<LongTermKeyRequestInfo>,
     advertising_reports: Vec<AdvertisingReport>,
     extended_advertising_reports: Vec<ExtendedAdvertisingReport>,
     periodic_syncs: BTreeMap<u16, PeriodicAdvertisingSyncInfo>,
@@ -422,6 +431,7 @@ impl Device {
             inbox: Vec::new(),
             l2cap_inbox: Vec::new(),
             security_requests: Vec::new(),
+            long_term_key_requests: Vec::new(),
             advertising_reports: Vec::new(),
             extended_advertising_reports: Vec::new(),
             periodic_syncs: BTreeMap::new(),
@@ -466,6 +476,7 @@ impl Device {
             inbox: Vec::new(),
             l2cap_inbox: Vec::new(),
             security_requests: Vec::new(),
+            long_term_key_requests: Vec::new(),
             advertising_reports: Vec::new(),
             extended_advertising_reports: Vec::new(),
             periodic_syncs: BTreeMap::new(),
@@ -1109,6 +1120,43 @@ impl Device {
                 encrypted_diversifier,
                 long_term_key: key,
             },
+        );
+        true
+    }
+
+    /// Answer a controller LTK request with pairing or bond-derived key
+    /// material.
+    pub fn reply_long_term_key_request(
+        &mut self,
+        link: &mut LocalLink,
+        connection_handle: u16,
+        long_term_key: [u8; 16],
+    ) -> bool {
+        if !self.le_connections.contains_key(&connection_handle) {
+            return false;
+        }
+        self.send_hci_command(
+            link,
+            Command::LeLongTermKeyRequestReply {
+                connection_handle,
+                long_term_key,
+            },
+        );
+        true
+    }
+
+    /// Reject a controller LTK request when no suitable key is available.
+    pub fn reject_long_term_key_request(
+        &mut self,
+        link: &mut LocalLink,
+        connection_handle: u16,
+    ) -> bool {
+        if !self.le_connections.contains_key(&connection_handle) {
+            return false;
+        }
+        self.send_hci_command(
+            link,
+            Command::LeLongTermKeyRequestNegativeReply { connection_handle },
         );
         true
     }
@@ -1821,6 +1869,24 @@ impl Device {
             .collect()
     }
 
+    /// Remove all pending LE Long Term Key requests emitted by the controller.
+    pub fn take_long_term_key_requests(&mut self) -> Vec<LongTermKeyRequestInfo> {
+        std::mem::take(&mut self.long_term_key_requests)
+    }
+
+    /// Remove pending LE Long Term Key requests for one connection while
+    /// preserving requests belonging to other connections.
+    pub fn take_long_term_key_requests_on_handle(
+        &mut self,
+        connection_handle: u16,
+    ) -> Vec<LongTermKeyRequestInfo> {
+        let (matching, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut self.long_term_key_requests)
+            .into_iter()
+            .partition(|request| request.connection_handle == connection_handle);
+        self.long_term_key_requests = rest;
+        matching
+    }
+
     /// Send an unsolicited Handle Value Notification for `value_handle` to the
     /// peer (server → client). The peer collects it from its inbox.
     pub fn notify(&mut self, link: &mut LocalLink, value_handle: u16, value: Vec<u8>) -> bool {
@@ -1915,6 +1981,15 @@ impl Device {
                 })) => {
                     self.extended_advertising_reports.extend(reports);
                 }
+                HciPacket::Event(Event::LeMeta(LeMetaEvent::LongTermKeyRequest {
+                    connection_handle,
+                    random_number,
+                    encryption_diversifier,
+                })) => self.long_term_key_requests.push(LongTermKeyRequestInfo {
+                    connection_handle,
+                    random_number,
+                    encryption_diversifier,
+                }),
                 HciPacket::Event(Event::LeMeta(
                     LeMetaEvent::PeriodicAdvertisingSyncEstablished {
                         status,
@@ -2067,6 +2142,14 @@ impl Device {
                     self.le_credit_managers.remove(&connection_handle);
                     self.le_credit_errors
                         .retain(|(handle, _)| *handle != connection_handle);
+                    self.inbox
+                        .retain(|(handle, _)| *handle != connection_handle);
+                    self.l2cap_inbox
+                        .retain(|(handle, _, _)| *handle != connection_handle);
+                    self.security_requests
+                        .retain(|(handle, _)| *handle != connection_handle);
+                    self.long_term_key_requests
+                        .retain(|request| request.connection_handle != connection_handle);
                     if self.connection_handle == Some(connection_handle) {
                         if let Some(next_handle) = self.le_connections.keys().next().copied() {
                             self.select_connection(next_handle);

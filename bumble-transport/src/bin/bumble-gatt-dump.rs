@@ -3,8 +3,10 @@ use bumble::{Address, AddressType, AdvertisingData};
 use bumble_gatt::{AttTransport, GattClient, GattError};
 use bumble_hci::Command;
 use bumble_host::Device;
+use bumble_smp::PairingConfig;
 use bumble_transport::{
-    open_split_transport, CommandResponse, ExternalAttTransport, ExternalHost, ExternalHostActivity,
+    open_split_transport, CommandResponse, ExternalAttTransport, ExternalHost,
+    ExternalHostActivity, LePairingSession,
 };
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -342,9 +344,6 @@ fn dump_gatt(transport: &mut impl AttTransport) -> Result<String, GattError> {
 }
 
 fn run(args: Args) -> Result<(), String> {
-    if args.encrypt {
-        return Err("--encrypt requires the external SMP pairing runtime".into());
-    }
     let local_address = configured_address(args.device_config.as_deref())?;
     let transport = open_split_transport(&args.transport).map_err(|error| error.to_string())?;
     let mut host = ExternalHost::new(transport);
@@ -356,7 +355,7 @@ fn run(args: Args) -> Result<(), String> {
         command(
             &mut host,
             Command::LeSetRandomAddress {
-                random_address: local_address,
+                random_address: local_address.clone(),
             },
             "setting local random address",
         )?;
@@ -375,6 +374,23 @@ fn run(args: Args) -> Result<(), String> {
         println!("### Waiting for connection...");
         advertise_and_wait(&mut host, &mut device, own_address_type)?
     };
+    if args.encrypt {
+        println!("+++ Encrypting connection...");
+        let mut pairing = LePairingSession::accept_all(
+            &device,
+            handle,
+            local_address,
+            PairingConfig {
+                mitm: false,
+                ..PairingConfig::default()
+            },
+        )
+        .map_err(|error| error.to_string())?;
+        pairing
+            .pair(&mut host, &mut device, PROCEDURE_TIMEOUT)
+            .map_err(|error| error.to_string())?;
+        println!("+++ Encryption established");
+    }
     let mut att = ExternalAttTransport::new(&mut host, &mut device, handle, PROCEDURE_TIMEOUT)
         .map_err(|error| error.to_string())?;
     println!(
