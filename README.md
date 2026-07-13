@@ -112,7 +112,8 @@ crate whose behavior is verified against the upstream Python.
 | 95. Extended advertising sets, scanning, reports, and connection setup | `bumble-controller` / `bumble-host` | ✅ fragmented 1650-byte data + live two-device flow green |
 | 96. Connected ISO data paths and SDU streaming | `bumble-controller` / `bumble-host` / `bumble-hci` | ✅ setup/remove + fragmentation/reassembly + live CIS routing green |
 | 97. G.722 64 kbit/s audio decoder | `bumble-codecs` | ✅ upstream fixture PCM byte-exact + incremental-state green |
-| 98+. Repository completion audit and remaining gaps | workspace | in progress |
+| 98. Portable PCM audio input and output | `bumble-audio` | ✅ format/raw/WAVE/subprocess paths + looping and threaded output green |
+| 99+. Repository completion audit and remaining gaps | workspace | in progress |
 
 The LE lifecycle is now complete end-to-end through library APIs: **connect →
 discover → read/write → notify → disconnect** between two virtual devices — and
@@ -211,6 +212,7 @@ size, to convey remaining surface.
 | `avctp.py` (0.3k) | `bumble-avctp` | ✅ | Transaction labels, single/start/continue/end packets, command/response and IPID flags, 16-bit PIDs, safe fragmented-message assembly, MTU-aware outbound fragmentation, and a live Classic L2CAP binding are complete. Registered PIDs receive commands, unknown PIDs automatically produce IPID responses, and explicit message queues plus the higher AVRCP runtime replace Python callback registration. |
 | `avrcp` (2.9k) | `bumble-avrcp` | ✅ | Slices 41–46 port the complete typed wire catalog, bounded controller/target runtime, delegate behavior, interim→changed notifications, pass-through keys, both fragmentation layers over live Classic L2CAP, and controller/target SDP records + discovery. The browsing PSM is advertised exactly when supported; upstream itself does not implement a separate browsing-channel runtime. Async iterators are represented by explicit `RuntimeEvent` values. |
 | `codecs.py` (0.5k) | `bumble-codecs` | ✅ | Complete bit reader/writer plus MPEG-4 LATM `AudioMuxElement`, `StreamMuxConfig`, `AudioSpecificConfig`, GA config, AAC-LC constructor, arbitrary-length payload framing, and ADTS conversion. Upstream's long LATM fixture produces the exact ADTS oracle; unaligned bit chunks and 255/510-byte length boundaries round-trip safely. The same crate also owns the separately tracked G.722 decoder. |
+| `audio/io.py` (0.6k) | `bumble-audio` | 🟡 | `PcmFormat`, frame sizing, raw stream/file input, non-blocking threaded stream/file output, format-expanded subprocess output, input/output specification factories, and RIFF/WAVE 16-bit PCM parsing with upstream-compatible rewind-on-EOF looping are complete. Deferred: the optional PortAudio/sounddevice-equivalent hardware adapter and device enumeration. |
 
 ### Profiles & apps
 | Upstream | Rust crate | Status | Notes |
@@ -222,7 +224,7 @@ size, to convey remaining surface.
 
 The codec and protocol inventory is now broad rather than LE-only: HCI,
 L2CAP/ERTM/LE CoC, ATT/GATT, SMP/CTKD/privacy/signing, SDP, RFCOMM, HFP,
-AVDTP/A2DP, AV/C/AVCTP/AVRCP, HID, transports/drivers, and all 23 profile
+AVDTP/A2DP, AV/C/AVCTP/AVRCP, HID, portable audio I/O, transports/drivers, and all 23 profile
 modules have live Rust implementations. Both legacy and extended LE
 advertising/scan/connect paths run end-to-end through the high-level `Device`.
 
@@ -2197,6 +2199,23 @@ The previously unported `decoder.py` audio path is now part of
   frame match Python Bumble exactly, and decoding the frame in two chunks gives
   the same output as a single call.
 
+## Slice 98 — what's here
+
+The portable portion of upstream `audio/io.py` now lives in `bumble-audio`:
+
+- `PcmFormat` parses the same `int16le,rate,channels` and
+  `float32le,rate,channels` strings and exposes exact sample/frame sizing.
+- Raw streams and files support frame-oriented input. Stream/file output uses a
+  dedicated writer thread, so writes enqueue immediately while close drains and
+  flushes the queue. Subprocess output expands sample-rate and mono/stereo
+  placeholders and delivers PCM through standard input.
+- The RIFF/WAVE reader validates PCM encoding, 16-bit sample width, block
+  alignment, arbitrary intervening chunks and padding, then matches upstream's
+  behavior of returning a short final frame and rewinding on the next read.
+- Factories accept `stdin`, `stdout`, `file:`, implicit existing file paths,
+  `auto` WAVE detection, and `ffplay`. Hardware device selection remains a
+  platform-backend integration rather than a portable core behavior.
+
 ## Acceptance
 
 The port's contract is the upstream Python test suite, ported 1:1:
@@ -2340,8 +2359,12 @@ bumble-rs/
 │   ├── tests/protocol.rs      # exact messages, callbacks, malformed inputs
 │   └── tests/l2cap.rs         # live host/device report flows
 ├── bumble-codecs/             # slice-48 common media bitstreams/codecs
-│   ├── src/lib.rs             # bit I/O + MPEG-4 LATM AAC and ADTS conversion
-│   └── tests/codecs.rs        # upstream fixture + length-boundary round trips
+│   ├── src/{lib,g722}.rs      # bit I/O, LATM/ADTS, and G.722 decoding
+│   ├── tests/codecs.rs        # upstream fixture + length-boundary round trips
+│   └── tests/g722.rs          # upstream fixture PCM + state continuity
+├── bumble-audio/              # slice-98 portable PCM input and output
+│   ├── src/lib.rs             # formats, streams/files, WAVE, subprocesses
+│   └── tests/io.rs            # framing, looping, factories, worker delivery
 ├── bumble-transport/          # slices 75-82 external HCI transports
 │   ├── build.rs               # vendored-protoc Android gRPC generation
 │   ├── proto/{android_emulator,netsim_common,netsim_startup,netsim_packet_streamer}.proto
