@@ -106,7 +106,8 @@ crate whose behavior is verified against the upstream Python.
 | 89. LE Audio metadata, BAP codec foundations, and PACS | `bumble-profiles` / `bumble-hci` | ✅ LTV/PAC codecs + live capability discovery green |
 | 90. Telephony/Media, Gaming Audio, and Public Broadcast profiles | `bumble-profiles` | ✅ role/features + announcement vectors/live reads green |
 | 91. Basic Audio announcements and Audio Stream Control | `bumble-profiles` | ✅ all ASE operations + live sink/source state machine green |
-| 92+. Remaining modules… | — | planned |
+| 92. Broadcast Audio Scan and Common Audio profiles | `bumble-profiles` | ✅ all operations/states + live encrypted BASS/CAS inclusion green |
+| 93+. Remaining modules… | — | planned |
 
 The LE lifecycle is now complete end-to-end through library APIs: **connect →
 discover → read/write → notify → disconnect** between two virtual devices — and
@@ -208,7 +209,7 @@ size, to convey remaining surface.
 ### Profiles & apps
 | Upstream | Rust crate | Status | Notes |
 |---|---|---|---|
-| `profiles/*` — GAP, Battery, Device Info, Heart Rate, ASHA, LE Audio (BAP/PACS/ASCS/…), HAP, CSIP, … (23 modules) | `bumble-profiles` | 🟡 | Eighteen modules are live: foundational GAP/GATT/Battery/Device Information/Heart Rate, ASHA/CSIP, VCS/VOCS/AICS, MCP/GMCS, common LE Audio metadata, BAP/PACS/ASCS, TMAP, GMAP, and PBP. BAP includes its complete codec/announcement data model, and ASCS includes every control operation plus the sink/source ASE runtime. Deferred: BASS, CAP, HAP, AMS, and ANCS. |
+| `profiles/*` — GAP, Battery, Device Info, Heart Rate, ASHA, LE Audio (BAP/PACS/ASCS/…), HAP, CSIP, … (23 modules) | `bumble-profiles` | 🟡 | Twenty modules are live: foundational GAP/GATT/Battery/Device Information/Heart Rate, ASHA/CSIP, VCS/VOCS/AICS, MCP/GMCS, common LE Audio metadata, BAP/PACS/ASCS/BASS/CAP, TMAP, GMAP, and PBP. BAP includes its complete codec/announcement data model; ASCS and BASS include their complete control/runtime surfaces; CAS includes CSIS exactly. Deferred: HAP, AMS, and ANCS. |
 | `bridge.py`, `pandora/`, apps | — | ⬜ | Test harnesses / apps — out of scope. |
 
 ### Roughly where that leaves things
@@ -2091,6 +2092,22 @@ Basic Audio Profile announcements and Audio Stream Control are live:
   metadata, disable, release, and reset transitions. Its typed proxy discovers,
   subscribes, writes operations, reads states, and decodes notifications.
 
+## Slice 92 — what's here
+
+Broadcast Audio Scan and Common Audio are live:
+
+- BASS strictly parses and emits remote-scan, add/modify source, broadcast-code,
+  and remove-source operations; typed subgroup metadata; and both normal and
+  bad-code Broadcast Receive State forms. Address byte order, 24-bit Broadcast
+  IDs, counted metadata, and the 16-byte code are byte-pinned to upstream.
+- The live BASS service publishes configurable encrypted receive-state slots,
+  captures typed control operations, updates states, and queues notifications.
+  Its proxy discovers all repeated state characteristics, subscribes, writes
+  operations, and decodes empty or populated read/notification values.
+- CAP's Common Audio Service includes the Coordinated Set Identification
+  Service through a real GATT Include declaration, with a typed proxy that
+  discovers and verifies the included CSIS instance.
+
 ## Acceptance
 
 The port's contract is the upstream Python test suite, ported 1:1:
@@ -2255,15 +2272,16 @@ bumble-rs/
 │   ├── tests/intel.rs         # exact wire, parser, lookup, full cold-start flow
 │   ├── tests/rtk.rs           # epatch failures, matrix, wrap, full download flow
 │   └── tests/selection.rs     # forced/unknown/automatic driver selection
-├── bumble-profiles/           # slices 85-91 standard GATT profile services
-│   ├── src/{gap,gatt_service,battery_service,device_information_service,heart_rate_service,asha,csip,vcs,vocs,aics,mcp,le_audio,bap,pacs,tmap,gmap,pbp,ascs}.rs
+├── bumble-profiles/           # slices 85-92 standard GATT profile services
+│   ├── src/{gap,gatt_service,battery_service,device_information_service,heart_rate_service,asha,csip,vcs,vocs,aics,mcp,le_audio,bap,pacs,tmap,gmap,pbp,ascs,bass,cap}.rs
 │   ├── tests/foundational_services.rs # live typed proxy/control/hash coverage
 │   ├── tests/hearing_profiles.rs # ASHA state + CSIS vectors/encrypted reads
 │   ├── tests/volume_controls.rs # encrypted VCS/VOCS/AICS control matrices
 │   ├── tests/media_control.rs # typed MCS events + GMCS control handshake
 │   ├── tests/le_audio_pacs.rs # metadata/LTV/PAC/announcement vectors + live PACS reads
 │   ├── tests/role_profiles.rs # TMAP/GMAP live reads + PBP announcement vectors
-│   └── tests/ascs.rs          # all operations + live sink/source ASE lifecycle
+│   ├── tests/ascs.rs          # all operations + live sink/source ASE lifecycle
+│   └── tests/bass_cap.rs      # BASS wire/live state + CAS included CSIS
 └── docs/superpowers/          # design specs + implementation plans
 ```
 
