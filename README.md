@@ -19,7 +19,7 @@ crate whose behavior is verified against the upstream Python.
 | 1. Core types & advertising data | `bumble` | ✅ complete — 16/16 tests green |
 | 2. HCI packet codec (framing + **full** command/event catalog + return params) | `bumble-hci` | ✅ 320/320 tests green |
 | 3+7. Software controller + virtual link (advertising + LE connections + read/PHY/data-length commands) | `bumble-controller` | ✅ 17/17 tests green |
-| 4+21. L2CAP codec + Classic and LE connection-oriented channel runtimes | `bumble-l2cap` | ✅ 27/27 tests green |
+| 4+21. L2CAP codec + Classic and LE connection-oriented channel runtimes | `bumble-l2cap` | ✅ 38/38 tests green |
 | 5. ATT protocol PDU codec (incl. Find_Information, Read_Blob, indications) | `bumble-att` | ✅ 16/16 tests green |
 | 6. SMP cryptographic toolbox (+ P-256 ECC/ECDH, slice 19) | `bumble-crypto` | ✅ 14/14 tests green |
 | 7. LE connection establishment (in the controller) | `bumble-controller` | ✅ (see slice 3+7) |
@@ -77,7 +77,8 @@ crate whose behavior is verified against the upstream Python.
 | 60. HCI ACL completed-packet flow-control queue | `bumble-host`, `bumble-controller` | ✅ bounded in-flight window green |
 | 61. Enhanced credit-based multi-channel and reconfigure runtime | `bumble-l2cap` | ✅ five-channel + refusal matrix green |
 | 62. Enhanced Retransmission Mode control fields and data engine | `bumble-l2cap` | ✅ loss/busy/window/timer paths green |
-| 63+. Remaining modules… | — | planned |
+| 63. Live Classic L2CAP ERTM negotiation and transport | `bumble-l2cap` | ✅ upstream MTU matrix + FCS green |
+| 64+. Remaining modules… | — | planned |
 
 The LE lifecycle is now complete end-to-end through library APIs: **connect →
 discover → read/write → notify → disconnect** between two virtual devices — and
@@ -138,7 +139,7 @@ size, to convey remaining surface.
 ### L2CAP
 | Upstream (LOC) | Rust crate | Status | Notes |
 |---|---|---|---|
-| `l2cap.py` (3.1k) | `bumble-l2cap` | 🟡 | PDU + complete typed upstream signaling-frame catalog + FCS, synchronous Classic connection-oriented channels, and paired LE CoC runtimes. Classic covers dynamic PSM/CID allocation, Connection/Configure/Disconnection, MTU negotiation/refusal, and bidirectional basic-mode SDUs; the standalone ERTM engine covers I/S fields, SAR, windows, busy state, acknowledgments, loss recovery, and logical timers. LE covers single and enhanced one-to-five-channel setup, refusal correlation, MTU/MPS segmentation/reassembly, credit stalls/replenishment, atomic reconfiguration, accepted channels, bidirectional transfer, and disconnect cleanup. HCI/host fragment and reassemble complete L2CAP PDUs across ACL buffer boundaries. Deferred: ERTM configuration binding into live Classic channels and asynchronous manager conveniences. |
+| `l2cap.py` (3.1k) | `bumble-l2cap` | 🟡 | PDU + complete typed upstream signaling-frame catalog + FCS, synchronous Classic connection-oriented channels, and paired LE CoC runtimes. Classic covers dynamic PSM/CID allocation, Connection/Configure/Disconnection, MTU negotiation/refusal, bidirectional basic mode, and live ERTM negotiation/segmentation/windows/busy state/acknowledgments/loss recovery/logical timers/FCS. LE covers single and enhanced one-to-five-channel setup, refusal correlation, MTU/MPS segmentation/reassembly, credit stalls/replenishment, atomic reconfiguration, accepted channels, bidirectional transfer, and disconnect cleanup. HCI/host fragment and reassemble complete L2CAP PDUs across ACL buffer boundaries. Deferred: async/event conveniences and broader host-manager integration. |
 
 ### ATT / GATT
 | Upstream (LOC) | Rust crate | Status | Notes |
@@ -1421,8 +1422,33 @@ Classic-channel binding:
   first frame, prove busy/ready stalling, exercise repeated timeout recovery,
   enforce the retry ceiling, and reject malformed control flow.
 
-The next slice binds this engine to Classic L2CAP configuration options and live
-channel traffic.
+## Slice 63 — what's here
+
+ERTM now runs through the same live Classic `ChannelManager` used by RFCOMM,
+SDP, AVDTP, AVCTP, and HID:
+
+- `ErtmChannelSpec`, `register_ertm_server`, and `connect_ertm` add opt-in mode
+  configuration without changing the existing one-field `ClassicChannelSpec`
+  API. MTU, Retransmission and Flow Control, and optional FCS configuration
+  options are exchanged and validated before either endpoint opens.
+- The negotiated peer MPS, transmit window, retransmission ceiling, and local
+  logical timeout instantiate the Slice 62 engine. Mode mismatch, malformed
+  options, zero MPS, invalid windows, and FCS disagreement close both sides with
+  Configuration Unacceptable Parameters and never announce a server channel.
+- Data frames are routed through the engine, delivered SDUs return through the
+  existing `pop_received` API, RNR/RR can be driven at manager level, and
+  `tick` advances every channel's deterministic retransmission clock.
+- Optional FCS covers the actual L2CAP header, CID, ERTM control field, and
+  payload. The receiver reconstructs that exact input and rejects corruption
+  before sequence or SAR state can advance.
+- The upstream ERTM test is ported with all four MTUs (50, 255, 256, 1000),
+  asymmetric 256/1024-byte MPS values, and the exact 21/70/700/5523-byte SDU
+  sequence in both directions. Additional live tests drop a transmit window,
+  pause/resume with RNR/RR, retransmit on timeout, corrupt FCS, and negotiate a
+  Basic/ERTM mismatch.
+
+The named L2CAP protocol-depth gaps are now closed; remaining work is broader
+host/device integration and the many still-unported upstream modules.
 
 ## Acceptance
 

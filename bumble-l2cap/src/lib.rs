@@ -13,8 +13,7 @@
 //! every upstream signaling control frame, and a synchronous Classic channel
 //! manager with a [`ControlFrame::Generic`] fallback for extension codes.
 //!
-//! Deferred to later slices: wiring the enhanced-retransmission engine into
-//! Classic channel configuration and the remaining asynchronous conveniences.
+//! Deferred to later slices: the remaining asynchronous manager conveniences.
 
 use core::fmt;
 
@@ -23,9 +22,12 @@ pub mod ertm;
 pub mod le_credit;
 
 pub use classic::{
-    ChannelManager, ClassicChannel, ClassicChannelSpec, ClassicChannelState,
-    L2CAP_ACL_U_DYNAMIC_CID_RANGE_END, L2CAP_ACL_U_DYNAMIC_CID_RANGE_START, L2CAP_DEFAULT_MTU,
-    L2CAP_MIN_BR_EDR_MTU, L2CAP_PSM_DYNAMIC_RANGE_END, L2CAP_PSM_DYNAMIC_RANGE_START,
+    ChannelManager, ClassicChannel, ClassicChannelMode, ClassicChannelSpec, ClassicChannelState,
+    ErtmChannelSpec, DEFAULT_ERTM_MAX_RETRANSMISSIONS, DEFAULT_ERTM_MONITOR_TIMEOUT_MS,
+    DEFAULT_ERTM_RETRANSMISSION_TIMEOUT_MS, DEFAULT_ERTM_TX_WINDOW_SIZE,
+    L2CAP_ACL_U_DYNAMIC_CID_RANGE_END, L2CAP_ACL_U_DYNAMIC_CID_RANGE_START, L2CAP_DEFAULT_MPS,
+    L2CAP_DEFAULT_MTU, L2CAP_MIN_BR_EDR_MTU, L2CAP_PSM_DYNAMIC_RANGE_END,
+    L2CAP_PSM_DYNAMIC_RANGE_START, RETRANSMISSION_MODE_ENHANCED,
 };
 pub use ertm::{
     EnhancedControlField, ErtmConfig, ErtmEngine, SegmentationAndReassembly, SupervisoryFunction,
@@ -96,6 +98,8 @@ pub const CONFIGURATION_REJECTED: u16 = 0x0002;
 pub const CONFIGURATION_UNKNOWN_OPTIONS: u16 = 0x0003;
 
 pub const CONFIGURATION_OPTION_MTU: u8 = 0x01;
+pub const CONFIGURATION_OPTION_RETRANSMISSION_AND_FLOW_CONTROL: u8 = 0x04;
+pub const CONFIGURATION_OPTION_FCS: u8 = 0x05;
 
 /// Errors produced while parsing L2CAP frames.
 #[derive(Debug, Clone, PartialEq, Eq)]
