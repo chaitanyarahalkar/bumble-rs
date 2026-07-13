@@ -58,6 +58,8 @@ pub struct Device {
     controller_id: usize,
     server: Option<Box<dyn AttRequestHandler>>,
     connection_handle: Option<u16>,
+    connection_role: Option<u8>,
+    peer_address: Option<Address>,
     classic_connection_handle: Option<u16>,
     synchronous_connections: Vec<SynchronousConnectionInfo>,
     synchronous_requests: Vec<(Address, u8)>,
@@ -79,6 +81,8 @@ impl Device {
             controller_id,
             server: None,
             connection_handle: None,
+            connection_role: None,
+            peer_address: None,
             classic_connection_handle: None,
             synchronous_connections: Vec::new(),
             synchronous_requests: Vec::new(),
@@ -100,6 +104,8 @@ impl Device {
             controller_id,
             server: Some(Box::new(server)),
             connection_handle: None,
+            connection_role: None,
+            peer_address: None,
             classic_connection_handle: None,
             synchronous_connections: Vec::new(),
             synchronous_requests: Vec::new(),
@@ -126,6 +132,14 @@ impl Device {
     /// `true` while a connection is established.
     pub fn is_connected(&self) -> bool {
         self.connection_handle.is_some()
+    }
+
+    pub fn connection_role(&self) -> Option<u8> {
+        self.connection_role
+    }
+
+    pub fn peer_address(&self) -> Option<&Address> {
+        self.peer_address.as_ref()
     }
 
     pub fn is_encrypted(&self) -> bool {
@@ -161,6 +175,40 @@ impl Device {
             },
         );
         true
+    }
+
+    /// Program the controller resolving list from `KeyStore::get_resolving_keys`.
+    /// Invalid-length IRKs are skipped; the returned count is the number loaded.
+    pub fn configure_address_resolution(
+        &mut self,
+        link: &mut LocalLink,
+        resolving_keys: &[(Vec<u8>, Address)],
+        local_irk: [u8; 16],
+    ) -> usize {
+        self.send_hci_command(link, Command::LeClearResolvingList);
+        let mut loaded = 0;
+        for (peer_irk, identity) in resolving_keys {
+            let Ok(peer_irk) = peer_irk.as_slice().try_into() else {
+                continue;
+            };
+            self.send_hci_command(
+                link,
+                Command::LeAddDeviceToResolvingList {
+                    peer_identity_address_type: u8::from(!identity.is_public()),
+                    peer_identity_address: identity.clone(),
+                    peer_irk,
+                    local_irk,
+                },
+            );
+            loaded += 1;
+        }
+        self.send_hci_command(
+            link,
+            Command::LeSetAddressResolutionEnable {
+                address_resolution_enable: u8::from(loaded != 0),
+            },
+        );
+        loaded
     }
 
     pub fn classic_connection_handle(&self) -> Option<u16> {
@@ -348,9 +396,13 @@ impl Device {
             match event {
                 HciPacket::Event(Event::LeMeta(LeMetaEvent::ConnectionComplete {
                     connection_handle,
+                    role,
+                    peer_address,
                     ..
                 })) => {
                     self.connection_handle = Some(connection_handle);
+                    self.connection_role = Some(role);
+                    self.peer_address = Some(peer_address);
                 }
                 HciPacket::Event(Event::DisconnectionComplete {
                     connection_handle, ..
@@ -360,6 +412,8 @@ impl Device {
                     self.acl_packet_queue.flush(connection_handle);
                     if self.connection_handle == Some(connection_handle) {
                         self.connection_handle = None;
+                        self.connection_role = None;
+                        self.peer_address = None;
                     }
                     if self.classic_connection_handle == Some(connection_handle) {
                         self.classic_connection_handle = None;

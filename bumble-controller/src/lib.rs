@@ -27,6 +27,9 @@
 //! `LE_Read_Buffer_Size`, `LE_Read_Local_Supported_Features`, `LE_Rand`) and the
 //! per-connection `LE_Set_Data_Length` / `LE_Set_PHY` requests, which report
 //! back through `LE_Data_Length_Change` / `LE_PHY_Update_Complete`.
+//! The LE resolving-list commands also hold real IRK state: an initiator may
+//! target a bonded identity while the peer advertises with an RPA, and the
+//! central receives the resolved identity while link routing retains the RPA.
 //!
 //! ## Full command surface
 //!
@@ -84,6 +87,7 @@ pub mod ll;
 pub mod lmp;
 
 use bumble::{Address, AddressType};
+use bumble_crypto::ah;
 use bumble_hci::codes::*;
 use bumble_hci::{
     AclDataPacket, AdvertisingReport, Command, Event, HciPacket, LeMetaEvent, ReturnParameters,
@@ -187,6 +191,14 @@ struct PendingConnection {
     own_address_type: u8,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ResolvingListEntry {
+    peer_identity_address_type: u8,
+    peer_identity_address: Address,
+    peer_irk: [u8; 16],
+    local_irk: [u8; 16],
+}
+
 /// An advertising PDU as it travels over the [`LocalLink`]. Since the link is
 /// in-process, this is a plain struct rather than a serialized LL PDU.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -209,6 +221,9 @@ pub struct Controller {
     scanning_enabled: bool,
     connections: Vec<Connection>,
     initiating: Option<PendingConnection>,
+    resolving_list: Vec<ResolvingListEntry>,
+    address_resolution_enabled: bool,
+    rpa_timeout: u16,
     next_handle: u16,
     /// Monotonic counter backing `LE_Rand` — the software controller has no
     /// entropy source, so it returns a deterministic, ever-changing value.
@@ -242,6 +257,9 @@ impl Controller {
             scanning_enabled: false,
             connections: Vec::new(),
             initiating: None,
+            resolving_list: Vec::new(),
+            address_resolution_enabled: false,
+            rpa_timeout: 900,
             next_handle: 1,
             rand_counter: 0,
             host_queue: Vec::new(),
@@ -283,6 +301,9 @@ impl Controller {
                 self.classic_connections.clear();
                 self.synchronous_connections.clear();
                 self.initiating = None;
+                self.resolving_list.clear();
+                self.address_resolution_enabled = false;
+                self.rpa_timeout = 900;
                 self.ack(op_code, HCI_SUCCESS);
             }
             Command::LeCreateConnection {
@@ -365,6 +386,56 @@ impl Controller {
                 let mut data = vec![HCI_SUCCESS];
                 data.extend_from_slice(&value);
                 self.complete(op_code, ReturnParameters::Raw { data });
+            }
+            Command::LeAddDeviceToResolvingList {
+                peer_identity_address_type,
+                peer_identity_address,
+                peer_irk,
+                local_irk,
+            } => {
+                if peer_identity_address_type > ADDRESS_TYPE_RANDOM {
+                    self.ack(op_code, INVALID_COMMAND_PARAMETERS);
+                } else {
+                    self.resolving_list
+                        .retain(|entry| entry.peer_identity_address != peer_identity_address);
+                    self.resolving_list.push(ResolvingListEntry {
+                        peer_identity_address_type,
+                        peer_identity_address,
+                        peer_irk,
+                        local_irk,
+                    });
+                    self.ack(op_code, HCI_SUCCESS);
+                }
+            }
+            Command::LeClearResolvingList => {
+                self.resolving_list.clear();
+                self.ack(op_code, HCI_SUCCESS);
+            }
+            Command::LeReadResolvingListSize => {
+                self.complete(
+                    op_code,
+                    ReturnParameters::Raw {
+                        data: vec![HCI_SUCCESS, 16],
+                    },
+                );
+            }
+            Command::LeSetAddressResolutionEnable {
+                address_resolution_enable,
+            } => {
+                if address_resolution_enable > 1 {
+                    self.ack(op_code, INVALID_COMMAND_PARAMETERS);
+                } else {
+                    self.address_resolution_enabled = address_resolution_enable != 0;
+                    self.ack(op_code, HCI_SUCCESS);
+                }
+            }
+            Command::LeSetResolvablePrivateAddressTimeout { rpa_timeout } => {
+                if rpa_timeout == 0 {
+                    self.ack(op_code, INVALID_COMMAND_PARAMETERS);
+                } else {
+                    self.rpa_timeout = rpa_timeout;
+                    self.ack(op_code, HCI_SUCCESS);
+                }
             }
             Command::LeSetDataLength {
                 connection_handle,
@@ -1262,14 +1333,19 @@ impl Controller {
         })
     }
 
-    fn push_connection_complete(&mut self, connection: &Connection, peer_address_type: u8) {
+    fn push_connection_complete(
+        &mut self,
+        connection: &Connection,
+        reported_peer_address: Address,
+        peer_address_type: u8,
+    ) {
         self.host_queue.push(HciPacket::Event(Event::LeMeta(
             LeMetaEvent::ConnectionComplete {
                 status: HCI_SUCCESS,
                 connection_handle: connection.handle,
                 role: connection.role,
                 peer_address_type,
-                peer_address: connection.peer_address.clone(),
+                peer_address: reported_peer_address,
                 connection_interval: CONNECTION_INTERVAL,
                 peripheral_latency: PERIPHERAL_LATENCY,
                 supervision_timeout: SUPERVISION_TIMEOUT,
@@ -1281,6 +1357,22 @@ impl Controller {
     /// Complete the pending connection as the central. Emits a Connection
     /// Complete (role = central) and clears the initiating state.
     pub fn connect_as_central(&mut self) {
+        let Some(pending) = self.initiating.as_ref() else {
+            return;
+        };
+        self.connect_as_central_to(
+            pending.peer_address.clone(),
+            pending.peer_address.clone(),
+            pending.peer_address_type,
+        );
+    }
+
+    fn connect_as_central_to(
+        &mut self,
+        link_peer_address: Address,
+        reported_peer_address: Address,
+        reported_peer_address_type: u8,
+    ) {
         let Some(pending) = self.initiating.take() else {
             return;
         };
@@ -1294,9 +1386,13 @@ impl Controller {
             handle,
             role: ROLE_CENTRAL,
             self_address,
-            peer_address: pending.peer_address,
+            peer_address: link_peer_address,
         };
-        self.push_connection_complete(&connection, pending.peer_address_type);
+        self.push_connection_complete(
+            &connection,
+            reported_peer_address,
+            reported_peer_address_type,
+        );
         self.connections.push(connection);
     }
 
@@ -1310,9 +1406,36 @@ impl Controller {
             self_address: self.random_address.clone(),
             peer_address: central_address,
         };
-        self.push_connection_complete(&connection, central_address_type);
+        self.push_connection_complete(
+            &connection,
+            connection.peer_address.clone(),
+            central_address_type,
+        );
         self.connections.push(connection);
         self.advertising_enabled = false;
+    }
+
+    fn resolve_peer_identity(&self, target: &Address, rpa: &Address) -> Option<Address> {
+        if !self.address_resolution_enabled || !rpa.is_resolvable() {
+            return None;
+        }
+        let bytes = rpa.address_bytes();
+        let hash = &bytes[..3];
+        let prand = &bytes[3..];
+        self.resolving_list
+            .iter()
+            .find(|entry| {
+                entry.peer_identity_address.address_bytes() == target.address_bytes()
+                    && ah(&entry.peer_irk, prand).as_slice() == hash
+            })
+            .map(|entry| {
+                let address_type = if entry.peer_identity_address_type == ADDRESS_TYPE_PUBLIC {
+                    AddressType::PUBLIC_IDENTITY
+                } else {
+                    AddressType::RANDOM_IDENTITY
+                };
+                Address::from_bytes(*entry.peer_identity_address.address_bytes(), address_type)
+            })
     }
 
     /// Handle a host-initiated `HCI_Disconnect`: acknowledge with a Command
@@ -1637,28 +1760,57 @@ impl LocalLink {
     /// emitting a Connection Complete to each host.
     pub fn establish_connections(&mut self) {
         // Match (central, peripheral) pairs first, to avoid aliasing during mutation.
-        let mut pairs: Vec<(usize, usize, Address, u8)> = Vec::new();
+        let mut pairs: Vec<(usize, usize, Address, u8, Address, Address, u8)> = Vec::new();
         for (ci, central) in self.controllers.iter().enumerate() {
             let Some((central_addr, central_addr_type)) = central.initiating_self_address() else {
                 continue;
             };
             let target = central.initiating.as_ref().unwrap().peer_address.clone();
-            if let Some(pi) = self
+            if let Some((pi, actual_peer, reported_peer, reported_type)) = self
                 .controllers
                 .iter()
-                .position(|p| p.is_advertising() && *p.random_address() == target)
+                .enumerate()
+                .find_map(|(pi, peripheral)| {
+                    if !peripheral.is_advertising() {
+                        return None;
+                    }
+                    let actual = peripheral.random_address();
+                    if *actual == target {
+                        return Some((pi, actual.clone(), actual.clone(), ADDRESS_TYPE_RANDOM));
+                    }
+                    central
+                        .resolve_peer_identity(&target, actual)
+                        .map(|identity| {
+                            (
+                                pi,
+                                actual.clone(),
+                                identity.clone(),
+                                identity.address_type().0,
+                            )
+                        })
+                })
             {
                 if pi != ci {
-                    pairs.push((ci, pi, central_addr, central_addr_type));
+                    pairs.push((
+                        ci,
+                        pi,
+                        central_addr,
+                        central_addr_type,
+                        actual_peer,
+                        reported_peer,
+                        reported_type,
+                    ));
                 }
             }
         }
 
-        for (ci, pi, central_addr, central_addr_type) in pairs {
+        for (ci, pi, central_addr, central_addr_type, actual_peer, reported_peer, reported_type) in
+            pairs
+        {
             // Peripheral accepts, seeing the central's address.
             self.controllers[pi].connect_as_peripheral(central_addr, central_addr_type);
             // Central completes its pending connection.
-            self.controllers[ci].connect_as_central();
+            self.controllers[ci].connect_as_central_to(actual_peer, reported_peer, reported_type);
         }
     }
 

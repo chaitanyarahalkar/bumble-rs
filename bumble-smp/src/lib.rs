@@ -30,14 +30,16 @@
 //! [`KeyDistributionSession`] adds responder-first encrypted phase-3 key
 //! distribution, Bumble-compatible bond assembly, and key-store persistence.
 //! [`security_request_action`] adds CT2-aware stored-bond evaluation for
-//! Security Request reconnects. Deferred: the automatic multi-connection
-//! pairing manager, privacy resolution, and signed-data counters.
+//! Security Request reconnects. [`AddressResolver`] and the RPA helpers add
+//! host-side privacy resolution. Deferred: the automatic multi-connection
+//! pairing manager and signed-data counters.
 
 use bumble::Address;
 use core::fmt;
 
 pub mod distribution;
 pub mod pairing;
+pub mod privacy;
 pub mod sc_session;
 pub mod security;
 pub mod session;
@@ -50,6 +52,9 @@ pub use pairing::{
     AcceptAllDelegate, AuthReq, IdentityAddressType, IoCapability, KeyDistribution, OobConfig,
     OobContext, OobData, OobLegacyContext, OobSharedData, PairingCapabilities, PairingConfig,
     PairingDelegate, PairingMethod, PairingMethodSelection,
+};
+pub use privacy::{
+    generate_resolvable_private_address, resolvable_private_address, AddressResolver,
 };
 pub use sc_session::{ScPairingOutcome, ScPairingSession, ScPairingState};
 pub use security::{

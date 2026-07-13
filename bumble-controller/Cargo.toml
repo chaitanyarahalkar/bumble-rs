@@ -14,6 +14,7 @@ description = "Rust port of google/bumble software controller + virtual link (sl
 [dependencies]
 bumble = { path = "../bumble" }
 bumble-hci = { path = "../bumble-hci" }
+bumble-crypto = { path = "../bumble-crypto" }
 
 [dev-dependencies]
 # Used only by the ACL-data-path integration test to build/parse the payload

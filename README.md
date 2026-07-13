@@ -84,7 +84,8 @@ crate whose behavior is verified against the upstream Python.
 | 67. SC Passkey and OOB association models | `bumble-smp` | ✅ 20 rounds + C/R validation green |
 | 68. Encrypted SMP key distribution and bond persistence | `bumble-smp`, `bumble` | ✅ responder-first phase 3 + stores green |
 | 69. CT2 negotiation and bonded Security Request reconnect | `bumble-smp`, `bumble-host` | ✅ h7 + live reuse green |
-| 70+. Remaining modules… | — | planned |
+| 70. IRK address resolution and controller privacy offload | `bumble-smp`, `bumble-controller`, `bumble-host` | ✅ identity→RPA reconnect green |
+| 71+. Remaining modules… | — | planned |
 
 The LE lifecycle is now complete end-to-end through library APIs: **connect →
 discover → read/write → notify → disconnect** between two virtual devices — and
@@ -135,10 +136,10 @@ size, to convey remaining surface.
 | Upstream (LOC) | Rust crate | Status | Notes |
 |---|---|---|---|
 | `hci.py` (8.3k) | `bumble-hci` | ✅ | **Full typed catalog: 196 command op codes + 81 event / LE-meta sub-event codes**, generated from upstream's declarative field specs by [`tools/hcigen`](bumble-hci/tools/hcigen/) and **byte-pinned against real Python Bumble** (320 oracle tests). Framing (Command/Event/ACL/SCO/ISO), `Command_Complete` with typed `ReturnParameters`, the open-enum `Generic` tail, and upstream-equivalent ACL/L2CAP fragmentation/reassembly with PB-flag, length, continuation, handle, and overflow validation. Two phys-derived array commands and the two nested-report events are hand-written; everything else is generated. |
-| `controller.py` (2.8k) | `bumble-controller` | 🟡 | **Full command surface**: every command upstream's `controller.py` handles (93, via the generated [`command_surface`](bumble-controller/src/command_surface.rs) table) gets a reply of the matching HCI shape — Command Complete + SUCCESS for config/set commands, Command Status for operations completing via a later event, and the spec-correct "Unknown HCI Command" for anything upstream also doesn't handle. **Functionally simulated**: LE advertising/scanning, connection establishment, ACL routing with PB/BC preservation and Number Of Completed Packets flow events, disconnection, the read commands (`Read_BD_ADDR`/`Read_Local_Name`/`LE_Read_Buffer_Size`/`LE_Read_Local_Supported_Features`/`LE_Rand`), per-connection `LE_Set_Data_Length`/`LE_Set_PHY` (with follow-up meta events), and — via LL control-PDU exchange over the link — **encryption start**, **remote-features**, and **CIS establishment**. Also **classic (BR/EDR)** connection/name/features and SCO/eSCO request/accept/reject/disconnect with synchronous-data routing. Other read commands are acknowledged SUCCESS **without a synthesized payload** (a documented stub, not a full read). Deferred: LTK verification, ISO data-path streaming, remote-version exchange, extended/periodic advertising, and classic auth/encryption/role-switch sub-flows. |
+| `controller.py` (2.8k) | `bumble-controller` | 🟡 | **Full command surface**: every command upstream's `controller.py` handles (93, via the generated [`command_surface`](bumble-controller/src/command_surface.rs) table) gets a reply of the matching HCI shape — Command Complete + SUCCESS for config/set commands, Command Status for operations completing via a later event, and the spec-correct "Unknown HCI Command" for anything upstream also doesn't handle. **Functionally simulated**: LE advertising/scanning, connection establishment, IRK resolving-list offload with identity-targeted RPA connections, ACL routing with PB/BC preservation and Number Of Completed Packets flow events, disconnection, the read commands (`Read_BD_ADDR`/`Read_Local_Name`/`LE_Read_Buffer_Size`/`LE_Read_Local_Supported_Features`/`LE_Rand`), per-connection `LE_Set_Data_Length`/`LE_Set_PHY` (with follow-up meta events), and — via LL control-PDU exchange over the link — **encryption start**, **remote-features**, and **CIS establishment**. Also **classic (BR/EDR)** connection/name/features and SCO/eSCO request/accept/reject/disconnect with synchronous-data routing. Other read commands are acknowledged SUCCESS **without a synthesized payload** (a documented stub, not a full read). Deferred: LTK verification, ISO data-path streaming, remote-version exchange, extended/periodic advertising, and classic auth/encryption/role-switch sub-flows. |
 | `link.py` (0.15k) | `bumble-controller` | 🟡 | In-process **synchronous** `LocalLink` with LL-control, simplified LMP, ACL, and SCO/eSCO routing. Deferred: serialized over-the-air PDUs and async scheduling. |
 | `ll.py` (0.2k) | `bumble-controller` | 🟡 | Advertising/connection PDUs modeled as in-process structs, not serialized LL PDUs. Control PDUs (`EncReq`, `FeatureReq`/`PeripheralFeatureReq`/`FeatureRsp`, `TerminateInd`) are exchanged between controllers via `LocalLink::pump_ll` to drive the encryption-start, remote-features, and CIS-establishment (`CisReq`/`CisRsp`/`CisInd`) flows. |
-| `host.py` (2.1k) | `bumble-host` | 🟡 | `Device` glue (ATT↔L2CAP↔ACL sequencing + pairing transport), controller-buffer-sized outbound ACL fragmentation, per-connection inbound reassembly, a global/per-handle `DataPacketQueue` driven by Number Of Completed Packets, LE encryption state and STK/LTK enablement, plus Classic ACL and synchronous APIs. The host pump now advances LL control exchanges as well as HCI/ACL traffic. Deferred: direct LE signaling-manager integration and the broader host feature set. |
+| `host.py` (2.1k) | `bumble-host` | 🟡 | `Device` glue (ATT↔L2CAP↔ACL sequencing + pairing transport), controller-buffer-sized outbound ACL fragmentation, per-connection inbound reassembly, a global/per-handle `DataPacketQueue` driven by Number Of Completed Packets, LE encryption state and STK/LTK enablement, resolving-list programming from stored IRKs with identity reporting, plus Classic ACL and synchronous APIs. The host pump now advances LL control exchanges as well as HCI/ACL traffic. Deferred: direct LE signaling-manager integration and the broader host feature set. |
 | `device.py` (7.0k) | `bumble-host` | 🟡 | Minimal `Device`/`pump`; the high-level device API (advertising/scanning/connection orchestration, GATT client, listeners) is not ported. |
 | `lmp.py` (0.4k) | `bumble-controller::lmp` | 🟡 | Classic Link Manager Protocol PDUs modeled as in-process structs (`HostConnectionReq`/`Accepted`, `NameReq`/`NameRes`, `FeaturesReq`/`FeaturesRes`, synchronous request/accept/reject, `Detach`) driving the classic connection/name/features/SCO-eSCO flows via `LocalLink::pump_classic`. The role-switch / authentication / encryption LMP sub-dance is simplified away. |
 
@@ -159,7 +160,7 @@ size, to convey remaining surface.
 | Upstream (LOC) | Rust crate | Status | Notes |
 |---|---|---|---|
 | `crypto/` | `bumble-crypto` | ✅ | All SMP **symmetric** security functions — `e`, AES-CMAC, `c1`, `s1`, `f4`/`f5`/`f6`, `g2`, `h6`/`h7`, `ah` — spec/RFC-4493 vector-verified, plus **P-256 `EccKey`** (slice 19: keygen, `from_private_key_bytes`, public-key coordinates, ECDH) oracle-pinned to upstream. Deferred: none of the crypto primitives. |
-| `smp.py` (2.0k), `pairing.py` (0.3k) | `bumble-smp` | 🟡 | PDU codec (incl. all **LE Secure Connections** PDUs), live Legacy and SC sessions covering every association model through host/controller encryption, responder-first encrypted key distribution, SC LTK handling, peer identity/signing keys, negotiated h6/h7 CTKD, memory/JSON bond persistence, and Security Request evaluation/reconnect through stored role-correct keys. Also includes the complete method matrix, auth/key-distribution policy, and SC + Legacy OOB contexts/AD interchange. Deferred: automatic pairing-manager lifecycle, privacy resolution integration, and signed-data counters. |
+| `smp.py` (2.0k), `pairing.py` (0.3k) | `bumble-smp` | 🟡 | PDU codec (incl. all **LE Secure Connections** PDUs), live Legacy and SC sessions covering every association model through host/controller encryption, responder-first encrypted key distribution, SC LTK handling, peer identity/signing keys, negotiated h6/h7 CTKD, memory/JSON bond persistence, Security Request evaluation/reconnect, and host-side RPA generation/resolution from stored IRKs. Also includes the complete method matrix, auth/key-distribution policy, and SC + Legacy OOB contexts/AD interchange. Deferred: automatic pairing-manager lifecycle and signed-data counters. |
 
 ### Transports & drivers
 | Upstream | Rust crate | Status | Notes |
@@ -1602,8 +1603,28 @@ Persisted bonds now participate in subsequent connection security:
   the central, selects an authenticated SC bond, and reaches encrypted state on
   both controllers without running a new pairing exchange.
 
-The remaining SMP work is an automatic multi-connection pairing manager,
-privacy-resolution integration, and signed-write CSRK counters.
+## Slice 70 — what's here
+
+Bond identities now survive privacy address rotation:
+
+- `AddressResolver` ports upstream's exact `hash || prand` split and `ah(IRK,
+  prand)` lookup, returning public/random identity address types and rejecting
+  non-RPAs, wrong IRKs, and malformed stored keys without panicking.
+- Deterministic and random RPA generators force the required `0b01` marker and
+  are pinned to upstream's published `ah` vector.
+- The software controller now implements add/clear/read-size resolving-list,
+  address-resolution enable, and RPA-timeout command state rather than merely
+  acknowledging those HCI commands.
+- `Device::configure_address_resolution` loads the existing key store's
+  resolving-key output into that controller state and exposes connection role
+  plus the resolved peer identity reported by HCI.
+- The end-to-end privacy test stores a peer IRK, advertises under its RPA,
+  initiates to the identity address, resolves in the controller, reports a
+  Random Identity address to the central host, and sends L2CAP/ACL data across
+  the actual RPA-backed link.
+
+The remaining SMP work is an automatic multi-connection pairing manager and
+signed-write CSRK counters.
 
 ## Acceptance
 
