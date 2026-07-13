@@ -22,10 +22,10 @@
 //! ATT traffic over the fixed ATT CID plus raw fixed/dynamic L2CAP channels,
 //! with controller-buffer-sized ACL fragmentation/reassembly. High-level
 //! legacy and extended advertising, scanning, and connection setup are also
-//! available, along with CIG/CIS control and ISO SDU fragmentation/reassembly.
-//! Deferred: direct integration of the LE signaling manager, periodic-
-//! advertising synchronization, and multiple simultaneous connections per
-//! device.
+//! available, along with periodic advertising/synchronization, CIG/CIS control,
+//! and ISO SDU fragmentation/reassembly. Deferred: direct integration of the LE
+//! signaling manager, periodic-sync transfer, and multiple simultaneous
+//! connections per device.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -172,6 +172,52 @@ impl ExtendedAdvertisingConfig {
     }
 }
 
+/// Parameters for a periodic advertising train attached to an extended set.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PeriodicAdvertisingConfig {
+    pub handle: u8,
+    pub interval_min: u16,
+    pub interval_max: u16,
+    pub properties: u16,
+    pub include_adi: bool,
+}
+
+impl PeriodicAdvertisingConfig {
+    pub fn new(handle: u8) -> Self {
+        Self {
+            handle,
+            interval_min: 0x00A0,
+            interval_max: 0x00A0,
+            properties: 0,
+            include_adi: false,
+        }
+    }
+}
+
+/// An established periodic advertising synchronization.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PeriodicAdvertisingSyncInfo {
+    pub sync_handle: u16,
+    pub advertising_sid: u8,
+    pub advertiser_address_type: u8,
+    pub advertiser_address: Address,
+    pub advertiser_phy: u8,
+    pub interval: u16,
+    pub advertiser_clock_accuracy: u8,
+}
+
+/// One complete periodic advertisement after HCI report-fragment assembly.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PeriodicAdvertisement {
+    pub sync_handle: u16,
+    pub advertiser_address: Address,
+    pub advertising_sid: u8,
+    pub tx_power: i8,
+    pub rssi: i8,
+    pub truncated: bool,
+    pub data: Vec<u8>,
+}
+
 /// A host attached to a controller on a [`LocalLink`]. Owns the
 /// ATT↔L2CAP↔ACL sequencing.
 pub struct Device {
@@ -196,6 +242,11 @@ pub struct Device {
     security_requests: Vec<u8>,
     advertising_reports: Vec<AdvertisingReport>,
     extended_advertising_reports: Vec<ExtendedAdvertisingReport>,
+    periodic_syncs: BTreeMap<u16, PeriodicAdvertisingSyncInfo>,
+    periodic_report_accumulators: BTreeMap<u16, Vec<u8>>,
+    periodic_advertisements: Vec<PeriodicAdvertisement>,
+    periodic_sync_errors: Vec<u8>,
+    lost_periodic_syncs: Vec<u16>,
     acl_data_packet_length: usize,
     acl_assemblers: BTreeMap<u16, AclDataPacketAssembler>,
     acl_packet_queue: DataPacketQueue<AclDataPacket>,
@@ -226,6 +277,11 @@ impl Device {
             security_requests: Vec::new(),
             advertising_reports: Vec::new(),
             extended_advertising_reports: Vec::new(),
+            periodic_syncs: BTreeMap::new(),
+            periodic_report_accumulators: BTreeMap::new(),
+            periodic_advertisements: Vec::new(),
+            periodic_sync_errors: Vec::new(),
+            lost_periodic_syncs: Vec::new(),
             acl_data_packet_length: 27,
             acl_assemblers: BTreeMap::new(),
             acl_packet_queue: DataPacketQueue::new(64).expect("nonzero ACL queue capacity"),
@@ -257,6 +313,11 @@ impl Device {
             security_requests: Vec::new(),
             advertising_reports: Vec::new(),
             extended_advertising_reports: Vec::new(),
+            periodic_syncs: BTreeMap::new(),
+            periodic_report_accumulators: BTreeMap::new(),
+            periodic_advertisements: Vec::new(),
+            periodic_sync_errors: Vec::new(),
+            lost_periodic_syncs: Vec::new(),
             acl_data_packet_length: 27,
             acl_assemblers: BTreeMap::new(),
             acl_packet_queue: DataPacketQueue::new(64).expect("nonzero ACL queue capacity"),
@@ -405,6 +466,129 @@ impl Device {
         );
     }
 
+    /// Configure, load, and enable a periodic advertising train.
+    pub fn start_periodic_advertising(
+        &mut self,
+        link: &mut LocalLink,
+        config: PeriodicAdvertisingConfig,
+        data: &[u8],
+    ) -> bool {
+        if data.len() > 0x0672
+            || config.interval_min < 0x0006
+            || config.interval_min > config.interval_max
+        {
+            return false;
+        }
+        self.send_hci_command(
+            link,
+            Command::LeSetPeriodicAdvertisingParameters {
+                advertising_handle: config.handle,
+                periodic_advertising_interval_min: config.interval_min,
+                periodic_advertising_interval_max: config.interval_max,
+                periodic_advertising_properties: config.properties,
+            },
+        );
+        let chunks: Vec<_> = if data.is_empty() {
+            vec![&[][..]]
+        } else {
+            data.chunks(251).collect()
+        };
+        for (index, chunk) in chunks.iter().enumerate() {
+            let operation = if chunks.len() == 1 {
+                0x03
+            } else if index == 0 {
+                0x01
+            } else if index + 1 == chunks.len() {
+                0x02
+            } else {
+                0x00
+            };
+            self.send_hci_command(
+                link,
+                Command::LeSetPeriodicAdvertisingData {
+                    advertising_handle: config.handle,
+                    operation,
+                    advertising_data: chunk.to_vec(),
+                },
+            );
+        }
+        self.send_hci_command(
+            link,
+            Command::LeSetPeriodicAdvertisingEnable {
+                enable: 1 | (u8::from(config.include_adi) << 1),
+                advertising_handle: config.handle,
+            },
+        );
+        true
+    }
+
+    pub fn stop_periodic_advertising(&mut self, link: &mut LocalLink, handle: u8) {
+        self.send_hci_command(
+            link,
+            Command::LeSetPeriodicAdvertisingEnable {
+                enable: 0,
+                advertising_handle: handle,
+            },
+        );
+    }
+
+    /// Begin synchronization to a periodic advertiser. Completion is reported
+    /// through [`Self::periodic_syncs`] after the link carries a matching train.
+    pub fn create_periodic_advertising_sync(
+        &mut self,
+        link: &mut LocalLink,
+        advertiser_address: Address,
+        advertising_sid: u8,
+        skip: u16,
+        sync_timeout: u16,
+        filter_duplicates: bool,
+    ) -> bool {
+        if advertising_sid > 0x0F || skip > 0x01F3 || !(0x000A..=0x4000).contains(&sync_timeout) {
+            return false;
+        }
+        self.send_hci_command(
+            link,
+            Command::LePeriodicAdvertisingCreateSync {
+                options: u8::from(filter_duplicates),
+                advertising_sid,
+                advertiser_address_type: advertiser_address.address_type().0,
+                advertiser_address,
+                skip,
+                sync_timeout,
+                sync_cte_type: 0,
+            },
+        );
+        true
+    }
+
+    pub fn cancel_periodic_advertising_sync(&mut self, link: &mut LocalLink) {
+        self.send_hci_command(link, Command::LePeriodicAdvertisingCreateSyncCancel);
+    }
+
+    pub fn terminate_periodic_advertising_sync(&mut self, link: &mut LocalLink, sync_handle: u16) {
+        self.send_hci_command(
+            link,
+            Command::LePeriodicAdvertisingTerminateSync { sync_handle },
+        );
+        self.periodic_syncs.remove(&sync_handle);
+        self.periodic_report_accumulators.remove(&sync_handle);
+    }
+
+    pub fn set_periodic_advertising_receive_enabled(
+        &mut self,
+        link: &mut LocalLink,
+        sync_handle: u16,
+        enabled: bool,
+    ) {
+        self.send_hci_command(
+            link,
+            Command::LeSetPeriodicAdvertisingReceiveEnable {
+                sync_handle,
+                enable: u8::from(enabled),
+            },
+        );
+    }
+
     fn send_extended_advertising_data(
         &mut self,
         link: &mut LocalLink,
@@ -522,6 +706,22 @@ impl Device {
 
     pub fn take_extended_advertising_reports(&mut self) -> Vec<ExtendedAdvertisingReport> {
         std::mem::take(&mut self.extended_advertising_reports)
+    }
+
+    pub fn periodic_syncs(&self) -> &BTreeMap<u16, PeriodicAdvertisingSyncInfo> {
+        &self.periodic_syncs
+    }
+
+    pub fn take_periodic_advertisements(&mut self) -> Vec<PeriodicAdvertisement> {
+        std::mem::take(&mut self.periodic_advertisements)
+    }
+
+    pub fn take_periodic_sync_errors(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.periodic_sync_errors)
+    }
+
+    pub fn take_lost_periodic_syncs(&mut self) -> Vec<u16> {
+        std::mem::take(&mut self.lost_periodic_syncs)
     }
 
     pub fn connect_le(&mut self, link: &mut LocalLink, peer_address: Address) {
@@ -1018,6 +1218,72 @@ impl Device {
                     reports,
                 })) => {
                     self.extended_advertising_reports.extend(reports);
+                }
+                HciPacket::Event(Event::LeMeta(
+                    LeMetaEvent::PeriodicAdvertisingSyncEstablished {
+                        status,
+                        sync_handle,
+                        advertising_sid,
+                        advertiser_address_type,
+                        advertiser_address,
+                        advertiser_phy,
+                        periodic_advertising_interval,
+                        advertiser_clock_accuracy,
+                    },
+                )) => {
+                    if status == 0 {
+                        self.periodic_syncs.insert(
+                            sync_handle,
+                            PeriodicAdvertisingSyncInfo {
+                                sync_handle,
+                                advertising_sid,
+                                advertiser_address_type,
+                                advertiser_address,
+                                advertiser_phy,
+                                interval: periodic_advertising_interval,
+                                advertiser_clock_accuracy,
+                            },
+                        );
+                    } else {
+                        self.periodic_sync_errors.push(status);
+                    }
+                }
+                HciPacket::Event(Event::LeMeta(LeMetaEvent::PeriodicAdvertisingReport {
+                    sync_handle,
+                    tx_power,
+                    rssi,
+                    data_status,
+                    data,
+                    ..
+                })) => {
+                    if let Some(sync) = self.periodic_syncs.get(&sync_handle) {
+                        self.periodic_report_accumulators
+                            .entry(sync_handle)
+                            .or_default()
+                            .extend_from_slice(&data);
+                        if data_status != 1 {
+                            let data = self
+                                .periodic_report_accumulators
+                                .remove(&sync_handle)
+                                .unwrap_or_default();
+                            self.periodic_advertisements.push(PeriodicAdvertisement {
+                                sync_handle,
+                                advertiser_address: sync.advertiser_address.clone(),
+                                advertising_sid: sync.advertising_sid,
+                                tx_power,
+                                rssi,
+                                truncated: data_status == 2,
+                                data,
+                            });
+                        }
+                    }
+                }
+                HciPacket::Event(Event::LeMeta(LeMetaEvent::PeriodicAdvertisingSyncLost {
+                    sync_handle,
+                })) => {
+                    self.periodic_syncs.remove(&sync_handle);
+                    self.periodic_report_accumulators.remove(&sync_handle);
+                    self.lost_periodic_syncs.push(sync_handle);
                 }
                 HciPacket::Event(Event::LeMeta(LeMetaEvent::CisRequest {
                     acl_connection_handle,

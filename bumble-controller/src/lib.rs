@@ -31,6 +31,8 @@
 //! The LE resolving-list commands also hold real IRK state: an initiator may
 //! target a bonded identity while the peer advertises with an RPA, and the
 //! central receives the resolved identity while link routing retains the RPA.
+//! Periodic advertising retains per-set parameters and fragmented data;
+//! create/cancel/terminate sync and report delivery run across the same link.
 //!
 //! ## Full command surface
 //!
@@ -77,8 +79,8 @@
 //!
 //! ## Deferred (behavioral simulation, not the codec)
 //!
-//! The remaining deep behavior is not simulated: LTK verification, periodic
-//! advertising synchronization, remote-version exchange, and the classic
+//! The remaining deep behavior is not simulated: LTK verification,
+//! periodic-sync transfer between ACL peers, remote-version exchange, and the classic
 //! authentication/role-switch sub-flows. The HCI
 //! *codec* for all of them (in `bumble-hci`) is complete and oracle-pinned; what
 //! remains is controller-side behavior, which — unlike the codec — has no
@@ -233,6 +235,9 @@ struct ExtendedAdvertisingSet {
     scan_response_data: Vec<u8>,
     enabled: bool,
     random_address: Option<Address>,
+    periodic_parameters: Option<PeriodicAdvertisingParameters>,
+    periodic_data: Vec<u8>,
+    periodic_enabled: bool,
 }
 
 impl ExtendedAdvertisingSet {
@@ -244,6 +249,9 @@ impl ExtendedAdvertisingSet {
             scan_response_data: Vec::new(),
             enabled: false,
             random_address: None,
+            periodic_parameters: None,
+            periodic_data: Vec::new(),
+            periodic_enabled: false,
         }
     }
 
@@ -255,6 +263,33 @@ impl ExtendedAdvertisingSet {
             self.random_address.clone()
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct PeriodicAdvertisingParameters {
+    interval_min: u16,
+    interval_max: u16,
+    properties: u16,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PendingPeriodicSync {
+    options: u8,
+    advertising_sid: u8,
+    advertiser_address_type: u8,
+    advertiser_address: Address,
+    skip: u16,
+    sync_timeout: u16,
+    sync_cte_type: u8,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PeriodicSync {
+    handle: u16,
+    advertising_sid: u8,
+    advertiser_address_type: u8,
+    advertiser_address: Address,
+    receive_enabled: bool,
 }
 
 /// An advertising PDU as it travels over the [`LocalLink`]. Since the link is
@@ -275,6 +310,18 @@ pub struct AdvertisingPdu {
     pub direct_address: Option<Address>,
 }
 
+/// A periodic advertising event as it travels over the in-process link.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PeriodicAdvertisingPdu {
+    pub address_type: u8,
+    pub address: Address,
+    pub advertising_sid: u8,
+    pub advertiser_phy: u8,
+    pub interval: u16,
+    pub tx_power: i8,
+    pub data: Vec<u8>,
+}
+
 /// A minimal LE software controller: it consumes HCI commands from a host and
 /// produces host-bound HCI packets.
 #[derive(Debug)]
@@ -287,6 +334,9 @@ pub struct Controller {
     scanning_enabled: bool,
     extended_scanning: bool,
     extended_advertising_sets: Vec<ExtendedAdvertisingSet>,
+    pending_periodic_sync: Option<PendingPeriodicSync>,
+    periodic_syncs: Vec<PeriodicSync>,
+    next_periodic_sync_handle: u16,
     connections: Vec<Connection>,
     initiating: Option<PendingConnection>,
     resolving_list: Vec<ResolvingListEntry>,
@@ -325,6 +375,9 @@ impl Controller {
             scanning_enabled: false,
             extended_scanning: false,
             extended_advertising_sets: Vec::new(),
+            pending_periodic_sync: None,
+            periodic_syncs: Vec::new(),
+            next_periodic_sync_handle: 1,
             connections: Vec::new(),
             initiating: None,
             resolving_list: Vec::new(),
@@ -369,6 +422,9 @@ impl Controller {
                 self.extended_scanning = false;
                 self.advertising_data.clear();
                 self.extended_advertising_sets.clear();
+                self.pending_periodic_sync = None;
+                self.periodic_syncs.clear();
+                self.next_periodic_sync_handle = 1;
                 self.connections.clear();
                 self.classic_connections.clear();
                 self.synchronous_connections.clear();
@@ -510,6 +566,32 @@ impl Controller {
                 self.extended_advertising_sets.clear();
                 self.ack(op_code, HCI_SUCCESS);
             }
+            Command::LeSetPeriodicAdvertisingParameters {
+                advertising_handle,
+                periodic_advertising_interval_min,
+                periodic_advertising_interval_max,
+                periodic_advertising_properties,
+            } => self.handle_periodic_advertising_parameters(
+                op_code,
+                advertising_handle,
+                periodic_advertising_interval_min,
+                periodic_advertising_interval_max,
+                periodic_advertising_properties,
+            ),
+            Command::LeSetPeriodicAdvertisingData {
+                advertising_handle,
+                operation,
+                advertising_data,
+            } => self.handle_periodic_advertising_data(
+                op_code,
+                advertising_handle,
+                operation,
+                &advertising_data,
+            ),
+            Command::LeSetPeriodicAdvertisingEnable {
+                enable,
+                advertising_handle,
+            } => self.handle_periodic_advertising_enable(op_code, advertising_handle, enable),
             Command::LeSetExtendedScanParameters { .. } => {
                 self.extended_scanning = true;
                 self.ack(op_code, HCI_SUCCESS);
@@ -532,6 +614,36 @@ impl Controller {
                 });
                 self.command_status(op_code, HCI_SUCCESS);
             }
+            Command::LePeriodicAdvertisingCreateSync {
+                options,
+                advertising_sid,
+                advertiser_address_type,
+                advertiser_address,
+                skip,
+                sync_timeout,
+                sync_cte_type,
+            } => self.handle_periodic_advertising_create_sync(
+                op_code,
+                PendingPeriodicSync {
+                    options,
+                    advertising_sid,
+                    advertiser_address_type,
+                    advertiser_address,
+                    skip,
+                    sync_timeout,
+                    sync_cte_type,
+                },
+            ),
+            Command::LePeriodicAdvertisingCreateSyncCancel => {
+                self.handle_periodic_advertising_create_sync_cancel(op_code)
+            }
+            Command::LePeriodicAdvertisingTerminateSync { sync_handle } => {
+                self.handle_periodic_advertising_terminate_sync(op_code, sync_handle)
+            }
+            Command::LeSetPeriodicAdvertisingReceiveEnable {
+                sync_handle,
+                enable,
+            } => self.handle_periodic_advertising_receive_enable(op_code, sync_handle, enable),
             Command::ReadBdAddr => {
                 self.complete(
                     op_code,
@@ -792,6 +904,156 @@ impl Controller {
                 set.enabled = enable != 0;
             }
         }
+    }
+
+    fn handle_periodic_advertising_parameters(
+        &mut self,
+        op_code: u16,
+        handle: u8,
+        interval_min: u16,
+        interval_max: u16,
+        properties: u16,
+    ) {
+        let Some(set) = self
+            .extended_advertising_sets
+            .iter_mut()
+            .find(|set| set.handle == handle)
+        else {
+            return self.ack(op_code, UNKNOWN_ADVERTISING_IDENTIFIER_ERROR);
+        };
+        if interval_min < 0x0006 || interval_min > interval_max {
+            return self.ack(op_code, INVALID_COMMAND_PARAMETERS);
+        }
+        set.periodic_parameters = Some(PeriodicAdvertisingParameters {
+            interval_min,
+            interval_max,
+            properties,
+        });
+        self.ack(op_code, HCI_SUCCESS);
+    }
+
+    fn handle_periodic_advertising_data(
+        &mut self,
+        op_code: u16,
+        handle: u8,
+        operation: u8,
+        fragment: &[u8],
+    ) {
+        let Some(set) = self
+            .extended_advertising_sets
+            .iter_mut()
+            .find(|set| set.handle == handle)
+        else {
+            return self.ack(op_code, UNKNOWN_ADVERTISING_IDENTIFIER_ERROR);
+        };
+        let replacing = matches!(operation, 0x01 | 0x03);
+        let appending = matches!(operation, 0x00 | 0x02);
+        if !replacing && !appending {
+            return self.ack(op_code, INVALID_COMMAND_PARAMETERS);
+        }
+        let resulting_len = if replacing {
+            fragment.len()
+        } else {
+            set.periodic_data.len().saturating_add(fragment.len())
+        };
+        if resulting_len > 0x0672 {
+            return self.ack(op_code, INVALID_COMMAND_PARAMETERS);
+        }
+        if replacing {
+            set.periodic_data.clear();
+        }
+        set.periodic_data.extend_from_slice(fragment);
+        self.ack(op_code, HCI_SUCCESS);
+    }
+
+    fn handle_periodic_advertising_enable(&mut self, op_code: u16, handle: u8, enable: u8) {
+        let Some(set) = self
+            .extended_advertising_sets
+            .iter_mut()
+            .find(|set| set.handle == handle)
+        else {
+            return self.ack(op_code, UNKNOWN_ADVERTISING_IDENTIFIER_ERROR);
+        };
+        if enable & !0x03 != 0 {
+            return self.ack(op_code, INVALID_COMMAND_PARAMETERS);
+        }
+        if enable & 1 != 0 && set.periodic_parameters.is_none() {
+            return self.ack(op_code, COMMAND_DISALLOWED_ERROR);
+        }
+        set.periodic_enabled = enable & 1 != 0;
+        self.ack(op_code, HCI_SUCCESS);
+    }
+
+    fn handle_periodic_advertising_create_sync(
+        &mut self,
+        op_code: u16,
+        pending: PendingPeriodicSync,
+    ) {
+        if self.pending_periodic_sync.is_some() {
+            return self.command_status(op_code, COMMAND_DISALLOWED_ERROR);
+        }
+        if pending.advertising_sid > 0x0F
+            || pending.advertiser_address_type > ADDRESS_TYPE_RANDOM
+            || pending.skip > 0x01F3
+            || !(0x000A..=0x4000).contains(&pending.sync_timeout)
+        {
+            return self.command_status(op_code, INVALID_COMMAND_PARAMETERS);
+        }
+        self.pending_periodic_sync = Some(pending);
+        self.command_status(op_code, HCI_SUCCESS);
+    }
+
+    fn handle_periodic_advertising_create_sync_cancel(&mut self, op_code: u16) {
+        let Some(pending) = self.pending_periodic_sync.take() else {
+            return self.ack(op_code, COMMAND_DISALLOWED_ERROR);
+        };
+        self.ack(op_code, HCI_SUCCESS);
+        self.host_queue.push(HciPacket::Event(Event::LeMeta(
+            LeMetaEvent::PeriodicAdvertisingSyncEstablished {
+                status: 0x44,
+                sync_handle: 0,
+                advertising_sid: pending.advertising_sid,
+                advertiser_address_type: pending.advertiser_address_type,
+                advertiser_address: pending.advertiser_address,
+                advertiser_phy: 0,
+                periodic_advertising_interval: 0,
+                advertiser_clock_accuracy: 0,
+            },
+        )));
+    }
+
+    fn handle_periodic_advertising_terminate_sync(&mut self, op_code: u16, sync_handle: u16) {
+        let original_len = self.periodic_syncs.len();
+        self.periodic_syncs
+            .retain(|sync| sync.handle != sync_handle);
+        self.ack(
+            op_code,
+            if self.periodic_syncs.len() == original_len {
+                UNKNOWN_CONNECTION_IDENTIFIER_ERROR
+            } else {
+                HCI_SUCCESS
+            },
+        );
+    }
+
+    fn handle_periodic_advertising_receive_enable(
+        &mut self,
+        op_code: u16,
+        sync_handle: u16,
+        enable: u8,
+    ) {
+        if enable > 1 {
+            return self.ack(op_code, INVALID_COMMAND_PARAMETERS);
+        }
+        let Some(sync) = self
+            .periodic_syncs
+            .iter_mut()
+            .find(|sync| sync.handle == sync_handle)
+        else {
+            return self.ack(op_code, UNKNOWN_CONNECTION_IDENTIFIER_ERROR);
+        };
+        sync.receive_enabled = enable != 0;
+        self.ack(op_code, HCI_SUCCESS);
     }
 
     /// `LE_Set_Data_Length`: acknowledge with the connection handle, then (on a
@@ -1683,6 +1945,103 @@ impl Controller {
         pdus
     }
 
+    /// Every enabled periodic advertising train currently on air.
+    pub fn periodic_advertising_pdus(&self) -> Vec<PeriodicAdvertisingPdu> {
+        self.extended_advertising_sets
+            .iter()
+            .filter(|set| set.enabled && set.periodic_enabled)
+            .filter_map(|set| {
+                let parameters = set.parameters.as_ref()?;
+                let periodic = set.periodic_parameters?;
+                let address = set.address(&self.public_address)?;
+                Some(PeriodicAdvertisingPdu {
+                    address_type: address.address_type().0,
+                    address,
+                    advertising_sid: parameters.advertising_sid,
+                    advertiser_phy: parameters.secondary_advertising_phy,
+                    interval: periodic.interval_min,
+                    tx_power: parameters.advertising_tx_power,
+                    data: set.periodic_data.clone(),
+                })
+            })
+            .collect()
+    }
+
+    pub fn periodic_advertising_enabled(&self, handle: u8) -> bool {
+        self.extended_advertising_sets
+            .iter()
+            .any(|set| set.handle == handle && set.periodic_enabled)
+    }
+
+    pub fn periodic_sync_handles(&self) -> Vec<u16> {
+        self.periodic_syncs.iter().map(|sync| sync.handle).collect()
+    }
+
+    /// Establish a pending synchronization and emit reports for active syncs.
+    pub fn on_periodic_advertising_pdu(&mut self, pdu: &PeriodicAdvertisingPdu) {
+        if self.pending_periodic_sync.as_ref().is_some_and(|pending| {
+            pending.advertising_sid == pdu.advertising_sid
+                && pending.advertiser_address_type == pdu.address_type
+                && pending.advertiser_address == pdu.address
+        }) {
+            let Some(pending) = self.pending_periodic_sync.take() else {
+                return;
+            };
+            let sync_handle = self.next_periodic_sync_handle;
+            self.next_periodic_sync_handle = self.next_periodic_sync_handle.wrapping_add(1);
+            self.periodic_syncs.push(PeriodicSync {
+                handle: sync_handle,
+                advertising_sid: pending.advertising_sid,
+                advertiser_address_type: pending.advertiser_address_type,
+                advertiser_address: pending.advertiser_address.clone(),
+                receive_enabled: true,
+            });
+            self.host_queue.push(HciPacket::Event(Event::LeMeta(
+                LeMetaEvent::PeriodicAdvertisingSyncEstablished {
+                    status: HCI_SUCCESS,
+                    sync_handle,
+                    advertising_sid: pending.advertising_sid,
+                    advertiser_address_type: pending.advertiser_address_type,
+                    advertiser_address: pending.advertiser_address,
+                    advertiser_phy: pdu.advertiser_phy,
+                    periodic_advertising_interval: pdu.interval,
+                    advertiser_clock_accuracy: 0,
+                },
+            )));
+        }
+
+        let matching_handles: Vec<_> = self
+            .periodic_syncs
+            .iter()
+            .filter(|sync| {
+                sync.receive_enabled
+                    && sync.advertising_sid == pdu.advertising_sid
+                    && sync.advertiser_address_type == pdu.address_type
+                    && sync.advertiser_address == pdu.address
+            })
+            .map(|sync| sync.handle)
+            .collect();
+        let chunks: Vec<_> = if pdu.data.is_empty() {
+            vec![&[][..]]
+        } else {
+            pdu.data.chunks(247).collect()
+        };
+        for sync_handle in matching_handles {
+            for (index, chunk) in chunks.iter().enumerate() {
+                self.host_queue.push(HciPacket::Event(Event::LeMeta(
+                    LeMetaEvent::PeriodicAdvertisingReport {
+                        sync_handle,
+                        tx_power: pdu.tx_power,
+                        rssi: DEFAULT_RSSI,
+                        cte_type: 0xFF,
+                        data_status: u8::from(index + 1 != chunks.len()),
+                        data: chunk.to_vec(),
+                    },
+                )));
+            }
+        }
+    }
+
     /// Handle an advertising PDU received over the link. If scanning is
     /// enabled, queue an LE Advertising Report event to the host.
     pub fn on_advertising_pdu(&mut self, pdu: &AdvertisingPdu) {
@@ -2309,6 +2668,25 @@ impl LocalLink {
             for (i, controller) in self.controllers.iter_mut().enumerate() {
                 if i != sender {
                     controller.on_advertising_pdu(&pdu);
+                }
+            }
+        }
+
+        let periodic_pdus: Vec<(usize, PeriodicAdvertisingPdu)> = self
+            .controllers
+            .iter()
+            .enumerate()
+            .flat_map(|(index, controller)| {
+                controller
+                    .periodic_advertising_pdus()
+                    .into_iter()
+                    .map(move |pdu| (index, pdu))
+            })
+            .collect();
+        for (sender, pdu) in periodic_pdus {
+            for (index, controller) in self.controllers.iter_mut().enumerate() {
+                if index != sender {
+                    controller.on_periodic_advertising_pdu(&pdu);
                 }
             }
         }
