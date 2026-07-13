@@ -9,13 +9,16 @@ use core::fmt;
 
 pub mod aics;
 pub mod asha;
+pub mod bap;
 pub mod battery_service;
 pub mod csip;
 pub mod device_information_service;
 pub mod gap;
 pub mod gatt_service;
 pub mod heart_rate_service;
+pub mod le_audio;
 pub mod mcp;
+pub mod pacs;
 pub mod vcs;
 pub mod vocs;
 

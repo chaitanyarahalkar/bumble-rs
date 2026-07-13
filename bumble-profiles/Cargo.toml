@@ -15,6 +15,7 @@ categories.workspace = true
 bumble = { path = "../bumble" }
 bumble-gatt = { path = "../bumble-gatt" }
 bumble-crypto = { path = "../bumble-crypto" }
+bumble-hci = { path = "../bumble-hci" }
 rand_core = { version = "0.6", features = ["getrandom"] }
 
 [dev-dependencies]

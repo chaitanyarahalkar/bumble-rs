@@ -30,12 +30,23 @@ impl CodingFormat {
         vendor_specific_codec_id: 0,
     };
 
-    fn to_bytes(self) -> [u8; 5] {
+    pub fn to_bytes(self) -> [u8; 5] {
         let mut out = [0u8; 5];
         out[0] = self.coding_format;
         out[1..3].copy_from_slice(&self.company_id.to_le_bytes());
         out[3..5].copy_from_slice(&self.vendor_specific_codec_id.to_le_bytes());
         out
+    }
+
+    /// Parse the exact five-byte HCI Coding Format representation.
+    pub fn from_bytes(data: &[u8]) -> Result<CodingFormat> {
+        if data.len() != 5 {
+            return Err(Error::InvalidPacket(format!(
+                "coding format has length {}, expected 5",
+                data.len()
+            )));
+        }
+        Self::read(&mut Reader::new(data, 0))
     }
 
     fn read(r: &mut Reader) -> Result<CodingFormat> {
