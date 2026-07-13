@@ -7,8 +7,10 @@
 use bumble_hci::Command;
 use std::collections::BTreeMap;
 use std::fmt;
+use std::time::Duration;
 
 pub mod intel;
+pub mod rtk;
 
 /// Metadata attached to an opened HCI transport.
 pub type HciMetadata = BTreeMap<String, String>;
@@ -36,6 +38,14 @@ pub trait DriverHost {
     fn metadata(&self) -> &HciMetadata;
     fn transact(&mut self, command: Command) -> Result<CommandResponse>;
 
+    fn transact_with_timeout(
+        &mut self,
+        command: Command,
+        _timeout: Duration,
+    ) -> Result<CommandResponse> {
+        self.transact(command)
+    }
+
     fn transact_batch(&mut self, commands: Vec<Command>) -> Result<Vec<CommandResponse>> {
         commands
             .into_iter()
@@ -48,6 +58,10 @@ pub trait DriverHost {
 
     /// Wait for a vendor event with the requested first parameter byte.
     fn wait_vendor_event(&mut self, event_type: u8) -> Result<Vec<u8>>;
+
+    fn delay(&mut self, duration: Duration) {
+        std::thread::sleep(duration);
+    }
 }
 
 /// Firmware and configuration blob lookup.
@@ -64,6 +78,7 @@ pub enum Error {
     MissingFirmware(String),
     Unsupported(String),
     Host(String),
+    Timeout(String),
     Io(String),
 }
 
@@ -78,6 +93,7 @@ impl fmt::Display for Error {
             Self::MissingFirmware(name) => write!(formatter, "firmware file not found: {name}"),
             Self::Unsupported(message) => write!(formatter, "unsupported controller: {message}"),
             Self::Host(message) => write!(formatter, "driver host error: {message}"),
+            Self::Timeout(message) => write!(formatter, "driver host timeout: {message}"),
             Self::Io(message) => write!(formatter, "driver I/O error: {message}"),
         }
     }
@@ -92,6 +108,54 @@ impl From<std::io::Error> for Error {
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
+
+/// A selected vendor driver, matching `bumble.drivers.get_driver_for_host`.
+pub enum Driver {
+    Rtk(rtk::Driver),
+    Intel(intel::Driver),
+}
+
+impl Driver {
+    pub fn init_controller(
+        &self,
+        host: &mut impl DriverHost,
+        firmware: &impl FirmwareProvider,
+    ) -> Result<DriverInitOutcome> {
+        match self {
+            Self::Rtk(driver) => driver.init_controller(host).map(DriverInitOutcome::Rtk),
+            Self::Intel(driver) => driver
+                .init_controller(host, firmware)
+                .map(DriverInitOutcome::Intel),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DriverInitOutcome {
+    Rtk(rtk::InitOutcome),
+    Intel(intel::InitOutcome),
+}
+
+/// Select a forced driver, or probe Realtek then Intel like upstream Bumble.
+pub fn get_driver_for_host(
+    host: &mut impl DriverHost,
+    firmware: &impl FirmwareProvider,
+) -> Result<Option<Driver>> {
+    if let Some(driver) = host.metadata().get("driver") {
+        return match driver.split('/').next().unwrap_or_default() {
+            "rtk" => {
+                rtk::Driver::for_host(host, firmware, true).map(|driver| driver.map(Driver::Rtk))
+            }
+            "intel" => intel::Driver::for_host(host, true).map(|driver| driver.map(Driver::Intel)),
+            _ => Ok(None),
+        };
+    }
+
+    if let Some(driver) = rtk::Driver::for_host(host, firmware, false)? {
+        return Ok(Some(Driver::Rtk(driver)));
+    }
+    intel::Driver::for_host(host, false).map(|driver| driver.map(Driver::Intel))
+}
 
 pub(crate) fn metadata_u16(metadata: &HciMetadata, name: &str) -> Option<u16> {
     let value = metadata.get(name)?;

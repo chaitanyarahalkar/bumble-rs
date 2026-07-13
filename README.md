@@ -98,7 +98,8 @@ crate whose behavior is verified against the upstream Python.
 | 81. Android emulator host/controller gRPC transport | `bumble-transport` | ✅ real bidirectional gRPC loopback green |
 | 82. Android netsim host/controller packet-stream transport | `bumble-transport` | ✅ startup/INI/lease + live gRPC green |
 | 83. Intel USB controller firmware driver | `bumble-drivers` | ✅ TLV/SFI/DDC + scripted cold start green |
-| 84+. Remaining modules… | — | planned |
+| 84. Realtek USB controller firmware driver and driver selection | `bumble-drivers` | ✅ epatch/probe/download + selector green |
+| 85+. Remaining modules… | — | planned |
 
 The LE lifecycle is now complete end-to-end through library APIs: **connect →
 discover → read/write → notify → disconnect** between two virtual devices — and
@@ -179,7 +180,7 @@ size, to convey remaining surface.
 | Upstream | Rust crate | Status | Notes |
 |---|---|---|---|
 | `transport/*` — USB, UART/serial, TCP, WebSocket, UDP, PTY, android-netsim, vhci, … | `bumble-transport` | 🟡 | Incremental H4 framing accepts fragmented/coalesced streams and vendor packet layouts. Bumble transport-name/metadata dispatch opens file, serial/UART with RTS/CTS, raw PTY, TCP, UDP, Unix, WebSocket, Linux VHCI/raw HCI user-channel sockets, libusb Bluetooth-controller endpoints, Android emulator gRPC, and Android netsim host/controller packet streams. USB covers discovery, class/forced interface selection, commands, events, ACL, and outgoing ISO-over-bulk compatibility. Deferred: USB SCO/isochronous input, DSR/DTR flow control, and narrower platform-specific endpoints. |
-| `drivers/*` — Intel, Realtek | `bumble-drivers` | 🟡 | Intel USB detection, open version TLVs, RSA/ECDSA SFI layout, command-aligned 252-byte secure-send batches, boot/reset vendor events, DDC override/addon priority, and ordered firmware lookup are ported through a transport-neutral host contract. A scripted cold start pins the complete command sequence. Deferred: the Realtek driver and direct external-packet-host binding. |
+| `drivers/*` — Intel, Realtek | `bumble-drivers` | ✅ | Both upstream driver modules and the RTK-before-Intel selector are ported behind a transport-neutral host contract. Intel covers open version TLVs, RSA/ECDSA SFI secure send, boot/reset vendor events, and DDC priority. Realtek covers all upstream USB IDs and 13 controller descriptors, epatch extension/table parsing, ROM patch choice, config append, download-index wrap/end markers, reset retry, and firmware lookup. The legacy 8723A download remains the same explicit no-op as upstream Bumble. |
 
 ### Classic Bluetooth (BR/EDR)
 | Upstream (LOC) | Rust crate | Status | Notes |
@@ -1935,6 +1936,30 @@ Intel's USB firmware driver now has a complete controller-initialization engine:
   lookup override semantics, malformed firmware/TLV/DDC inputs, already-loaded
   DDC handling, and a complete scripted cold start.
 
+## Slice 84 — what's here
+
+Realtek firmware initialization and the shared driver selector complete
+`bumble.drivers`:
+
+- The upstream Realtek USB ID set and all 13 ROM/HCI descriptors select the
+  correct 8723/8761/8821/8822/8852 firmware and config names, including the
+  8761CU HCI-version wildcard and required-config variants.
+- `Firmware` validates the `Realtech` and extension signatures, walks extension
+  instructions backward to the project ID, bounds-checks the parallel chip ID,
+  length, and offset tables, extracts SVN versions, and replaces each patch tail
+  with the epatch firmware version exactly like upstream.
+- Probing retries the initial Reset after the upstream 200 ms timeout, parses
+  Read Local Version Information, reads the ROM revision, selects chip ID
+  `rom_version + 1`, appends optional configuration, and sends 252-byte vendor
+  fragments with seven-bit index wrapping and the high-bit final marker.
+- Exact command bytes, project mappings, malformed extensions/tables, 130-way
+  index wrap, config-required refusal, timeout retry, and a complete
+  probe/download/diagnostic-read/reset sequence are pinned in tests. The older
+  8723A path deliberately retains upstream Bumble's explicit download no-op.
+- `get_driver_for_host` honors a forced driver (discarding runtime options for
+  class selection), refuses unknown forced names, and otherwise probes Realtek
+  before Intel in upstream order.
+
 ## Acceptance
 
 The port's contract is the upstream Python test suite, ported 1:1:
@@ -2092,10 +2117,13 @@ bumble-rs/
 │   ├── tests/usb.rs           # selectors, endpoints, and transfer routing
 │   ├── tests/websocket.rs     # binary framing + client/server handshake
 │   └── tests/vhci.rs          # virtual-controller bootstrap + H4 exchange
-├── bumble-drivers/            # slice-83 vendor controller initialization
+├── bumble-drivers/            # slices 83-84 vendor controller initialization
 │   ├── src/lib.rs             # driver-host and firmware-provider contracts
 │   ├── src/intel.rs           # Intel TLV, SFI, DDC, and init sequence
-│   └── tests/intel.rs         # exact wire, parser, lookup, full cold-start flow
+│   ├── src/rtk.rs             # Realtek epatch, matrix, download/init sequence
+│   ├── tests/intel.rs         # exact wire, parser, lookup, full cold-start flow
+│   ├── tests/rtk.rs           # epatch failures, matrix, wrap, full download flow
+│   └── tests/selection.rs     # forced/unknown/automatic driver selection
 └── docs/superpowers/          # design specs + implementation plans
 ```
 

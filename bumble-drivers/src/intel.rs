@@ -689,14 +689,24 @@ impl Driver {
         firmware: &impl FirmwareProvider,
         base_name: Option<&str>,
     ) -> Result<()> {
-        if let Some(override_data) = &self.options.ddc_override {
+        if let Some(override_data) = self
+            .options
+            .ddc_override
+            .as_ref()
+            .filter(|data| !data.is_empty())
+        {
             load_device_config(host, override_data)?;
         } else if let Some(base_name) = base_name {
             if let Some(data) = firmware.load(&format!("{base_name}.ddc"))? {
                 load_device_config(host, &data)?;
             }
         }
-        if let Some(addon) = &self.options.ddc_addon {
+        if let Some(addon) = self
+            .options
+            .ddc_addon
+            .as_ref()
+            .filter(|data| !data.is_empty())
+        {
             load_device_config(host, addon)?;
         }
         Ok(())
