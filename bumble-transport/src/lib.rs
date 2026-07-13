@@ -7,6 +7,7 @@
 
 mod android_emulator;
 mod android_netsim;
+mod bridge;
 mod common;
 mod dispatch;
 mod file;
@@ -35,6 +36,7 @@ pub use android_netsim::{
     DEFAULT_ANDROID_NETSIM_MANUFACTURER, DEFAULT_ANDROID_NETSIM_NAME,
     DEFAULT_ANDROID_NETSIM_VARIANT,
 };
+pub use bridge::{BridgeDirection, FilteredPacket, HciBridge, PacketFilter, PacketTrace};
 pub use common::{
     Error, H4Transport, PacketFramer, PacketLayout, PacketSink, PacketSource, Result,
     MAX_HCI_PACKET_SIZE,

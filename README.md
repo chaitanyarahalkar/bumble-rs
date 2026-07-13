@@ -114,7 +114,8 @@ crate whose behavior is verified against the upstream Python.
 | 97. G.722 64 kbit/s audio decoder | `bumble-codecs` | ✅ upstream fixture PCM byte-exact + incremental-state green |
 | 98. Portable PCM audio input and output | `bumble-audio` | ✅ format/raw/WAVE/subprocess paths + looping and threaded output green |
 | 99. Android and Zephyr vendor HCI codecs | `bumble-hci` | ✅ exact command envelopes + versioned returns/BQR parsing green |
-| 100+. Repository completion audit and remaining gaps | workspace | in progress |
+| 100. Bidirectional filtered HCI bridge | `bumble-transport` | ✅ replacement/short-circuit/trace paths green |
+| 101+. Repository completion audit and remaining gaps | workspace | in progress |
 
 The LE lifecycle is now complete end-to-end through library APIs: **connect →
 discover → read/write → notify → disconnect** between two virtual devices — and
@@ -196,7 +197,7 @@ size, to convey remaining surface.
 ### Transports & drivers
 | Upstream | Rust crate | Status | Notes |
 |---|---|---|---|
-| `transport/*` — USB, UART/serial, TCP, WebSocket, UDP, PTY, android-netsim, vhci, … | `bumble-transport` | 🟡 | Incremental H4 framing accepts fragmented/coalesced streams and vendor packet layouts. Bumble transport-name/metadata dispatch opens file, serial/UART with RTS/CTS, raw PTY, TCP, UDP, Unix, WebSocket, Linux VHCI/raw HCI user-channel sockets, libusb Bluetooth-controller endpoints, Android emulator gRPC, and Android netsim host/controller packet streams. USB covers discovery, class/forced interface selection, commands, events, ACL, and outgoing ISO-over-bulk compatibility. Deferred: USB SCO/isochronous input, DSR/DTR flow control, and narrower platform-specific endpoints. |
+| `transport/*` — USB, UART/serial, TCP, WebSocket, UDP, PTY, android-netsim, vhci, … | `bumble-transport` | 🟡 | Incremental H4 framing accepts fragmented/coalesced streams and vendor packet layouts. Bumble transport-name/metadata dispatch opens file, serial/UART with RTS/CTS, raw PTY, TCP, UDP, Unix, WebSocket, Linux VHCI/raw HCI user-channel sockets, libusb Bluetooth-controller endpoints, Android emulator gRPC, and Android netsim host/controller packet streams. The typed HCI bridge pumps both directions with packet replacement, sender short-circuit responses, and trace hooks. USB covers discovery, class/forced interface selection, commands, events, ACL, and outgoing ISO-over-bulk compatibility. Deferred: USB SCO/isochronous input, DSR/DTR flow control, and narrower platform-specific endpoints. |
 | `drivers/*` — Intel, Realtek | `bumble-drivers` | ✅ | Both upstream driver modules and the RTK-before-Intel selector are ported behind a transport-neutral host contract. Intel covers open version TLVs, RSA/ECDSA SFI secure send, boot/reset vendor events, and DDC priority. Realtek covers all upstream USB IDs and 13 controller descriptors, epatch extension/table parsing, ROM patch choice, config append, download-index wrap/end markers, reset retry, and firmware lookup. The legacy 8723A download remains the same explicit no-op as upstream Bumble. |
 
 ### Classic Bluetooth (BR/EDR)
@@ -220,7 +221,8 @@ size, to convey remaining surface.
 | Upstream | Rust crate | Status | Notes |
 |---|---|---|---|
 | `profiles/*` — all 23 modules | `bumble-profiles` | ✅ | All upstream profile modules are live: GAP/GATT/Battery/Device Information/Heart Rate, ASHA/HAP/CSIP, VCS/VOCS/AICS, MCP/GMCS, LE Audio metadata plus BAP/PACS/ASCS/BASS/CAP/TMAP/GMAP/PBP, and AMS/ANCS. Services, typed proxies, control/state runtimes, assigned-number and vendor UUID catalogs, strict wire models, encryption requirements, notifications/indications, and included-service discovery are covered by live tests. |
-| `bridge.py`, `pandora/`, apps | — | ⬜ | Test harnesses / apps — out of scope. |
+| `bridge.py` (0.1k) | `bumble-transport::HciBridge` | ✅ | Separate host/controller sources and sinks, directional single-packet pumping, typed replacement filters, responses short-circuited to the sender, post-filter directional tracing, EOF reporting, and transport-error propagation. |
+| `pandora/`, apps | — | ⬜ | Conformance harnesses and command-line applications; still unported. |
 
 ### Roughly where that leaves things
 
@@ -2235,6 +2237,21 @@ The two upstream vendor HCI modules now live under `bumble-hci::vendor`:
   historical/truncated capability responses, malformed events, and both vendor
   return families are covered by focused tests.
 
+## Slice 100 — what's here
+
+Upstream `bridge.py` now maps to `bumble-transport::HciBridge`:
+
+- Host and controller sources/sinks remain independently owned, matching
+  transports that expose split read/write endpoints. Directional methods pump
+  at most one packet and distinguish successful forwarding from source EOF.
+- Per-direction filters may leave a packet unchanged, replace it before
+  forwarding, or replace it with a response sent directly back to the packet's
+  sender. Short-circuited responses are intentionally not traced, matching the
+  upstream forwarder order.
+- A shared callback sees the direction and final post-filter packet immediately
+  before delivery. Focused tests cover unmodified bidirectional flow, EOF,
+  replacement, host short-circuit, controller short-circuit, and trace order.
+
 ## Acceptance
 
 The port's contract is the upstream Python test suite, ported 1:1:
@@ -2389,9 +2406,10 @@ bumble-rs/
 ├── bumble-transport/          # slices 75-82 external HCI transports
 │   ├── build.rs               # vendored-protoc Android gRPC generation
 │   ├── proto/{android_emulator,netsim_common,netsim_startup,netsim_packet_streamer}.proto
-│   ├── src/{android_emulator,android_netsim,lib,common,dispatch,file,hci_socket,serial,pty,tcp,udp,usb,unix,websocket,vhci}.rs
+│   ├── src/{android_emulator,android_netsim,bridge,lib,common,dispatch,file,hci_socket,serial,pty,tcp,udp,usb,unix,websocket,vhci}.rs
 │   ├── tests/android_emulator.rs # packet mapping + real host/controller gRPC loopback
 │   ├── tests/android_netsim.rs # startup, INI, wire tags, live lease/packet stream
+│   ├── tests/bridge.rs        # replacement, response, trace, and EOF paths
 │   ├── tests/hci_socket.rs    # selectors, Linux ABI, framing, and I/O failures
 │   ├── tests/transports.rs    # fragmentation, EOF, and socket loopbacks
 │   ├── tests/specs.rs         # dispatch, serial config, and raw PTY coverage
