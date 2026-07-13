@@ -3,6 +3,7 @@
 use core::fmt;
 use std::collections::BTreeSet;
 
+use bumble_host::{Device, LocalLink};
 use bumble_l2cap::{ChannelManager, ClassicChannelState};
 
 pub const AVCTP_PSM: u16 = 0x0017;
@@ -303,6 +304,79 @@ impl L2capProtocol {
             }
             count += 1;
         }
+    }
+
+    pub fn take_messages(&mut self) -> Vec<Message> {
+        core::mem::take(&mut self.inbox)
+    }
+}
+
+/// AVCTP over one Classic L2CAP channel owned by a host [`Device`].
+#[derive(Debug)]
+pub struct DeviceProtocol {
+    connection_handle: u16,
+    source_cid: u16,
+    peer_mtu: usize,
+    accepted_pids: BTreeSet<u16>,
+    assembler: MessageAssembler,
+    inbox: Vec<Message>,
+}
+
+impl DeviceProtocol {
+    pub fn new(device: &Device, connection_handle: u16, source_cid: u16) -> Result<Self> {
+        let channel = device
+            .classic_channel(connection_handle, source_cid)
+            .ok_or(Error::ChannelNotOpen(source_cid))?;
+        if channel.state != ClassicChannelState::Open {
+            return Err(Error::ChannelNotOpen(source_cid));
+        }
+        Ok(Self {
+            connection_handle,
+            source_cid,
+            peer_mtu: usize::from(channel.peer_mtu),
+            accepted_pids: BTreeSet::new(),
+            assembler: MessageAssembler::default(),
+            inbox: Vec::new(),
+        })
+    }
+
+    pub fn connection_handle(&self) -> u16 {
+        self.connection_handle
+    }
+
+    pub fn source_cid(&self) -> u16 {
+        self.source_cid
+    }
+
+    pub fn register_pid(&mut self, pid: u16) {
+        self.accepted_pids.insert(pid);
+    }
+
+    pub fn send(&self, link: &mut LocalLink, device: &mut Device, message: &Message) -> Result<()> {
+        for pdu in message.encode_pdus(self.peer_mtu)? {
+            device.send_classic_channel_sdu(link, self.connection_handle, self.source_cid, &pdu)?;
+        }
+        Ok(())
+    }
+
+    pub fn poll(&mut self, link: &mut LocalLink, device: &mut Device) -> Result<usize> {
+        let sdus = device.take_classic_channel_sdus(self.connection_handle, self.source_cid);
+        let mut count = 0;
+        for sdu in sdus {
+            if let Some(message) = self.assembler.push(&sdu)? {
+                if message.is_command && !self.accepted_pids.contains(&message.pid) {
+                    self.send(
+                        link,
+                        device,
+                        &Message::ipid(message.transaction_label, message.pid),
+                    )?;
+                } else {
+                    self.inbox.push(message);
+                }
+            }
+            count += 1;
+        }
+        Ok(count)
     }
 
     pub fn take_messages(&mut self) -> Vec<Message> {

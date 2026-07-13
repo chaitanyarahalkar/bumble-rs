@@ -12,4 +12,9 @@ categories.workspace = true
 description = "Rust port of google/bumble AVDTP signaling and stream transport"
 
 [dependencies]
+bumble-host = { path = "../bumble-host" }
 bumble-l2cap = { path = "../bumble-l2cap" }
+
+[dev-dependencies]
+bumble = { path = "../bumble" }
+bumble-controller = { path = "../bumble-controller" }

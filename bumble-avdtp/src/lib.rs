@@ -6,6 +6,7 @@
 
 use core::fmt;
 
+pub mod host;
 pub mod l2cap;
 pub mod session;
 

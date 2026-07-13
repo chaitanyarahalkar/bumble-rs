@@ -13,7 +13,11 @@ description = "HCI packet framing and external transports for bumble-rs"
 
 [dependencies]
 bumble = { path = "../bumble" }
+bumble-a2dp = { path = "../bumble-a2dp" }
 bumble-att = { path = "../bumble-att" }
+bumble-avctp = { path = "../bumble-avctp" }
+bumble-avdtp = { path = "../bumble-avdtp" }
+bumble-avrcp = { path = "../bumble-avrcp" }
 bumble-gatt = { path = "../bumble-gatt" }
 bumble-hci = { path = "../bumble-hci" }
 bumble-controller = { path = "../bumble-controller" }
@@ -21,6 +25,7 @@ bumble-host = { path = "../bumble-host" }
 bumble-l2cap = { path = "../bumble-l2cap" }
 bumble-profiles = { path = "../bumble-profiles" }
 bumble-rfcomm = { path = "../bumble-rfcomm" }
+bumble-rtp = { path = "../bumble-rtp" }
 bumble-sdp = { path = "../bumble-sdp" }
 bumble-smp = { path = "../bumble-smp" }
 prost = "0.13.5"

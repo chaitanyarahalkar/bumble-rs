@@ -235,6 +235,7 @@ size, to convey remaining surface.
 | `apps/l2cap_bridge.py` | `bumble-l2cap-bridge` (`bumble-transport`) | ✅ | Runnable LE credit-based L2CAP-to-TCP bridge with the full upstream client/server, device-config, transport, PSM, credit, MTU/MPS, TCP host, and TCP port surface. The client accepts repeated local TCP connections over one LE ACL; the server accepts CoC channels and opens remote TCP connections. Both directions honor controller flow control and withhold CoC receive credits under TCP backpressure. |
 | `apps/rfcomm_bridge.py` | `bumble-rfcomm-bridge` (`bumble-transport`) | ✅ | Runnable Classic RFCOMM-to-TCP bridge with the full upstream client/server, device-config, transport, trace, channel, UUID, TCP, authentication, and encryption surface. Channel zero advertises or resolves the configured UUID through SDP, repeated DLCs reuse one RFCOMM session, and receive credits are withheld under TCP backpressure. |
 | `apps/gg_bridge.py` | `bumble-gg-bridge` (`bumble-transport`) | ✅ | Runnable Golden Gate Gattlink bridge with the complete upstream transport/address/role and UDP endpoint CLI. Node mode publishes the RX, TX, and CoC-PSM GATT service and advertises; hub mode discovers/subscribes and prefers LE CoC. Both roles retain GATT fallback, exact one-byte packet framing, bounded UDP queues, and controller-aware backpressure. |
+| `apps/player/player.py` | `bumble-player` (`bumble-transport`) | ✅ | Runnable Classic A2DP source with the complete upstream `discover`, `inquire`, `pair`, and `play` command surface. It publishes the source SDP record, persists SSP link keys, discovers sink endpoints, configures SBC/AAC/vendor Opus, opens and controls AVDTP streams, paces RTP media with controller backpressure, and serves AVRCP over incoming AVCTP. |
 | `apps/pair.py` | `bumble-pair` (`bumble-transport`) | ✅ | Runnable LE, Classic, and simultaneous dual-mode listener paths over external controllers with the complete upstream option surface. LE supports direct address/name connection or configurable advertising, Legacy/SC pairing, and OOB data. Classic supports inquiry/name resolution, incoming/outgoing ACL setup, PIN and Secure Simple Pairing delegates, stored link-key reuse, controller encryption, and best-effort SMP-over-BR/EDR CTKD for P-256 link keys. Both paths provide bond policy, JSON key persistence/printing, and linger behavior. |
 | `apps/scan.py` | `bumble-scan` (`bumble-transport`) | ✅ | Runnable external HCI scanner with upstream RSSI/passive/interval/window/PHY/duplicate/raw/IRK/key-store/device-config options, extended scanning with legacy fallback, typed legacy + extended report decoding, exact active/passive scan-response accumulation, labeled AD rendering, RSSI bars, and real RPA identity resolution. |
 | `apps/usb_probe.py` | `bumble-usb-probe` (`bumble-transport`) | ✅ | Runnable libusb device inventory with upstream `--verbose`, `--hci-only`, manufacturer, and product filters; device/interface-level Bluetooth HCI classification; stable index, VID/PID, duplicate, and serial transport names; string-descriptor error tolerance; and verbose configuration/interface/endpoint details including isochronous packet sizes. |
@@ -2795,6 +2796,30 @@ The Golden Gate Gattlink bridge now runs over external controllers:
   software controllers in both directions. Separate tests cover the complete
   GATT database/discovery/write/read/subscription contract and CLI parity.
 
+## Slice 131 — what's here
+
+The upstream Classic A2DP player now runs over external controllers:
+
+- `bumble-player` preserves the upstream device-config, HCI transport,
+  authentication/encryption, `discover`, `inquire`, `pair`, and `play` CLI.
+  Discovery reports Class of Device, service labels, RSSI, and Extended Inquiry
+  Response structures; pairing and outgoing playback reuse namespaced JSON
+  link keys.
+- Playback publishes the A2DP source SDP record, finds the remote sink through
+  SDP, discovers every AVDTP endpoint and capability, selects a compatible
+  audio sink, and completes SetConfiguration/Open/Start/Close. SBC, ADTS AAC,
+  and Ogg Opus inputs derive their configuration from the first media frame,
+  packetize to RTP, pace by RTP timestamps, and bound controller output to one
+  drained packet at a time.
+- `DeviceSession`, `DeviceMediaTransport`, and `DeviceProtocol` bind AVDTP,
+  A2DP media, and AVCTP respectively to `Device`-owned Classic channels. The
+  player accepts AVRCP connections and dispatches them through the typed AVRCP
+  target runtime while streaming or negotiating.
+- Live two-controller tests cover fragmented AVDTP discovery/configuration/
+  open/start, RTP media transfer, AVCTP fragmentation, accepted PID delivery,
+  and automatic IPID rejection. CLI and codec-derivation tests pin the complete
+  player surface and SBC sink bitpool negotiation.
+
 ## Acceptance
 
 The port's contract is the upstream Python test suite, ported 1:1:
@@ -2900,10 +2925,11 @@ bumble-rs/
 ├── bumble-avdtp/              # slice-29 A/V distribution transport codec
 │   ├── src/lib.rs             # messages, capabilities, PDU fragmentation
 │   ├── src/session.rs         # slice-30 endpoint and stream state machine
-│   ├── src/l2cap.rs           # transaction runtime over Classic L2CAP
+│   ├── src/{l2cap,host}.rs    # transaction runtimes over manager/Device Classic L2CAP
 │   ├── tests/acceptance.rs    # 38 exact payloads + malformed PDU coverage
 │   ├── tests/session.rs       # lifecycle, errors, atomic multi-SEP commands
-│   └── tests/l2cap_binding.rs # fragmented signaling over live channels
+│   ├── tests/l2cap_binding.rs # fragmented signaling over live channels
+│   └── tests/host_binding.rs  # full Device-owned discover/configure/open/start
 ├── bumble-a2dp/               # slice-31 Advanced Audio Distribution Profile
 │   ├── src/lib.rs             # SBC/AAC/vendor Opus capability models
 │   ├── src/media.rs           # slice-33 SBC parser + RTP aggregation
@@ -2914,7 +2940,8 @@ bumble-rs/
 │   ├── tests/media.rs         # SBC/AAC/Opus fixtures and packet sources
 │   ├── tests/l2cap_media.rs   # source→sink RTP over live AVDTP channel
 │   ├── tests/profile.rs       # live high-level stream orchestration
-│   └── tests/sdp.rs           # source/sink discovery through SDP runtime
+│   ├── tests/sdp.rs           # source/sink discovery through SDP runtime
+│   └── tests/host_media.rs    # RTP over Device-owned Classic channels
 ├── bumble-rtp/                # slice-32 RTP media packet codec
 │   ├── src/lib.rs             # header, CSRC, extension, payload, padding
 │   └── tests/packets.rs       # exact, full-featured, and malformed packets
@@ -2923,7 +2950,8 @@ bumble-rs/
 │   └── tests/frames.rs        # upstream exact vectors + malformed inputs
 ├── bumble-avctp/              # slice-40 AV/C transport over Classic L2CAP
 │   ├── src/lib.rs             # messages, fragmentation, L2CAP protocol
-│   └── tests/protocol.rs      # upstream assembler + live PID/IPID flows
+│   ├── tests/protocol.rs      # upstream assembler + live PID/IPID flows
+│   └── tests/host_protocol.rs # fragmented Device-owned PID/IPID flows
 ├── bumble-avrcp/              # slice-41 AVRCP vendor-PDU foundation
 │   ├── src/lib.rs             # PDU codec/assembler and AV/C/AVCTP envelope
 │   ├── src/command.rs         # slice-42 complete typed command catalog

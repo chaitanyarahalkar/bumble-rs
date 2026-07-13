@@ -2,6 +2,7 @@
 
 use core::fmt;
 
+use bumble_host::{Device, LocalLink};
 use bumble_l2cap::{ChannelManager, ClassicChannelState};
 use bumble_rtp::MediaPacket;
 
@@ -90,6 +91,74 @@ impl L2capMediaTransport {
             self.inbox.push(MediaPacket::from_bytes(&sdu)?);
             count += 1;
         }
+    }
+
+    pub fn take_packets(&mut self) -> Vec<MediaPacket> {
+        core::mem::take(&mut self.inbox)
+    }
+}
+
+/// RTP media over a Classic L2CAP channel owned by a host [`Device`].
+#[derive(Debug)]
+pub struct DeviceMediaTransport {
+    connection_handle: u16,
+    source_cid: u16,
+    peer_mtu: u16,
+    inbox: Vec<MediaPacket>,
+}
+
+impl DeviceMediaTransport {
+    pub fn new(device: &Device, connection_handle: u16, source_cid: u16) -> Result<Self> {
+        let channel = device
+            .classic_channel(connection_handle, source_cid)
+            .ok_or(Error::ChannelNotOpen(source_cid))?;
+        if channel.state != ClassicChannelState::Open {
+            return Err(Error::ChannelNotOpen(source_cid));
+        }
+        Ok(Self {
+            connection_handle,
+            source_cid,
+            peer_mtu: channel.peer_mtu,
+            inbox: Vec::new(),
+        })
+    }
+
+    pub fn connection_handle(&self) -> u16 {
+        self.connection_handle
+    }
+
+    pub fn source_cid(&self) -> u16 {
+        self.source_cid
+    }
+
+    pub fn peer_mtu(&self) -> u16 {
+        self.peer_mtu
+    }
+
+    pub fn send(
+        &self,
+        link: &mut LocalLink,
+        device: &mut Device,
+        packet: &MediaPacket,
+    ) -> Result<()> {
+        let bytes = packet.to_bytes()?;
+        if bytes.len() > usize::from(self.peer_mtu) {
+            return Err(Error::PacketExceedsMtu {
+                packet: bytes.len(),
+                peer_mtu: self.peer_mtu,
+            });
+        }
+        device.send_classic_channel_sdu(link, self.connection_handle, self.source_cid, &bytes)?;
+        Ok(())
+    }
+
+    pub fn poll(&mut self, device: &mut Device) -> Result<usize> {
+        let sdus = device.take_classic_channel_sdus(self.connection_handle, self.source_cid);
+        let count = sdus.len();
+        for sdu in sdus {
+            self.inbox.push(MediaPacket::from_bytes(&sdu)?);
+        }
+        Ok(count)
     }
 
     pub fn take_packets(&mut self) -> Vec<MediaPacket> {

@@ -13,7 +13,11 @@ description = "Rust port of google/bumble Advanced Audio Distribution Profile"
 
 [dependencies]
 bumble-avdtp = { path = "../bumble-avdtp" }
+bumble-host = { path = "../bumble-host" }
 bumble-rtp = { path = "../bumble-rtp" }
 bumble-l2cap = { path = "../bumble-l2cap" }
 bumble = { path = "../bumble" }
 bumble-sdp = { path = "../bumble-sdp" }
+
+[dev-dependencies]
+bumble-controller = { path = "../bumble-controller" }

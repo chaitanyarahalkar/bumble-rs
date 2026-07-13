@@ -189,6 +189,16 @@ pub struct ClassicConnectionInfo {
     pub peer_address: Address,
 }
 
+/// One Classic inquiry report, retaining the discovery metadata applications
+/// use to identify audio devices and render Extended Inquiry Response data.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ClassicInquiryResultInfo {
+    pub peer_address: Address,
+    pub class_of_device: u32,
+    pub rssi: Option<i8>,
+    pub extended_inquiry_response: Vec<u8>,
+}
+
 /// Host-facing events that participate in Classic PIN or Secure Simple
 /// Pairing authentication.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -472,6 +482,7 @@ pub struct Device {
     classic_channel_errors: Vec<(u16, String)>,
     classic_connection_requests: Vec<Address>,
     classic_inquiry_results: Vec<Address>,
+    classic_inquiry_result_details: Vec<ClassicInquiryResultInfo>,
     classic_inquiry_complete: Vec<u8>,
     classic_remote_names: Vec<(u8, Address, String)>,
     classic_pairing_events: Vec<ClassicPairingEvent>,
@@ -525,6 +536,7 @@ impl Device {
             classic_channel_errors: Vec::new(),
             classic_connection_requests: Vec::new(),
             classic_inquiry_results: Vec::new(),
+            classic_inquiry_result_details: Vec::new(),
             classic_inquiry_complete: Vec::new(),
             classic_remote_names: Vec::new(),
             classic_pairing_events: Vec::new(),
@@ -578,6 +590,7 @@ impl Device {
             classic_channel_errors: Vec::new(),
             classic_connection_requests: Vec::new(),
             classic_inquiry_results: Vec::new(),
+            classic_inquiry_result_details: Vec::new(),
             classic_inquiry_complete: Vec::new(),
             classic_remote_names: Vec::new(),
             classic_pairing_events: Vec::new(),
@@ -1460,6 +1473,10 @@ impl Device {
 
     pub fn take_classic_inquiry_results(&mut self) -> Vec<Address> {
         std::mem::take(&mut self.classic_inquiry_results)
+    }
+
+    pub fn take_classic_inquiry_result_details(&mut self) -> Vec<ClassicInquiryResultInfo> {
+        std::mem::take(&mut self.classic_inquiry_result_details)
     }
 
     pub fn take_classic_inquiry_complete(&mut self) -> Vec<u8> {
@@ -2515,14 +2532,60 @@ impl Device {
                 HciPacket::Event(Event::InquiryComplete { status }) => {
                     self.classic_inquiry_complete.push(status);
                 }
-                HciPacket::Event(
-                    Event::InquiryResult { bd_addr, .. }
-                    | Event::InquiryResultWithRssi { bd_addr, .. },
-                ) => {
-                    self.classic_inquiry_results.extend(bd_addr);
+                HciPacket::Event(Event::InquiryResult {
+                    bd_addr,
+                    class_of_device,
+                    ..
+                }) => {
+                    for (index, peer_address) in bd_addr.into_iter().enumerate() {
+                        self.classic_inquiry_results.push(peer_address.clone());
+                        self.classic_inquiry_result_details
+                            .push(ClassicInquiryResultInfo {
+                                peer_address,
+                                class_of_device: class_of_device
+                                    .get(index)
+                                    .copied()
+                                    .unwrap_or_default(),
+                                rssi: None,
+                                extended_inquiry_response: Vec::new(),
+                            });
+                    }
                 }
-                HciPacket::Event(Event::ExtendedInquiryResult { bd_addr, .. }) => {
-                    self.classic_inquiry_results.push(bd_addr);
+                HciPacket::Event(Event::InquiryResultWithRssi {
+                    bd_addr,
+                    class_of_device,
+                    rssi,
+                    ..
+                }) => {
+                    for (index, peer_address) in bd_addr.into_iter().enumerate() {
+                        self.classic_inquiry_results.push(peer_address.clone());
+                        self.classic_inquiry_result_details
+                            .push(ClassicInquiryResultInfo {
+                                peer_address,
+                                class_of_device: class_of_device
+                                    .get(index)
+                                    .copied()
+                                    .unwrap_or_default(),
+                                rssi: rssi.get(index).copied(),
+                                extended_inquiry_response: Vec::new(),
+                            });
+                    }
+                }
+                HciPacket::Event(Event::ExtendedInquiryResult {
+                    bd_addr,
+                    class_of_device,
+                    rssi,
+                    extended_inquiry_response,
+                    ..
+                }) => {
+                    self.classic_inquiry_results.push(bd_addr.clone());
+                    self.classic_inquiry_result_details
+                        .push(ClassicInquiryResultInfo {
+                            peer_address: bd_addr,
+                            class_of_device,
+                            rssi: Some(rssi),
+                            extended_inquiry_response: extended_inquiry_response.to_vec(),
+                        });
                 }
                 HciPacket::Event(Event::RemoteNameRequestComplete {
                     status,
