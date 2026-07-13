@@ -16,12 +16,27 @@ pub const L2CAP_LE_U_DYNAMIC_CID_RANGE_START: u16 = 0x0040;
 pub const L2CAP_LE_U_DYNAMIC_CID_RANGE_END: u16 = 0x007F;
 pub const L2CAP_LE_PSM_DYNAMIC_RANGE_START: u16 = 0x0080;
 pub const L2CAP_LE_PSM_DYNAMIC_RANGE_END: u16 = 0x00FF;
+pub const L2CAP_CREDIT_BASED_CONNECTION_MAX_CHANNELS: usize = 5;
 
 pub const LE_CONNECTION_SUCCESSFUL: u16 = 0x0000;
 pub const LE_CONNECTION_REFUSED_PSM_NOT_SUPPORTED: u16 = 0x0002;
 pub const LE_CONNECTION_REFUSED_NO_RESOURCES: u16 = 0x0004;
 pub const LE_CONNECTION_REFUSED_SOURCE_CID_ALREADY_ALLOCATED: u16 = 0x000A;
 pub const LE_CONNECTION_REFUSED_UNACCEPTABLE_PARAMETERS: u16 = 0x000B;
+
+pub const CREDIT_BASED_CONNECTION_ALL_SUCCESSFUL: u16 = 0x0000;
+pub const CREDIT_BASED_CONNECTION_REFUSED_SPSM_NOT_SUPPORTED: u16 = 0x0002;
+pub const CREDIT_BASED_CONNECTION_REFUSED_NO_RESOURCES: u16 = 0x0004;
+pub const CREDIT_BASED_CONNECTION_REFUSED_INVALID_SOURCE_CID: u16 = 0x0009;
+pub const CREDIT_BASED_CONNECTION_REFUSED_SOURCE_CID_ALREADY_ALLOCATED: u16 = 0x000A;
+pub const CREDIT_BASED_CONNECTION_REFUSED_UNACCEPTABLE_PARAMETERS: u16 = 0x000B;
+pub const CREDIT_BASED_CONNECTION_REFUSED_INVALID_PARAMETERS: u16 = 0x000C;
+
+pub const CREDIT_BASED_RECONFIGURATION_SUCCESSFUL: u16 = 0x0000;
+pub const CREDIT_BASED_RECONFIGURATION_FAILED_MTU_REDUCTION: u16 = 0x0001;
+pub const CREDIT_BASED_RECONFIGURATION_FAILED_MPS_REDUCTION: u16 = 0x0002;
+pub const CREDIT_BASED_RECONFIGURATION_FAILED_INVALID_CIDS: u16 = 0x0003;
+pub const CREDIT_BASED_RECONFIGURATION_FAILED_UNACCEPTABLE_PARAMETERS: u16 = 0x0004;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LeCreditBasedChannelSpec {
@@ -281,6 +296,19 @@ impl LeCreditBasedChannel {
         self.input_sdu.clear();
         self.input_sdu_length = None;
     }
+
+    fn reconfigure_local(&mut self, mtu: u16, mps: u16) {
+        self.mtu = mtu;
+        self.mps = mps;
+        self.att_mtu = self.mtu.min(self.peer_mtu);
+    }
+
+    fn reconfigure_peer(&mut self, mtu: u16, mps: u16) {
+        self.peer_mtu = mtu;
+        self.peer_mps = mps;
+        self.att_mtu = self.mtu.min(self.peer_mtu);
+        self.process_output();
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -290,6 +318,20 @@ struct PendingConnection {
     spec: LeCreditBasedChannelSpec,
 }
 
+#[derive(Clone, Debug)]
+struct PendingEnhancedConnection {
+    psm: u16,
+    source_cids: Vec<u16>,
+    spec: LeCreditBasedChannelSpec,
+}
+
+#[derive(Clone, Debug)]
+struct PendingReconfiguration {
+    source_cids: Vec<u16>,
+    mtu: u16,
+    mps: u16,
+}
+
 /// A sans-I/O manager for one LE logical link. Relay polled PDUs to another
 /// manager to run complete connection, transfer, credit, and disconnect flows.
 #[derive(Debug, Default)]
@@ -297,7 +339,10 @@ pub struct LeCreditChannelManager {
     servers: BTreeMap<u16, LeCreditBasedChannelSpec>,
     channels: BTreeMap<u16, LeCreditBasedChannel>,
     pending: BTreeMap<u8, PendingConnection>,
+    pending_enhanced: BTreeMap<u8, PendingEnhancedConnection>,
+    pending_reconfigurations: BTreeMap<u8, PendingReconfiguration>,
     connection_results: BTreeMap<u16, u16>,
+    reconfiguration_results: BTreeMap<u8, u16>,
     accepted_channels: VecDeque<u16>,
     outbound: VecDeque<L2capPdu>,
     identifier: u8,
@@ -358,6 +403,102 @@ impl LeCreditChannelManager {
         Ok(source_cid)
     }
 
+    /// Starts one enhanced credit-based signaling transaction that creates
+    /// between one and five channels with identical negotiated parameters.
+    pub fn connect_enhanced(
+        &mut self,
+        psm: u16,
+        mut spec: LeCreditBasedChannelSpec,
+        count: usize,
+    ) -> Result<Vec<u16>> {
+        if psm == 0 {
+            return Err(Error::InvalidPacket("SPSM cannot be zero".into()));
+        }
+        if !(1..=L2CAP_CREDIT_BASED_CONNECTION_MAX_CHANNELS).contains(&count) {
+            return Err(Error::InvalidPacket(
+                "enhanced channel count must be between 1 and 5".into(),
+            ));
+        }
+        spec.validate()?;
+        spec.psm = Some(psm);
+        let source_cids = self.allocate_cids(count)?;
+        let identifier = self.next_identifier();
+        self.pending_enhanced.insert(
+            identifier,
+            PendingEnhancedConnection {
+                psm,
+                source_cids: source_cids.clone(),
+                spec,
+            },
+        );
+        self.queue_control(ControlFrame::CreditBasedConnectionRequest {
+            identifier,
+            spsm: psm,
+            mtu: spec.mtu,
+            mps: spec.mps,
+            initial_credits: spec.max_credits,
+            source_cid: source_cids.clone(),
+        });
+        Ok(source_cids)
+    }
+
+    /// Requests a receive MTU/MPS update for one or more enhanced channels and
+    /// returns the signaling identifier used to query the eventual result.
+    pub fn reconfigure(&mut self, source_cids: &[u16], mtu: u16, mps: u16) -> Result<u8> {
+        if source_cids.is_empty() || source_cids.len() > L2CAP_CREDIT_BASED_CONNECTION_MAX_CHANNELS
+        {
+            return Err(Error::InvalidPacket(
+                "reconfiguration requires between 1 and 5 channels".into(),
+            ));
+        }
+        validate_mtu_mps(mtu, mps)?;
+        let mut unique = source_cids.to_vec();
+        unique.sort_unstable();
+        unique.dedup();
+        if unique.len() != source_cids.len() {
+            return Err(Error::InvalidPacket(
+                "reconfiguration contains duplicate CIDs".into(),
+            ));
+        }
+
+        let mut destination_cids = Vec::with_capacity(source_cids.len());
+        for source_cid in source_cids {
+            let channel = self
+                .channels
+                .get(source_cid)
+                .ok_or_else(|| Error::InvalidPacket(format!("unknown LE CID {source_cid:#06x}")))?;
+            channel.ensure_connected()?;
+            if mtu < channel.mtu {
+                return Err(Error::InvalidPacket(
+                    "reconfiguration cannot reduce MTU".into(),
+                ));
+            }
+            if source_cids.len() > 1 && mps < channel.mps {
+                return Err(Error::InvalidPacket(
+                    "multi-channel reconfiguration cannot reduce MPS".into(),
+                ));
+            }
+            destination_cids.push(channel.destination_cid);
+        }
+
+        let identifier = self.next_identifier();
+        self.pending_reconfigurations.insert(
+            identifier,
+            PendingReconfiguration {
+                source_cids: source_cids.to_vec(),
+                mtu,
+                mps,
+            },
+        );
+        self.queue_control(ControlFrame::CreditBasedReconfigureRequest {
+            identifier,
+            mtu,
+            mps,
+            destination_cid: destination_cids,
+        });
+        Ok(identifier)
+    }
+
     pub fn channel(&self, source_cid: u16) -> Option<&LeCreditBasedChannel> {
         self.channels.get(&source_cid)
     }
@@ -368,6 +509,10 @@ impl LeCreditChannelManager {
 
     pub fn connection_result(&self, source_cid: u16) -> Option<u16> {
         self.connection_results.get(&source_cid).copied()
+    }
+
+    pub fn reconfiguration_result(&self, identifier: u8) -> Option<u16> {
+        self.reconfiguration_results.get(&identifier).copied()
     }
 
     pub fn poll_accepted_channel(&mut self) -> Option<u16> {
@@ -453,6 +598,45 @@ impl LeCreditChannelManager {
                 initial_credits,
                 result,
             ),
+            ControlFrame::CreditBasedConnectionRequest {
+                identifier,
+                spsm,
+                mtu,
+                mps,
+                initial_credits,
+                source_cid,
+            } => self.on_enhanced_connection_request(
+                identifier,
+                spsm,
+                mtu,
+                mps,
+                initial_credits,
+                source_cid,
+            ),
+            ControlFrame::CreditBasedConnectionResponse {
+                identifier,
+                mtu,
+                mps,
+                initial_credits,
+                result,
+                destination_cid,
+            } => self.on_enhanced_connection_response(
+                identifier,
+                mtu,
+                mps,
+                initial_credits,
+                result,
+                destination_cid,
+            ),
+            ControlFrame::CreditBasedReconfigureRequest {
+                identifier,
+                mtu,
+                mps,
+                destination_cid,
+            } => self.on_reconfigure_request(identifier, mtu, mps, destination_cid),
+            ControlFrame::CreditBasedReconfigureResponse { identifier, result } => {
+                self.on_reconfigure_response(identifier, result)
+            }
             ControlFrame::LeFlowControlCredit { cid, credits, .. } => {
                 let source_cid = self
                     .channels
@@ -594,6 +778,260 @@ impl LeCreditChannelManager {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn on_enhanced_connection_request(
+        &mut self,
+        identifier: u8,
+        psm: u16,
+        peer_mtu: u16,
+        peer_mps: u16,
+        credits: u16,
+        remote_cids: Vec<u16>,
+    ) -> Result<()> {
+        let Some(spec) = self.servers.get(&psm).copied() else {
+            self.queue_enhanced_connection_response(
+                identifier,
+                LeCreditBasedChannelSpec::default(),
+                0,
+                CREDIT_BASED_CONNECTION_REFUSED_SPSM_NOT_SUPPORTED,
+                Vec::new(),
+            );
+            return Ok(());
+        };
+        if remote_cids.is_empty() || remote_cids.len() > L2CAP_CREDIT_BASED_CONNECTION_MAX_CHANNELS
+        {
+            self.queue_enhanced_connection_response(
+                identifier,
+                spec,
+                0,
+                CREDIT_BASED_CONNECTION_REFUSED_INVALID_PARAMETERS,
+                Vec::new(),
+            );
+            return Ok(());
+        }
+        let mut unique = remote_cids.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        if unique.len() != remote_cids.len()
+            || remote_cids.iter().any(|cid| {
+                !(L2CAP_LE_U_DYNAMIC_CID_RANGE_START..=L2CAP_LE_U_DYNAMIC_CID_RANGE_END)
+                    .contains(cid)
+            })
+        {
+            self.queue_enhanced_connection_response(
+                identifier,
+                spec,
+                0,
+                CREDIT_BASED_CONNECTION_REFUSED_INVALID_SOURCE_CID,
+                Vec::new(),
+            );
+            return Ok(());
+        }
+        if remote_cids.iter().any(|remote_cid| {
+            self.channels
+                .values()
+                .any(|channel| channel.destination_cid == *remote_cid)
+        }) {
+            self.queue_enhanced_connection_response(
+                identifier,
+                spec,
+                0,
+                CREDIT_BASED_CONNECTION_REFUSED_SOURCE_CID_ALREADY_ALLOCATED,
+                Vec::new(),
+            );
+            return Ok(());
+        }
+        if validate_mtu_mps(peer_mtu, peer_mps).is_err() {
+            self.queue_enhanced_connection_response(
+                identifier,
+                spec,
+                0,
+                CREDIT_BASED_CONNECTION_REFUSED_UNACCEPTABLE_PARAMETERS,
+                Vec::new(),
+            );
+            return Ok(());
+        }
+        let local_cids = match self.allocate_cids(remote_cids.len()) {
+            Ok(cids) => cids,
+            Err(_) => {
+                self.queue_enhanced_connection_response(
+                    identifier,
+                    spec,
+                    0,
+                    CREDIT_BASED_CONNECTION_REFUSED_NO_RESOURCES,
+                    Vec::new(),
+                );
+                return Ok(());
+            }
+        };
+        let channels: Result<Vec<_>> = local_cids
+            .iter()
+            .zip(&remote_cids)
+            .map(|(local_cid, remote_cid)| {
+                LeCreditBasedChannel::connected(
+                    psm,
+                    *local_cid,
+                    *remote_cid,
+                    spec,
+                    peer_mtu,
+                    peer_mps,
+                    credits,
+                )
+            })
+            .collect();
+        for (local_cid, channel) in local_cids.iter().copied().zip(channels?) {
+            self.channels.insert(local_cid, channel);
+            self.accepted_channels.push_back(local_cid);
+        }
+        self.queue_enhanced_connection_response(
+            identifier,
+            spec,
+            spec.max_credits,
+            CREDIT_BASED_CONNECTION_ALL_SUCCESSFUL,
+            local_cids,
+        );
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn on_enhanced_connection_response(
+        &mut self,
+        identifier: u8,
+        peer_mtu: u16,
+        peer_mps: u16,
+        credits: u16,
+        result: u16,
+        destination_cids: Vec<u16>,
+    ) -> Result<()> {
+        let pending = self.pending_enhanced.remove(&identifier).ok_or_else(|| {
+            Error::InvalidPacket(format!(
+                "unknown enhanced connection response ID {identifier}"
+            ))
+        })?;
+        for source_cid in &pending.source_cids {
+            self.connection_results.insert(*source_cid, result);
+        }
+        if result != CREDIT_BASED_CONNECTION_ALL_SUCCESSFUL {
+            return Ok(());
+        }
+        if destination_cids.len() != pending.source_cids.len() {
+            return Err(Error::InvalidPacket(
+                "enhanced response CID count mismatch".into(),
+            ));
+        }
+        validate_mtu_mps(peer_mtu, peer_mps)?;
+        let mut unique = destination_cids.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        if unique.len() != destination_cids.len()
+            || destination_cids.iter().any(|cid| {
+                !(L2CAP_LE_U_DYNAMIC_CID_RANGE_START..=L2CAP_LE_U_DYNAMIC_CID_RANGE_END)
+                    .contains(cid)
+                    || self
+                        .channels
+                        .values()
+                        .any(|channel| channel.destination_cid == *cid)
+            })
+        {
+            return Err(Error::InvalidPacket(
+                "enhanced response contains invalid destination CIDs".into(),
+            ));
+        }
+        let channels: Result<Vec<_>> = pending
+            .source_cids
+            .iter()
+            .zip(&destination_cids)
+            .map(|(source_cid, destination_cid)| {
+                LeCreditBasedChannel::connected(
+                    pending.psm,
+                    *source_cid,
+                    *destination_cid,
+                    pending.spec,
+                    peer_mtu,
+                    peer_mps,
+                    credits,
+                )
+            })
+            .collect();
+        for (source_cid, channel) in pending.source_cids.into_iter().zip(channels?) {
+            self.channels.insert(source_cid, channel);
+        }
+        Ok(())
+    }
+
+    fn on_reconfigure_request(
+        &mut self,
+        identifier: u8,
+        mtu: u16,
+        mps: u16,
+        destination_cids: Vec<u16>,
+    ) -> Result<()> {
+        let result = if destination_cids.is_empty()
+            || destination_cids.len() > L2CAP_CREDIT_BASED_CONNECTION_MAX_CHANNELS
+        {
+            CREDIT_BASED_RECONFIGURATION_FAILED_INVALID_CIDS
+        } else {
+            let mut unique = destination_cids.clone();
+            unique.sort_unstable();
+            unique.dedup();
+            if unique.len() != destination_cids.len()
+                || destination_cids.iter().any(|cid| {
+                    self.channels
+                        .get(cid)
+                        .is_none_or(|channel| channel.state != LeCreditBasedChannelState::Connected)
+                })
+            {
+                CREDIT_BASED_RECONFIGURATION_FAILED_INVALID_CIDS
+            } else if validate_mtu_mps(mtu, mps).is_err() {
+                CREDIT_BASED_RECONFIGURATION_FAILED_UNACCEPTABLE_PARAMETERS
+            } else if destination_cids
+                .iter()
+                .any(|cid| mtu < self.channels[cid].peer_mtu)
+            {
+                CREDIT_BASED_RECONFIGURATION_FAILED_MTU_REDUCTION
+            } else if destination_cids.len() > 1
+                && destination_cids
+                    .iter()
+                    .any(|cid| mps < self.channels[cid].peer_mps)
+            {
+                CREDIT_BASED_RECONFIGURATION_FAILED_MPS_REDUCTION
+            } else {
+                for cid in &destination_cids {
+                    self.channels
+                        .get_mut(cid)
+                        .expect("validated channel")
+                        .reconfigure_peer(mtu, mps);
+                }
+                CREDIT_BASED_RECONFIGURATION_SUCCESSFUL
+            }
+        };
+        self.queue_control(ControlFrame::CreditBasedReconfigureResponse { identifier, result });
+        Ok(())
+    }
+
+    fn on_reconfigure_response(&mut self, identifier: u8, result: u16) -> Result<()> {
+        let pending = self
+            .pending_reconfigurations
+            .remove(&identifier)
+            .ok_or_else(|| {
+                Error::InvalidPacket(format!(
+                    "unknown credit-based reconfiguration response ID {identifier}"
+                ))
+            })?;
+        self.reconfiguration_results.insert(identifier, result);
+        if result == CREDIT_BASED_RECONFIGURATION_SUCCESSFUL {
+            for source_cid in pending.source_cids {
+                self.channels
+                    .get_mut(&source_cid)
+                    .ok_or_else(|| {
+                        Error::InvalidPacket(format!("unknown LE CID {source_cid:#06x}"))
+                    })?
+                    .reconfigure_local(pending.mtu, pending.mps);
+            }
+        }
+        Ok(())
+    }
+
     fn on_disconnection_request(
         &mut self,
         identifier: u8,
@@ -650,6 +1088,24 @@ impl LeCreditChannelManager {
         });
     }
 
+    fn queue_enhanced_connection_response(
+        &mut self,
+        identifier: u8,
+        spec: LeCreditBasedChannelSpec,
+        initial_credits: u16,
+        result: u16,
+        destination_cid: Vec<u16>,
+    ) {
+        self.queue_control(ControlFrame::CreditBasedConnectionResponse {
+            identifier,
+            mtu: spec.mtu,
+            mps: spec.mps,
+            initial_credits,
+            result,
+            destination_cid,
+        });
+    }
+
     fn flush_channel(&mut self, source_cid: u16) -> Result<()> {
         let channel = self
             .channels
@@ -678,14 +1134,31 @@ impl LeCreditChannelManager {
 
     fn allocate_cid(&self) -> Result<u16> {
         (L2CAP_LE_U_DYNAMIC_CID_RANGE_START..=L2CAP_LE_U_DYNAMIC_CID_RANGE_END)
-            .find(|cid| {
-                !self.channels.contains_key(cid)
-                    && !self
-                        .pending
-                        .values()
-                        .any(|pending| pending.source_cid == *cid)
-            })
+            .find(|cid| !self.cid_is_reserved(*cid))
             .ok_or_else(|| Error::InvalidPacket("no free LE CID".into()))
+    }
+
+    fn allocate_cids(&self, count: usize) -> Result<Vec<u16>> {
+        let cids: Vec<_> = (L2CAP_LE_U_DYNAMIC_CID_RANGE_START..=L2CAP_LE_U_DYNAMIC_CID_RANGE_END)
+            .filter(|cid| !self.cid_is_reserved(*cid))
+            .take(count)
+            .collect();
+        if cids.len() != count {
+            return Err(Error::InvalidPacket("no free LE CIDs".into()));
+        }
+        Ok(cids)
+    }
+
+    fn cid_is_reserved(&self, cid: u16) -> bool {
+        self.channels.contains_key(&cid)
+            || self
+                .pending
+                .values()
+                .any(|pending| pending.source_cid == cid)
+            || self
+                .pending_enhanced
+                .values()
+                .any(|pending| pending.source_cids.contains(&cid))
     }
 
     fn next_identifier(&mut self) -> u8 {
@@ -700,4 +1173,16 @@ impl LeCreditChannelManager {
         self.outbound
             .push_back(L2capPdu::new(L2CAP_LE_SIGNALING_CID, frame.to_bytes()));
     }
+}
+
+fn validate_mtu_mps(mtu: u16, mps: u16) -> Result<()> {
+    if mtu < L2CAP_LE_CREDIT_BASED_CONNECTION_MIN_MTU {
+        return Err(Error::InvalidPacket("MTU out of range".into()));
+    }
+    if !(L2CAP_LE_CREDIT_BASED_CONNECTION_MIN_MPS..=L2CAP_LE_CREDIT_BASED_CONNECTION_MAX_MPS)
+        .contains(&mps)
+    {
+        return Err(Error::InvalidPacket("MPS out of range".into()));
+    }
+    Ok(())
 }

@@ -19,7 +19,7 @@ crate whose behavior is verified against the upstream Python.
 | 1. Core types & advertising data | `bumble` | ✅ complete — 16/16 tests green |
 | 2. HCI packet codec (framing + **full** command/event catalog + return params) | `bumble-hci` | ✅ 320/320 tests green |
 | 3+7. Software controller + virtual link (advertising + LE connections + read/PHY/data-length commands) | `bumble-controller` | ✅ 17/17 tests green |
-| 4+21. L2CAP codec + Classic connection-oriented channel runtime | `bumble-l2cap` | ✅ 13/13 tests green |
+| 4+21. L2CAP codec + Classic and LE connection-oriented channel runtimes | `bumble-l2cap` | ✅ 27/27 tests green |
 | 5. ATT protocol PDU codec (incl. Find_Information, Read_Blob, indications) | `bumble-att` | ✅ 16/16 tests green |
 | 6. SMP cryptographic toolbox (+ P-256 ECC/ECDH, slice 19) | `bumble-crypto` | ✅ 14/14 tests green |
 | 7. LE connection establishment (in the controller) | `bumble-controller` | ✅ (see slice 3+7) |
@@ -75,7 +75,8 @@ crate whose behavior is verified against the upstream Python.
 | 58. Paired LE credit-based channel manager runtime | `bumble-l2cap` | ✅ connect/transfer/replenish/disconnect green |
 | 59. HCI ACL fragmentation and host reassembly | `bumble-hci`, `bumble-host` | ✅ buffer-boundary end-to-end green |
 | 60. HCI ACL completed-packet flow-control queue | `bumble-host`, `bumble-controller` | ✅ bounded in-flight window green |
-| 61+. Remaining modules… | — | planned |
+| 61. Enhanced credit-based multi-channel and reconfigure runtime | `bumble-l2cap` | ✅ five-channel + refusal matrix green |
+| 62+. Remaining modules… | — | planned |
 
 The LE lifecycle is now complete end-to-end through library APIs: **connect →
 discover → read/write → notify → disconnect** between two virtual devices — and
@@ -136,7 +137,7 @@ size, to convey remaining surface.
 ### L2CAP
 | Upstream (LOC) | Rust crate | Status | Notes |
 |---|---|---|---|
-| `l2cap.py` (3.1k) | `bumble-l2cap` | 🟡 | PDU + complete typed upstream signaling-frame catalog + FCS, synchronous Classic connection-oriented channels, and a paired LE CoC runtime. Classic covers dynamic PSM/CID allocation, Connection/Configure/Disconnection, MTU negotiation/refusal, and bidirectional basic-mode SDUs. LE covers dynamic LE_PSM/CIDs, negotiation/refusal, MTU/MPS segmentation/reassembly, credit stalls/replenishment, accepted channels, bidirectional transfer, and disconnect cleanup. HCI/host now fragment and reassemble complete L2CAP PDUs across ACL buffer boundaries. Deferred: enhanced retransmission mode and enhanced credit-based multi-channel/reconfigure runtime. |
+| `l2cap.py` (3.1k) | `bumble-l2cap` | 🟡 | PDU + complete typed upstream signaling-frame catalog + FCS, synchronous Classic connection-oriented channels, and paired LE CoC runtimes. Classic covers dynamic PSM/CID allocation, Connection/Configure/Disconnection, MTU negotiation/refusal, and bidirectional basic-mode SDUs. LE covers single and enhanced one-to-five-channel setup, refusal correlation, MTU/MPS segmentation/reassembly, credit stalls/replenishment, atomic reconfiguration, accepted channels, bidirectional transfer, and disconnect cleanup. HCI/host fragment and reassemble complete L2CAP PDUs across ACL buffer boundaries. Deferred: enhanced retransmission mode and asynchronous manager conveniences. |
 
 ### ATT / GATT
 | Upstream (LOC) | Rust crate | Status | Notes |
@@ -1367,8 +1368,33 @@ Host-to-controller ACL flow control now matches upstream's bounded queue model:
   33 fragments repeatedly exhaust and reopen the controller window, ending at
   zero pending packets and one intact receiver payload.
 
-The HCI ACL transport boundary is now functional; remaining L2CAP depth is in
-enhanced channel modes, while host/device breadth remains substantial.
+The HCI ACL transport boundary is now functional; L2CAP's next depth gap is
+enhanced retransmission mode, while host/device breadth remains substantial.
+
+## Slice 61 — what's here
+
+The enhanced credit-based signaling frames now drive live LE CoCs rather than
+stopping at the codec boundary:
+
+- `connect_enhanced` reserves one to five local CIDs atomically, correlates the
+  shared response, and creates every channel only after the peer returns an
+  exact, unique destination-CID list and valid common MTU/MPS parameters.
+- Incoming setup validates channel count, source-CID range and uniqueness,
+  duplicate peer allocation, SPSM support, negotiation parameters, and atomic
+  local resource availability. Each failure returns the corresponding enhanced
+  result code without leaving a partial channel group.
+- `reconfigure` updates one or more connected channels through the `0x19/0x1A`
+  exchange. Successful responses update local receive limits and peer send
+  limits symmetrically; ATT MTU and queued output are recomputed immediately.
+- MTU reductions, multi-channel MPS reductions, invalid/duplicate CIDs, unknown
+  channels, invalid parameter ranges, response-count mismatches, and excessive
+  group sizes are rejected without mutation.
+- Paired-manager tests establish all five permitted channels, force repeated
+  one-credit stalls while transferring distinct bidirectional payloads on each,
+  exercise multi-channel growth and legal single-channel MPS reduction, and pin
+  every reconfiguration refusal class.
+
+Remaining L2CAP protocol depth is enhanced retransmission mode (ERTM).
 
 ## Acceptance
 
