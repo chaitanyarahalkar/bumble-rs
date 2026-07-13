@@ -228,6 +228,7 @@ size, to convey remaining surface.
 | `apps/show.py` | `bumble-show` (`bumble-transport`) | ✅ | Runnable H4/BTSnoop capture decoder with upstream `--format` and repeatable Android/Zephyr `--vendor` options, typed HCI parsing, direction/timestamp output, and explicit truncated-record reporting. Rust vendor codecs are statically linked rather than dynamically registered. |
 | `apps/controller_info.py` | `bumble-controller-info` (`bumble-transport`) | ✅ | Runnable external-controller inspection with reset, optional primed latency probes, symbolic local version/address/name, LE features, all 338 upstream Supported Commands labels, Classic + LE buffers, data/advertising limits, minimum connection intervals, named standard/vendor codecs and transports, typed voice fields, and V2-to-V1 LE buffer fallback. Unsupported commands are skipped and interleaved asynchronous packets are preserved. |
 | `apps/controller_loopback.py` | `bumble-controller-loopback` (`bumble-transport`) | ✅ | Runnable local-controller loopback benchmark with the full packet-size/count, ACL/SCO, throughput/RTT, interval, and transport CLI. It validates advertised loopback support, controller buffer limits, the written/read-back mode, waits for the matching connection type, sends bounded in-flight data, validates ordered echoed counters/handles, reassembles ACL/L2CAP packets, and reports RX/TX or RTT statistics. |
+| `apps/controllers.py` | `bumble-controllers` (`bumble-transport`) | ✅ | Runnable two-controller software radio over arbitrary split external HCI transports. A serialized shared-link pump routes host commands, ACL/SCO/ISO payloads, advertising and connections, LE control/PAST, Classic LMP, and all resulting host events without aliasing controller state. |
 | `apps/hci_bridge.py` | `bumble-hci-bridge` (`bumble-transport`) | ✅ | Runnable full-duplex host/controller bridge with upstream direct-opcode and OGF:OCF success short circuits. Independent read/write halves cover every external transport: file, raw HCI socket, serial, TCP, UDP, USB, VHCI, PTY, Unix, WebSocket, Android emulator, and Android netsim. |
 | `apps/scan.py` | `bumble-scan` (`bumble-transport`) | ✅ | Runnable external HCI scanner with upstream RSSI/passive/interval/window/PHY/duplicate/raw/IRK/key-store/device-config options, extended scanning with legacy fallback, typed legacy + extended report decoding, exact active/passive scan-response accumulation, labeled AD rendering, RSSI bars, and real RPA identity resolution. |
 | `apps/usb_probe.py` | `bumble-usb-probe` (`bumble-transport`) | ✅ | Runnable libusb device inventory with upstream `--verbose`, `--hci-only`, manufacturer, and product filters; device/interface-level Bluetooth HCI classification; stable index, VID/PID, duplicate, and serial transport names; string-descriptor error tolerance; and verbose configuration/interface/endpoint details including isochronous packet sizes. |
@@ -2580,6 +2581,23 @@ families:
   send packets through the independent halves. `open_split_transport` now
   supports every scheme accepted by `open_transport`, completing
   `bumble-hci-bridge` transport parity.
+
+## Slice 120 — what's here
+
+Two software controllers can now serve real external hosts on one in-process
+radio link:
+
+- `bumble-controllers` matches the current upstream two-transport CLI, opens
+  both as independent HCI halves, and gives each host reader its own blocking
+  worker while one serialized runtime owns the shared `LocalLink`.
+- Command, ACL, synchronous, and ISO packets are dispatched to the existing
+  controller/link APIs. Each input drives advertising, pending connections, LE
+  control, periodic sync transfer, and Classic LMP to quiescence before all
+  resulting host packets are flushed to their owning transport.
+- A scripted pair configures random addresses, advertises, establishes an LE
+  connection, and sends ACL data through the exact external-host dispatch path;
+  it verifies peer-handle translation and Number Of Completed Packets flow
+  control alongside strict CLI arity.
 
 ## Acceptance
 
