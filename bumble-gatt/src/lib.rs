@@ -38,6 +38,8 @@ use std::sync::Arc;
 use bumble::Uuid;
 use bumble_att::{codes, AttPdu};
 
+mod adapters;
+pub use adapters::*;
 mod client;
 pub use client::{
     AttTransport, CharacteristicProxy, DescriptorProxy, GattClient, GattError, ServiceProxy,

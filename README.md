@@ -68,7 +68,8 @@ crate whose behavior is verified against the upstream Python.
 | 51. Pairing key JSON/memory stores and resolving-list extraction | `bumble` | ✅ atomic persistence green |
 | 52. Complete GATT database definitions and access security | `bumble-gatt` | ✅ include/secondary/descriptor/permission green |
 | 53. Bearer-aware dynamic GATT value accessors | `bumble-gatt` | ✅ read/write/error callbacks green |
-| 54+. Remaining modules… | — | planned |
+| 54. Typed GATT characteristic and proxy adapters | `bumble-gatt` | ✅ upstream adapter vectors green |
+| 55+. Remaining modules… | — | planned |
 
 The LE lifecycle is now complete end-to-end through library APIs: **connect →
 discover → read/write → notify → disconnect** between two virtual devices — and
@@ -136,7 +137,7 @@ size, to convey remaining surface.
 |---|---|---|---|
 | `att.py` (1.1k) | `bumble-att` | ✅ | Complete typed catalog for every upstream `ATT_PDU` subclass: discovery, MTU, Read/Blob/Multiple/Multiple Variable/By Type/By Group, Write/Command/Signed, Prepare/Execute Write, notifications/indications, and confirmation. All added forms are Python-oracle pinned; variable tuples and handle sets add safe truncation/shape checks. |
 | `gatt.py` (0.6k), `gatt_server.py` (1.2k) | `bumble-gatt` | 🟡 | Attribute DB, primary/secondary services, include declarations, characteristic descriptors, automatic CCCDs, explicit access/security permissions, bearer-aware dynamic read/write callbacks, primary discovery, read/write/notify, Find_Information/Find_By_Type_Value, MTU-sized Read/Blob, fixed + variable Read Multiple, and atomic Prepare/Execute Write with cancel/rollback. Signed writes are deliberately ignored until a connection CSRK/counter can authenticate them. Deferred: the async bearer/event convenience layer. |
-| `gatt_client.py` (1.2k), `gatt_adapters.py` (0.4k) | `bumble-gatt` | 🟡 | **`GattClient` (slice 18)**: service / characteristic / descriptor discovery, reads (with long-read via Read_Blob), writes (with and without response), and notify/indicate subscriptions (CCCD write + notification/indication handling), over an `AttTransport`. Verified by a two-party client↔server integration test. Deferred (matching the synchronous port): the async bearer, `gatt_adapters` typed-value proxies, and event listeners. |
+| `gatt_client.py` (1.2k), `gatt_adapters.py` (0.4k) | `bumble-gatt` | 🟡 | **`GattClient` (slice 18)**: service / characteristic / descriptor discovery, reads (with long-read via Read_Blob), writes (with and without response), and notify/indicate subscriptions (CCCD write + notification/indication handling), over an `AttTransport`. Slice 54 adds typed server/proxy adapters for delegated, packed, mapped, UTF-8, serializable, and enum values, including typed dynamic server state and cached proxy decoding. Deferred: async bearer/event listeners and Python-native-aligned/exotic `struct` formats; all formats used by current Bumble profiles are supported. |
 
 ### Security (SMP + crypto)
 | Upstream (LOC) | Rust crate | Status | Notes |
@@ -1212,6 +1213,29 @@ Dynamic GATT values complete the synchronous attribute model:
 The remaining GATT difference is its asynchronous bearer/event convenience
 surface rather than database expressiveness. Porting now continues through the
 larger partial subsystems.
+
+## Slice 54 — what's here
+
+Upstream `gatt_adapters.py` now has a typed synchronous Rust foundation:
+
+- `ValueCodec` and `CharacteristicProxyAdapter` convert raw client reads,
+  writes, and cached notification values without duplicating transport logic.
+  `CharacteristicAdapter` performs the same conversion for server definitions
+  and creates a `DynamicValue` backed by shared typed state.
+- Delegated codecs preserve independently missing encoder/decoder errors. UTF-8,
+  `ByteSerializable`, and width/endian-aware `IntConvertible` enum codecs cover
+  the corresponding upstream adapter classes.
+- `PackedCodec` preserves Python's scalar result for one field and tuple result
+  for multiple fields. It supports portable endian prefixes, repetition,
+  padding, booleans, signed/unsigned integers, 32/64-bit floats, chars, fixed
+  byte strings, and Pascal strings. `MappedCodec` assigns those fields to
+  ordered names.
+- Tests port upstream's `>H`, `>HH`, UTF-8, serializable, and three-byte enum
+  vectors, then drive typed proxy and server adapters through the real GATT
+  client/server path.
+
+The next adapter slice closes Python-native alignment and remaining uncommon
+`struct` codes before moving out of GATT.
 
 ## Acceptance
 
