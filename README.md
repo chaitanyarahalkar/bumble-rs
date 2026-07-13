@@ -227,7 +227,7 @@ size, to convey remaining surface.
 | `bridge.py` (0.1k) | `bumble-transport::HciBridge` | ✅ | Separate host/controller sources and sinks, directional single-packet pumping, typed replacement filters, responses short-circuited to the sender, post-filter directional tracing, EOF reporting, and transport-error propagation. |
 | `apps/show.py` | `bumble-show` (`bumble-transport`) | ✅ | Runnable H4/BTSnoop capture decoder with upstream `--format` and repeatable Android/Zephyr `--vendor` options, typed HCI parsing, direction/timestamp output, and explicit truncated-record reporting. Rust vendor codecs are statically linked rather than dynamically registered. |
 | `apps/controller_info.py` | `bumble-controller-info` (`bumble-transport`) | 🟡 | Runnable external-controller inspection with reset, optional primed latency probes, local version/address/name, Classic + LE feature and buffer queries, data/advertising limits, minimum connection intervals, codec/voice queries, and V2-to-V1 LE buffer fallback. Unsupported commands are skipped and interleaved asynchronous packets are preserved. Deferred: symbolic supported-command, feature, codec, version, and voice-field names instead of numeric/bitmap rendering. |
-| `apps/scan.py` | `bumble-scan` (`bumble-transport`) | 🟡 | Runnable external HCI scanner with upstream RSSI/passive/interval/window/PHY/duplicate/raw/IRK/key-store/device-config options, extended scanning with legacy fallback, typed legacy + extended report decoding, AD structure rendering, RSSI bars, and real RPA identity resolution. Deferred: coalescing scan responses and multi-fragment extended advertisements into one processed advertisement, plus upstream's polished per-AD-type labels. |
+| `apps/scan.py` | `bumble-scan` (`bumble-transport`) | ✅ | Runnable external HCI scanner with upstream RSSI/passive/interval/window/PHY/duplicate/raw/IRK/key-store/device-config options, extended scanning with legacy fallback, typed legacy + extended report decoding, exact active/passive scan-response accumulation, labeled AD rendering, RSSI bars, and real RPA identity resolution. |
 | `apps/usb_probe.py` | `bumble-usb-probe` (`bumble-transport`) | ✅ | Runnable libusb device inventory with upstream `--verbose`, `--hci-only`, manufacturer, and product filters; device/interface-level Bluetooth HCI classification; stable index, VID/PID, duplicate, and serial transport names; string-descriptor error tolerance; and verbose configuration/interface/endpoint details including isochronous packet sizes. |
 | `apps/ble_rpa_tool.py` | `bumble-rpa-tool` (`bumble-smp`) | ✅ | Runnable `gen-irk`, `gen-rpa`, and `verify-rpa` commands backed by the OS RNG and the real SMP `ah` primitive. Flexible Python-style hex input, address validation, colored verification results, and malformed/extra argument errors are covered. |
 | `apps/unbond.py` | `bumble-unbond` (`bumble`) | 🟡 | File-backed list/delete mode is runnable with namespace selection, upstream-style colored key rendering, atomic persistence, and `!!! pairing not found` behavior. Controller-backed device-config discovery remains deferred until the external-transport host bootstrap is available without introducing a crate cycle. |
@@ -2474,6 +2474,23 @@ LE scanning now runs against any external HCI transport:
   bars, and typed advertising-data values. Deterministically generated RPAs are
   resolved to identity addresses in tests; a scripted transport verifies the
   complete command sequence and streaming event path through clean EOF.
+
+## Slice 114 — what's here
+
+Processed scan reporting now matches upstream behavior:
+
+- An address-keyed advertisement accumulator preserves the last advertising
+  payload, defers scannable reports during active scans, and combines them with
+  the next scan response while carrying the original connectable/scannable
+  properties. Passive scans and repeated advertisements emit immediately under
+  the same conditions as Bumble's `AdvertisementDataAccumulator`.
+- Raw mode remains a direct event view, while processed mode applies RSSI and
+  identity-resolution filtering after accumulation so the displayed record is
+  the complete advertisement seen by applications.
+- Every typed advertising-data variant has a readable label, including company
+  names for known manufacturer identifiers and hexadecimal fallbacks for opaque
+  values. Focused tests cover active merging, passive immediate delivery, and
+  the end-to-end scripted controller scan/response path.
 
 ## Acceptance
 

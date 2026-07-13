@@ -1,5 +1,5 @@
 use bumble::keys::{JsonKeyStore, KeyStore};
-use bumble::{Address, AddressType, AdvertisingData};
+use bumble::{Address, AddressType, AdvertisingData, DataType};
 use bumble_hci::{
     AdvertisingReport, Command, Event, ExtendedAdvertisingReport, HciPacket, LeMetaEvent,
 };
@@ -372,6 +372,127 @@ fn phy_name(phy: u8) -> &'static str {
     }
 }
 
+fn bytes_hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn data_type_label(value: DataType) -> String {
+    use DataType::*;
+    match value {
+        Flags(flags) => format!("Flags: {flags:#x}"),
+        IncompleteListOf16BitServiceUuids(uuids) => {
+            format!("Incomplete List of 16-bit Service UUIDs: {uuids:?}")
+        }
+        CompleteListOf16BitServiceUuids(uuids) => {
+            format!("Complete List of 16-bit Service UUIDs: {uuids:?}")
+        }
+        IncompleteListOf32BitServiceUuids(uuids) => {
+            format!("Incomplete List of 32-bit Service UUIDs: {uuids:?}")
+        }
+        CompleteListOf32BitServiceUuids(uuids) => {
+            format!("Complete List of 32-bit Service UUIDs: {uuids:?}")
+        }
+        IncompleteListOf128BitServiceUuids(uuids) => {
+            format!("Incomplete List of 128-bit Service UUIDs: {uuids:?}")
+        }
+        CompleteListOf128BitServiceUuids(uuids) => {
+            format!("Complete List of 128-bit Service UUIDs: {uuids:?}")
+        }
+        ShortenedLocalName(name) => format!("Shortened Local Name: {name}"),
+        CompleteLocalName(name) => format!("Complete Local Name: {name}"),
+        TxPowerLevel(power) => format!("TX Power Level: {power} dBm"),
+        ClassOfDevice(class) => format!("Class of Device: {class:?}"),
+        ManufacturerSpecificData {
+            company_identifier,
+            data,
+        } => {
+            let company = bumble::company_name(company_identifier)
+                .map(str::to_owned)
+                .unwrap_or_else(|| format!("{company_identifier:#06x}"));
+            format!(
+                "Manufacturer Specific Data: {company}: {}",
+                bytes_hex(&data)
+            )
+        }
+        SimplePairingHashC192(value) => {
+            format!("Simple Pairing Hash C-192: {}", bytes_hex(&value))
+        }
+        SimplePairingRandomizerR192(value) => {
+            format!("Simple Pairing Randomizer R-192: {}", bytes_hex(&value))
+        }
+        SimplePairingHashC256(value) => {
+            format!("Simple Pairing Hash C-256: {}", bytes_hex(&value))
+        }
+        SimplePairingRandomizerR256(value) => {
+            format!("Simple Pairing Randomizer R-256: {}", bytes_hex(&value))
+        }
+        LeSecureConnectionsConfirmationValue(value) => format!(
+            "LE Secure Connections Confirmation Value: {}",
+            bytes_hex(&value)
+        ),
+        LeSecureConnectionsRandomValue(value) => {
+            format!("LE Secure Connections Random Value: {}", bytes_hex(&value))
+        }
+        SecurityManagerTkValue(value) => {
+            format!("Security Manager TK Value: {}", bytes_hex(&value))
+        }
+        SecurityManagerOutOfBandFlags(flags) => {
+            format!("Security Manager OOB Flags: {flags:#04x}")
+        }
+        PeripheralConnectionIntervalRange { min, max } => {
+            format!("Peripheral Connection Interval Range: {min}..{max}")
+        }
+        ListOf16BitServiceSolicitationUuids(uuids) => {
+            format!("List of 16-bit Service Solicitation UUIDs: {uuids:?}")
+        }
+        ListOf32BitServiceSolicitationUuids(uuids) => {
+            format!("List of 32-bit Service Solicitation UUIDs: {uuids:?}")
+        }
+        ListOf128BitServiceSolicitationUuids(uuids) => {
+            format!("List of 128-bit Service Solicitation UUIDs: {uuids:?}")
+        }
+        ServiceData16BitUuid { service_uuid, data } => format!(
+            "Service Data 16-bit UUID: {}: {}",
+            service_uuid.to_hex_str("-"),
+            bytes_hex(&data)
+        ),
+        ServiceData32BitUuid { service_uuid, data } => format!(
+            "Service Data 32-bit UUID: {}: {}",
+            service_uuid.to_hex_str("-"),
+            bytes_hex(&data)
+        ),
+        ServiceData128BitUuid { service_uuid, data } => format!(
+            "Service Data 128-bit UUID: {}: {}",
+            service_uuid.to_hex_str("-"),
+            bytes_hex(&data)
+        ),
+        PublicTargetAddress(address) => format!("Public Target Address: {address}"),
+        RandomTargetAddress(address) => format!("Random Target Address: {address}"),
+        Appearance(appearance) => format!("Appearance: {appearance:?}"),
+        AdvertisingInterval(interval) => format!("Advertising Interval: {interval}"),
+        LeBluetoothDeviceAddress(address) => {
+            format!("LE Bluetooth Device Address: {address}")
+        }
+        LeRole(role) => format!("LE Role: {role:#04x}"),
+        Uri(uri) => format!("URI: {uri}"),
+        LeSupportedFeatures(features) => format!("LE Supported Features: {features:#x}"),
+        ChannelMapUpdateIndication { chm, instant } => {
+            format!("Channel Map Update Indication: map={chm:#x}, instant={instant}")
+        }
+        AdvertisingIntervalLong(interval) => {
+            format!("Advertising Interval Long: {interval}")
+        }
+        BroadcastCode(code) => format!("Broadcast Code: {code}"),
+        BroadcastName(name) => format!("Broadcast Name: {name}"),
+        ResolvableSetIdentifier(identifier) => {
+            format!("Resolvable Set Identifier: {}", bytes_hex(&identifier))
+        }
+        Generic { ad_type, data } => {
+            format!("AD Type {ad_type:#04x}: {}", bytes_hex(&data))
+        }
+    }
+}
+
 fn advertising_details(data: &[u8]) -> String {
     let values = AdvertisingData::from_bytes(data).data_types();
     if values.is_empty() {
@@ -379,29 +500,32 @@ fn advertising_details(data: &[u8]) -> String {
     }
     values
         .into_iter()
-        .map(|value| format!("{value:?}"))
+        .map(data_type_label)
         .collect::<Vec<_>>()
         .join("\n  ")
 }
 
-struct AdvertisementView<'a> {
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ProcessedAdvertisement {
     event: String,
-    address: &'a Address,
-    data: &'a [u8],
+    address: Address,
+    data: Vec<u8>,
     rssi: i8,
     connectable: bool,
+    scannable: bool,
+    scan_response: bool,
     primary_phy: Option<u8>,
     secondary_phy: Option<u8>,
 }
 
 fn render_advertisement(
-    view: AdvertisementView<'_>,
+    view: &ProcessedAdvertisement,
     raw: bool,
     resolver: Option<&AddressResolver>,
 ) -> String {
     let mut address = view.address.clone();
     let resolution = resolver
-        .and_then(|resolver| resolver.resolve(view.address))
+        .and_then(|resolver| resolver.resolve(&view.address))
         .map(|resolved| {
             address = resolved;
             format!(" (resolved from {})", view.address.to_string(false))
@@ -442,7 +566,7 @@ fn render_advertisement(
         },
         view.rssi,
         make_rssi_bar(view.rssi),
-        advertising_details(view.data)
+        advertising_details(&view.data)
     )
 }
 
@@ -457,66 +581,154 @@ fn legacy_event_name(event_type: u8) -> &'static str {
     }
 }
 
-fn render_legacy(
-    report: &AdvertisingReport,
-    raw: bool,
-    resolver: Option<&AddressResolver>,
-) -> String {
-    render_advertisement(
-        AdvertisementView {
-            event: legacy_event_name(report.event_type).into(),
-            address: &report.address,
-            data: &report.data,
-            rssi: report.rssi,
-            connectable: matches!(report.event_type, 0 | 1),
-            primary_phy: None,
-            secondary_phy: None,
-        },
-        raw,
-        resolver,
-    )
+fn processed_legacy(report: &AdvertisingReport) -> ProcessedAdvertisement {
+    ProcessedAdvertisement {
+        event: legacy_event_name(report.event_type).into(),
+        address: report.address.clone(),
+        data: report.data.clone(),
+        rssi: report.rssi,
+        connectable: matches!(report.event_type, 0 | 1),
+        scannable: matches!(report.event_type, 0 | 2),
+        scan_response: report.event_type == 4,
+        primary_phy: None,
+        secondary_phy: None,
+    }
 }
 
-fn render_extended(
-    report: &ExtendedAdvertisingReport,
-    raw: bool,
-    resolver: Option<&AddressResolver>,
-) -> String {
-    render_advertisement(
-        AdvertisementView {
-            event: format!("EXTENDED({:#06x})", report.event_type),
-            address: &report.address,
-            data: &report.data,
-            rssi: report.rssi,
-            connectable: report.event_type & 1 != 0,
-            primary_phy: Some(report.primary_phy),
-            secondary_phy: Some(report.secondary_phy),
-        },
-        raw,
-        resolver,
-    )
+fn processed_extended(report: &ExtendedAdvertisingReport) -> ProcessedAdvertisement {
+    ProcessedAdvertisement {
+        event: format!("EXTENDED({:#06x})", report.event_type),
+        address: report.address.clone(),
+        data: report.data.clone(),
+        rssi: report.rssi,
+        connectable: report.event_type & 1 != 0,
+        scannable: report.event_type & 2 != 0,
+        scan_response: report.event_type & 8 != 0,
+        primary_phy: Some(report.primary_phy),
+        secondary_phy: Some(report.secondary_phy),
+    }
 }
 
+fn packet_advertisements(packet: &HciPacket) -> Vec<ProcessedAdvertisement> {
+    match packet {
+        HciPacket::Event(Event::LeMeta(LeMetaEvent::AdvertisingReport { reports })) => {
+            reports.iter().map(processed_legacy).collect()
+        }
+        HciPacket::Event(Event::LeMeta(LeMetaEvent::ExtendedAdvertisingReport { reports })) => {
+            reports.iter().map(processed_extended).collect()
+        }
+        _ => Vec::new(),
+    }
+}
+
+#[derive(Clone, Debug)]
+struct LastAdvertisement {
+    advertisement: ProcessedAdvertisement,
+    data: Vec<u8>,
+}
+
+#[derive(Clone, Debug)]
+struct AdvertisementAccumulator {
+    passive: bool,
+    entries: Vec<(Address, LastAdvertisement)>,
+}
+
+impl AdvertisementAccumulator {
+    fn new(passive: bool) -> Self {
+        Self {
+            passive,
+            entries: Vec::new(),
+        }
+    }
+
+    fn update(&mut self, advertisement: ProcessedAdvertisement) -> Option<ProcessedAdvertisement> {
+        let index = self
+            .entries
+            .iter()
+            .position(|(address, _)| *address == advertisement.address);
+        let last = index.map(|index| self.entries[index].1.clone());
+        let (result, data) = if advertisement.scan_response {
+            let result = last.as_ref().and_then(|last| {
+                (!last.advertisement.scan_response).then(|| {
+                    let mut merged = advertisement.clone();
+                    merged.connectable = last.advertisement.connectable;
+                    merged.scannable = true;
+                    merged.data = last
+                        .data
+                        .iter()
+                        .chain(&advertisement.data)
+                        .copied()
+                        .collect();
+                    merged
+                })
+            });
+            (result, Vec::new())
+        } else {
+            let emit = self.passive
+                || !advertisement.scannable
+                || last
+                    .as_ref()
+                    .is_some_and(|last| !last.advertisement.scan_response);
+            (
+                emit.then(|| advertisement.clone()),
+                advertisement.data.clone(),
+            )
+        };
+        let replacement = LastAdvertisement {
+            advertisement,
+            data,
+        };
+        match index {
+            Some(index) => self.entries[index].1 = replacement,
+            None => self
+                .entries
+                .push((replacement.advertisement.address.clone(), replacement)),
+        }
+        result
+    }
+}
+
+struct AdvertisementProcessor<'a> {
+    raw: bool,
+    min_rssi: Option<i8>,
+    resolver: Option<&'a AddressResolver>,
+    accumulator: AdvertisementAccumulator,
+}
+
+impl<'a> AdvertisementProcessor<'a> {
+    fn new(args: &Args, resolver: Option<&'a AddressResolver>) -> Self {
+        Self {
+            raw: args.raw,
+            min_rssi: args.min_rssi,
+            resolver,
+            accumulator: AdvertisementAccumulator::new(args.passive),
+        }
+    }
+
+    fn process(&mut self, packet: &HciPacket) -> Vec<String> {
+        packet_advertisements(packet)
+            .into_iter()
+            .filter_map(|advertisement| {
+                let advertisement = if self.raw {
+                    Some(advertisement)
+                } else {
+                    self.accumulator.update(advertisement)
+                }?;
+                self.min_rssi
+                    .is_none_or(|minimum| advertisement.rssi >= minimum)
+                    .then(|| render_advertisement(&advertisement, self.raw, self.resolver))
+            })
+            .collect()
+    }
+}
+
+#[cfg(test)]
 fn render_packet(
     packet: &HciPacket,
     args: &Args,
     resolver: Option<&AddressResolver>,
 ) -> Vec<String> {
-    match packet {
-        HciPacket::Event(Event::LeMeta(LeMetaEvent::AdvertisingReport { reports })) => reports
-            .iter()
-            .filter(|report| args.min_rssi.is_none_or(|minimum| report.rssi >= minimum))
-            .map(|report| render_legacy(report, args.raw, resolver))
-            .collect(),
-        HciPacket::Event(Event::LeMeta(LeMetaEvent::ExtendedAdvertisingReport { reports })) => {
-            reports
-                .iter()
-                .filter(|report| args.min_rssi.is_none_or(|minimum| report.rssi >= minimum))
-                .map(|report| render_extended(report, args.raw, resolver))
-                .collect()
-        }
-        _ => Vec::new(),
-    }
+    AdvertisementProcessor::new(args, resolver).process(packet)
 }
 
 fn scan_transport<T: PacketSource + PacketSink>(
@@ -529,13 +741,14 @@ fn scan_transport<T: PacketSource + PacketSink>(
     let mut channel = HciCommandChannel::new(transport);
     configure_scan(&mut channel, args, local_address)?;
     let (mut transport, pending) = channel.into_parts();
+    let mut processor = AdvertisementProcessor::new(args, resolver);
     for packet in pending {
-        for output in render_packet(&packet, args, resolver) {
+        for output in processor.process(&packet) {
             emit(output);
         }
     }
     while let Some(packet) = transport.read_packet().map_err(|error| error.to_string())? {
-        for output in render_packet(&packet, args, resolver) {
+        for output in processor.process(&packet) {
             emit(output);
         }
     }
@@ -606,17 +819,30 @@ mod tests {
             if status == 0 && matches!(command, Command::LeSetExtendedScanEnable { .. }) {
                 self.inbound.push_back(HciPacket::Event(Event::LeMeta(
                     LeMetaEvent::AdvertisingReport {
-                        reports: vec![AdvertisingReport {
-                            event_type: 0,
-                            address_type: 1,
-                            address: Address::parse(
-                                "C0:11:22:33:44:55",
-                                AddressType::RANDOM_DEVICE,
-                            )
-                            .unwrap(),
-                            data: vec![2, 1, 6, 5, 9, b'T', b'e', b's', b't'],
-                            rssi: -45,
-                        }],
+                        reports: vec![
+                            AdvertisingReport {
+                                event_type: 0,
+                                address_type: 1,
+                                address: Address::parse(
+                                    "C0:11:22:33:44:55",
+                                    AddressType::RANDOM_DEVICE,
+                                )
+                                .unwrap(),
+                                data: vec![2, 1, 6, 5, 9, b'T', b'e', b's', b't'],
+                                rssi: -45,
+                            },
+                            AdvertisingReport {
+                                event_type: 4,
+                                address_type: 1,
+                                address: Address::parse(
+                                    "C0:11:22:33:44:55",
+                                    AddressType::RANDOM_DEVICE,
+                                )
+                                .unwrap(),
+                                data: vec![2, 0x0A, 0xFB],
+                                rssi: -44,
+                            },
+                        ],
                     },
                 )));
             }
@@ -692,8 +918,9 @@ mod tests {
         .unwrap();
         assert_eq!(output.len(), 1);
         assert!(output[0].contains("C0:11:22:33:44:55"));
-        assert!(output[0].contains("CompleteLocalName(\"Test\")"));
-        assert!(output[0].contains("RSSI: -45"));
+        assert!(output[0].contains("Complete Local Name: Test"));
+        assert!(output[0].contains("TX Power Level: -5 dBm"));
+        assert!(output[0].contains("RSSI: -44"));
     }
 
     #[test]
@@ -762,9 +989,38 @@ mod tests {
             data: vec![],
             rssi: -30,
         };
-        let rendered = render_legacy(&report, false, Some(&resolver));
+        let rendered = render_advertisement(&processed_legacy(&report), false, Some(&resolver));
         assert!(rendered.contains("C0:11:22:33:44:55 [RANDOM_ID]"));
         assert!(rendered.contains("resolved from"));
+    }
+
+    #[test]
+    fn active_scan_coalesces_scan_response_while_passive_scan_emits_immediately() {
+        let address = Address::parse("C0:11:22:33:44:55", AddressType::RANDOM_DEVICE).unwrap();
+        let advertisement = processed_legacy(&AdvertisingReport {
+            event_type: 0,
+            address_type: 1,
+            address: address.clone(),
+            data: vec![2, 1, 6],
+            rssi: -50,
+        });
+        let scan_response = processed_legacy(&AdvertisingReport {
+            event_type: 4,
+            address_type: 1,
+            address,
+            data: vec![3, 9, b'O', b'K'],
+            rssi: -49,
+        });
+
+        let mut active = AdvertisementAccumulator::new(false);
+        assert!(active.update(advertisement.clone()).is_none());
+        let merged = active.update(scan_response).unwrap();
+        assert!(merged.connectable);
+        assert!(merged.scannable);
+        assert_eq!(merged.data, vec![2, 1, 6, 3, 9, b'O', b'K']);
+
+        let mut passive = AdvertisementAccumulator::new(true);
+        assert_eq!(passive.update(advertisement.clone()), Some(advertisement));
     }
 
     #[test]
