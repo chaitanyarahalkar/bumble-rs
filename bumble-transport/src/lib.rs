@@ -15,6 +15,7 @@ mod tcp;
 mod udp;
 #[cfg(unix)]
 mod unix;
+mod websocket;
 
 pub use common::{
     Error, H4Transport, PacketFramer, PacketLayout, PacketSink, PacketSource, Result,
@@ -29,3 +30,4 @@ pub use tcp::{TcpServer, TcpTransport};
 pub use udp::UdpTransport;
 #[cfg(unix)]
 pub use unix::{UnixServer, UnixTransport};
+pub use websocket::{WebSocketServer, WebSocketTransport};

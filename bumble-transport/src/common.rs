@@ -14,6 +14,7 @@ pub enum Error {
     Io(io::Error),
     Hci(bumble_hci::Error),
     Serial(serialport::Error),
+    WebSocket(tungstenite::Error),
     InvalidPacketType(u8),
     InvalidLayout,
     InvalidSpec(String),
@@ -28,6 +29,7 @@ impl fmt::Display for Error {
             Self::Io(error) => write!(formatter, "transport I/O error: {error}"),
             Self::Hci(error) => write!(formatter, "{error}"),
             Self::Serial(error) => write!(formatter, "serial transport error: {error}"),
+            Self::WebSocket(error) => write!(formatter, "WebSocket transport error: {error}"),
             Self::InvalidPacketType(packet_type) => {
                 write!(formatter, "invalid HCI packet type {packet_type:#04x}")
             }
@@ -51,6 +53,7 @@ impl std::error::Error for Error {
             Self::Io(error) => Some(error),
             Self::Hci(error) => Some(error),
             Self::Serial(error) => Some(error),
+            Self::WebSocket(error) => Some(error),
             _ => None,
         }
     }
@@ -71,6 +74,12 @@ impl From<bumble_hci::Error> for Error {
 impl From<serialport::Error> for Error {
     fn from(error: serialport::Error) -> Self {
         Self::Serial(error)
+    }
+}
+
+impl From<tungstenite::Error> for Error {
+    fn from(error: tungstenite::Error) -> Self {
+        Self::WebSocket(error)
     }
 }
 

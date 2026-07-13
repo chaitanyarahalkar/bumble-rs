@@ -1,6 +1,6 @@
 use crate::{
     Error, FileTransport, PacketSink, PacketSource, Result, SerialTransport, TcpServer,
-    TcpTransport, UdpTransport,
+    TcpTransport, UdpTransport, WebSocketServer, WebSocketTransport,
 };
 use bumble_hci::HciPacket;
 use std::collections::BTreeMap;
@@ -88,6 +88,7 @@ pub enum ExternalTransport {
     Serial(SerialTransport),
     Tcp(TcpTransport),
     Udp(UdpTransport),
+    WebSocket(Box<WebSocketTransport>),
     #[cfg(unix)]
     Pty(PtyTransport),
     #[cfg(unix)]
@@ -101,6 +102,7 @@ impl PacketSource for ExternalTransport {
             Self::Serial(transport) => transport.read_packet(),
             Self::Tcp(transport) => transport.read_packet(),
             Self::Udp(transport) => transport.read_packet(),
+            Self::WebSocket(transport) => transport.read_packet(),
             #[cfg(unix)]
             Self::Pty(transport) => transport.read_packet(),
             #[cfg(unix)]
@@ -116,6 +118,7 @@ impl PacketSink for ExternalTransport {
             Self::Serial(transport) => transport.write_packet(packet),
             Self::Tcp(transport) => transport.write_packet(packet),
             Self::Udp(transport) => transport.write_packet(packet),
+            Self::WebSocket(transport) => transport.write_packet(packet),
             #[cfg(unix)]
             Self::Pty(transport) => transport.write_packet(packet),
             #[cfg(unix)]
@@ -129,6 +132,7 @@ impl PacketSink for ExternalTransport {
             Self::Serial(transport) => transport.flush(),
             Self::Tcp(transport) => transport.flush(),
             Self::Udp(transport) => transport.flush(),
+            Self::WebSocket(transport) => transport.flush(),
             #[cfg(unix)]
             Self::Pty(transport) => transport.flush(),
             #[cfg(unix)]
@@ -183,6 +187,17 @@ pub fn open_transport(name: &str) -> Result<OpenedTransport> {
                 .split_once(',')
                 .ok_or_else(|| Error::InvalidSpec("UDP parameters must be local,remote".into()))?;
             ExternalTransport::Udp(UdpTransport::bind(local, remote)?)
+        }
+        "ws-client" => ExternalTransport::WebSocket(Box::new(WebSocketTransport::connect(
+            spec.required_parameters()?,
+        )?)),
+        "ws-server" => {
+            let parameters = spec.required_parameters()?;
+            let address = parameters
+                .strip_prefix("_:")
+                .map(|port| format!("0.0.0.0:{port}"))
+                .unwrap_or_else(|| parameters.to_owned());
+            ExternalTransport::WebSocket(Box::new(WebSocketServer::bind(address)?.accept()?))
         }
         #[cfg(unix)]
         "pty" => {

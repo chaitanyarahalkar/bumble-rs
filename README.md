@@ -91,7 +91,8 @@ crate whose behavior is verified against the upstream Python.
 | 74. High-level LE advertise, scan, connect, and disconnect API | `bumble-host` | ✅ no raw-HCI lifecycle green |
 | 75. H4 framing and file/TCP/UDP/Unix transports | `bumble-transport` | ✅ fragmented streams + socket loopbacks green |
 | 76. Transport-spec dispatch, serial, and raw PTY endpoints | `bumble-transport` | ✅ metadata + PTY loopback green |
-| 77+. Remaining modules… | — | planned |
+| 77. WebSocket client/server HCI transport | `bumble-transport` | ✅ binary/coalesced loopback green |
+| 78+. Remaining modules… | — | planned |
 
 The LE lifecycle is now complete end-to-end through library APIs: **connect →
 discover → read/write → notify → disconnect** between two virtual devices — and
@@ -171,7 +172,7 @@ size, to convey remaining surface.
 ### Transports & drivers
 | Upstream | Rust crate | Status | Notes |
 |---|---|---|---|
-| `transport/*` — USB, UART/serial, TCP, WebSocket, UDP, PTY, android-netsim, vhci, … | `bumble-transport` | 🟡 | Incremental H4 framing accepts fragmented/coalesced streams and vendor packet layouts. Bumble transport-name/metadata dispatch opens file, serial/UART with RTS/CTS, raw PTY, TCP client/server, connected UDP, and Unix client/server endpoints. Deferred: DSR/DTR flow control, USB, WebSocket, VHCI, netsim, and other platform-specific endpoints. |
+| `transport/*` — USB, UART/serial, TCP, WebSocket, UDP, PTY, android-netsim, vhci, … | `bumble-transport` | 🟡 | Incremental H4 framing accepts fragmented/coalesced streams and vendor packet layouts. Bumble transport-name/metadata dispatch opens file, serial/UART with RTS/CTS, raw PTY, TCP, UDP, Unix, and WebSocket client/server endpoints; WebSocket clients support `ws://` and `wss://`. Deferred: DSR/DTR flow control, USB, VHCI/HCI sockets, netsim, and other platform-specific endpoints. |
 | `drivers/*` — Intel, Realtek | — | ⬜ | Vendor controller firmware/init. |
 
 ### Classic Bluetooth (BR/EDR)
@@ -1759,9 +1760,27 @@ Host-local transport configuration now follows Bumble's named endpoint model:
   sends typed HCI packets in both directions over the real PTY; a second test
   opens that replica through serial dispatch and verifies the live UART path.
 
-The transport crate now reaches local serial devices and controller processes.
-Remaining backends are USB, WebSocket, VHCI/HCI sockets, Android emulator/netsim,
-and platform-specific integrations.
+The transport crate now reaches local serial devices and controller processes;
+the next layer adds WebSocket connectivity for remote endpoints.
+
+## Slice 77 — what's here
+
+HCI can now cross Bumble's WebSocket transport boundary:
+
+- `WebSocketTransport::connect` supports blocking `ws://` and TLS `wss://`
+  clients, and `WebSocketServer` separates bind from accept for controlled
+  server lifecycles.
+- HCI is emitted only as binary messages. Incoming text frames are ignored,
+  control frames remain with the WebSocket protocol engine, and close frames
+  become a clean transport EOF.
+- Binary messages feed the shared `PacketFramer`, preserving upstream behavior
+  when one message contains several packets or one packet spans messages.
+- `ws-client` and `ws-server` participate in transport-name dispatch. Real
+  loopback tests cover handshake, typed bidirectional traffic, text rejection,
+  coalescing, and dispatcher metadata retention.
+
+The remaining external-controller transports are USB, VHCI/HCI sockets,
+Android emulator/netsim, and narrower platform integrations.
 
 ## Acceptance
 
@@ -1908,10 +1927,11 @@ bumble-rs/
 ├── bumble-codecs/             # slice-48 common media bitstreams/codecs
 │   ├── src/lib.rs             # bit I/O + MPEG-4 LATM AAC and ADTS conversion
 │   └── tests/codecs.rs        # upstream fixture + length-boundary round trips
-├── bumble-transport/          # slices 75-76 external HCI transports
-│   ├── src/{lib,common,dispatch,file,serial,pty,tcp,udp,unix}.rs
+├── bumble-transport/          # slices 75-77 external HCI transports
+│   ├── src/{lib,common,dispatch,file,serial,pty,tcp,udp,unix,websocket}.rs
 │   ├── tests/transports.rs    # fragmentation, EOF, and socket loopbacks
-│   └── tests/specs.rs         # dispatch, serial config, and raw PTY coverage
+│   ├── tests/specs.rs         # dispatch, serial config, and raw PTY coverage
+│   └── tests/websocket.rs     # binary framing + client/server handshake
 └── docs/superpowers/          # design specs + implementation plans
 ```
 
