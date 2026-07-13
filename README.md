@@ -116,7 +116,8 @@ crate whose behavior is verified against the upstream Python.
 | 99. Android and Zephyr vendor HCI codecs | `bumble-hci` | ✅ exact command envelopes + versioned returns/BQR parsing green |
 | 100. Bidirectional filtered HCI bridge | `bumble-transport` | ✅ replacement/short-circuit/trace paths green |
 | 101. Periodic advertising and synchronization | `bumble-controller` / `bumble-host` | ✅ 600-byte train + create/cancel/receive/terminate flow green |
-| 102+. Repository completion audit and remaining gaps | workspace | in progress |
+| 102. Periodic Advertising Sync Transfer | `bumble-controller` / `bumble-host` | ✅ sync + set-info transfer over live LE ACL green |
+| 103+. Repository completion audit and remaining gaps | workspace | in progress |
 
 The LE lifecycle is now complete end-to-end through library APIs: **connect →
 discover → read/write → notify → disconnect** between two virtual devices — and
@@ -169,11 +170,11 @@ size, to convey remaining surface.
 |---|---|---|---|
 | `hci.py` (8.3k) | `bumble-hci` | ✅ | **Full typed catalog: 196 command op codes + 81 event / LE-meta sub-event codes**, generated from upstream's declarative field specs by [`tools/hcigen`](bumble-hci/tools/hcigen/) and **byte-pinned against real Python Bumble** (320 oracle tests). Framing (Command/Event/ACL/SCO/ISO), `Command_Complete` with typed `ReturnParameters`, the open-enum `Generic` tail, and upstream-equivalent ACL/L2CAP fragmentation/reassembly with PB-flag, length, continuation, handle, and overflow validation. Two phys-derived array commands and the two nested-report events are hand-written; everything else is generated. |
 | `vendor/{android,zephyr}/hci.py` | `bumble-hci::vendor` | ✅ | Android vendor-capability responses preserve all historical length prefixes; APCF, energy-info, A2DP-offload, and dynamic-buffer command/return payloads remain open where upstream does. Bluetooth Quality Reports decode every recognized report ID with signed radio metrics and opaque vendor tails. Zephyr read/write TX-power commands and return parameters preserve signed dBm values and open handle types. |
-| `controller.py` (2.8k) | `bumble-controller` | 🟡 | **Full command surface**: every command upstream's `controller.py` handles (93, via the generated [`command_surface`](bumble-controller/src/command_surface.rs) table) gets a reply of the matching HCI shape — Command Complete + SUCCESS for config/set commands, Command Status for operations completing via a later event, and the spec-correct "Unknown HCI Command" for anything upstream also doesn't handle. **Functionally simulated**: legacy, extended, and periodic LE advertising/scanning/synchronization; multi-set parameters/random addresses/fragmented data/scan responses; sync create/cancel/terminate and receive control; IRK resolving-list offload with identity-targeted RPA connections; ACL routing with PB/BC preservation and Number Of Completed Packets flow events; disconnection; the read commands (`Read_BD_ADDR`/`Read_Local_Name`/`LE_Read_Buffer_Size`/`LE_Read_Local_Supported_Features`/`LE_Rand`); per-connection `LE_Set_Data_Length`/`LE_Set_PHY`; and — via LL control-PDU exchange — **encryption start**, **remote-features**, and **CIS establishment**. CIS links retain Setup/Remove ISO data paths and route HCI ISO fragments with handle translation and completed-packet events. Also **classic (BR/EDR)** connection/name/features and SCO/eSCO request/accept/reject/disconnect with synchronous-data routing. Other read commands are acknowledged SUCCESS **without a synthesized payload**. Deferred: LTK verification, remote-version exchange, periodic-sync transfer, and classic authentication/role-switch sub-flows. |
+| `controller.py` (2.8k) | `bumble-controller` | 🟡 | **Full command surface**: every command upstream's `controller.py` handles (93, via the generated [`command_surface`](bumble-controller/src/command_surface.rs) table) gets a reply of the matching HCI shape — Command Complete + SUCCESS for config/set commands, Command Status for operations completing via a later event, and the spec-correct "Unknown HCI Command" for anything upstream also doesn't handle. **Functionally simulated**: legacy, extended, and periodic LE advertising/scanning/synchronization; multi-set parameters/random addresses/fragmented data/scan responses; sync create/cancel/terminate, receive control, and PAST sync/set-info transfer over ACL; IRK resolving-list offload with identity-targeted RPA connections; ACL routing with PB/BC preservation and Number Of Completed Packets flow events; disconnection; the read commands (`Read_BD_ADDR`/`Read_Local_Name`/`LE_Read_Buffer_Size`/`LE_Read_Local_Supported_Features`/`LE_Rand`); per-connection `LE_Set_Data_Length`/`LE_Set_PHY`; and — via LL control-PDU exchange — **encryption start**, **remote-features**, and **CIS establishment**. CIS links retain Setup/Remove ISO data paths and route HCI ISO fragments with handle translation and completed-packet events. Also **classic (BR/EDR)** connection/name/features and SCO/eSCO request/accept/reject/disconnect with synchronous-data routing. Other read commands are acknowledged SUCCESS **without a synthesized payload**. Deferred: LTK verification, remote-version exchange, and classic authentication/role-switch sub-flows. |
 | `link.py` (0.15k) | `bumble-controller` | 🟡 | In-process **synchronous** `LocalLink` with LL-control, simplified LMP, ACL, and SCO/eSCO routing. Deferred: serialized over-the-air PDUs and async scheduling. |
 | `ll.py` (0.2k) | `bumble-controller` | 🟡 | Advertising/connection PDUs modeled as in-process structs, not serialized LL PDUs. Control PDUs (`EncReq`, `FeatureReq`/`PeripheralFeatureReq`/`FeatureRsp`, `TerminateInd`) are exchanged between controllers via `LocalLink::pump_ll` to drive the encryption-start, remote-features, and CIS-establishment (`CisReq`/`CisRsp`/`CisInd`) flows. |
 | `host.py` (2.1k) | `bumble-host` | 🟡 | `Device` glue (ATT↔L2CAP↔ACL sequencing + pairing transport), controller-buffer-sized outbound ACL fragmentation, per-connection inbound reassembly, a global/per-handle `DataPacketQueue` driven by Number Of Completed Packets, LE/Classic encryption, resolving-list programming, Classic and LE L2CAP, plus synchronous audio APIs. The host pump advances LL control and HCI/ACL traffic. Deferred: direct LE signaling-manager integration and the broader host feature set. |
-| `device.py` (7.0k) | `bumble-host` | 🟡 | High-level legacy, extended, and periodic LE advertising; active/passive scan reports; periodic sync create/cancel/terminate and fragmented-report assembly; identity/RPA-aware legacy and extended connection setup; peer/role state; and disconnect run through `Device` without raw HCI. Extended and periodic data fragment across HCI commands up to the controller's 1650-byte limit. CIG/CIS configuration, request/accept, data-path management, sequence numbering, 960-byte ISO fragmentation, and receive-side SDU reassembly are live. GATT/ATT, SMP, Classic, and synchronous operations are also exposed by the same type. Deferred: periodic-sync transfer, multi-connection ownership, and listener/async conveniences. |
+| `device.py` (7.0k) | `bumble-host` | 🟡 | High-level legacy, extended, and periodic LE advertising; active/passive scan reports; periodic sync create/cancel/terminate, fragmented-report assembly, and PAST sync/set-info transfer; identity/RPA-aware legacy and extended connection setup; peer/role state; and disconnect run through `Device` without raw HCI. Extended and periodic data fragment across HCI commands up to the controller's 1650-byte limit. CIG/CIS configuration, request/accept, data-path management, sequence numbering, 960-byte ISO fragmentation, and receive-side SDU reassembly are live. GATT/ATT, SMP, Classic, and synchronous operations are also exposed by the same type. Deferred: multi-connection ownership and listener/async conveniences. |
 | `lmp.py` (0.4k) | `bumble-controller::lmp` | 🟡 | Classic Link Manager Protocol PDUs modeled as in-process structs (`HostConnectionReq`/`Accepted`, `NameReq`/`NameRes`, `FeaturesReq`/`FeaturesRes`, synchronous request/accept/reject, `Detach`) driving the classic connection/name/features/SCO-eSCO flows via `LocalLink::pump_classic`. The role-switch / authentication / encryption LMP sub-dance is simplified away. |
 
 ### L2CAP
@@ -234,7 +235,7 @@ modules have live Rust implementations. Legacy, extended, and periodic LE
 advertising/scan/sync/connect paths run end-to-end through the high-level `Device`.
 
 The completion audit is therefore concentrated on deeper orchestration rather
-than missing wire catalogs: periodic-sync transfer, a few Classic
+than missing wire catalogs: a few Classic
 control sub-flows, multi-connection host
 ownership, platform-specific transport edges, and Python-only harness/app
 surfaces. Asyncio listeners and generators are represented by explicit events,
@@ -2271,6 +2272,22 @@ Periodic advertising now runs across controller, link, and high-level host APIs:
 - A live two-device test sends a 600-byte train through three HCI report
   fragments, toggles reception, stops the advertiser, terminates the sync, and
   separately verifies pending-sync cancellation.
+
+## Slice 102 — what's here
+
+Periodic Advertising Sync Transfer (PAST) now crosses live LE ACL links:
+
+- `LE_Periodic_Advertising_Sync_Transfer` validates the ACL and source sync
+  handles, then carries the advertiser address/SID/PHY/interval plus service
+  data to the peer. The peer allocates its own sync handle and emits the exact
+  Sync Transfer Received meta-event fields.
+- `LE_Periodic_Advertising_Set_Info_Transfer` derives the same transfer record
+  directly from an enabled local periodic advertising set and rejects missing,
+  disabled, or unconnected state with the appropriate HCI status.
+- `Device` exposes both transfer forms, retains typed transfer metadata, installs
+  the received sync, and immediately receives subsequent periodic reports.
+  Tests cover direct set-info transfer between two connected devices and sync
+  transfer from a synchronized sender to a third connected peer.
 
 ## Acceptance
 

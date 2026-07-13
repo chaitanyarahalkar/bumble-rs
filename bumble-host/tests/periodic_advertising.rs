@@ -108,3 +108,104 @@ fn pending_periodic_sync_can_be_cancelled() {
     assert_eq!(devices[0].take_periodic_sync_errors(), [0x44]);
     assert!(devices[0].periodic_syncs().is_empty());
 }
+
+#[test]
+fn periodic_advertising_set_info_transfers_over_an_acl_connection() {
+    let (mut link, mut devices, advertiser_address) = devices();
+    let mut extended =
+        ExtendedAdvertisingConfig::connectable_scannable(7, advertiser_address.clone());
+    extended.sid = 5;
+    assert!(devices[1].start_extended_advertising(&mut link, &extended, b"connect", &[]));
+    assert!(devices[1].start_periodic_advertising(
+        &mut link,
+        PeriodicAdvertisingConfig::new(7),
+        b"transferred set",
+    ));
+
+    devices[0].connect_le_extended(&mut link, advertiser_address.clone());
+    pump(&mut link, &mut devices);
+    assert!(devices[0].is_connected());
+    assert!(devices[1].is_connected());
+    assert!(devices[1].transfer_periodic_advertising_set_info(&mut link, 7, 0xCAFE));
+    pump(&mut link, &mut devices);
+
+    let transfers = devices[0].take_periodic_sync_transfers();
+    assert_eq!(transfers.len(), 1);
+    assert_eq!(transfers[0].service_data, 0xCAFE);
+    assert_eq!(transfers[0].sync.advertising_sid, 5);
+    assert_eq!(transfers[0].sync.advertiser_address, advertiser_address);
+    assert!(devices[0]
+        .periodic_syncs()
+        .contains_key(&transfers[0].sync.sync_handle));
+
+    link.propagate_advertising();
+    pump(&mut link, &mut devices);
+    assert_eq!(
+        devices[0].take_periodic_advertisements()[0].data,
+        b"transferred set"
+    );
+}
+
+#[test]
+fn established_periodic_sync_transfers_to_a_connected_peer() {
+    let advertiser_address = address("C4:F2:17:1A:1D:C3");
+    let receiver_address = address("C4:F2:17:1A:1D:B2");
+    let mut link = LocalLink::new();
+    let sender_id = link.add_controller(Controller::new("sender", address("00:00:00:00:00:11")));
+    let receiver_id =
+        link.add_controller(Controller::new("receiver", address("00:00:00:00:00:12")));
+    let advertiser_id =
+        link.add_controller(Controller::new("advertiser", address("00:00:00:00:00:13")));
+    let mut devices = [
+        Device::new(sender_id),
+        Device::new(receiver_id),
+        Device::new(advertiser_id),
+    ];
+    devices[1].set_random_address(&mut link, receiver_address.clone());
+    devices[2].set_random_address(&mut link, advertiser_address.clone());
+
+    let mut extended =
+        ExtendedAdvertisingConfig::connectable_scannable(2, advertiser_address.clone());
+    extended.event_properties = 0;
+    extended.sid = 6;
+    assert!(devices[2].start_extended_advertising(&mut link, &extended, b"train", &[]));
+    assert!(devices[2].start_periodic_advertising(
+        &mut link,
+        PeriodicAdvertisingConfig::new(2),
+        b"sync transfer",
+    ));
+    assert!(devices[0].create_periodic_advertising_sync(
+        &mut link,
+        advertiser_address.clone(),
+        6,
+        0,
+        0x0100,
+        false,
+    ));
+    link.propagate_advertising();
+    pump(&mut link, &mut devices);
+    let source_sync_handle = *devices[0].periodic_syncs().keys().next().unwrap();
+
+    assert!(devices[1].start_advertising(&mut link, b"receiver"));
+    devices[0].connect_le(&mut link, receiver_address);
+    pump(&mut link, &mut devices);
+    assert!(devices[0].is_connected());
+    assert!(devices[1].is_connected());
+    assert!(devices[0].transfer_periodic_advertising_sync(&mut link, source_sync_handle, 0x1234,));
+    pump(&mut link, &mut devices);
+
+    let transfers = devices[1].take_periodic_sync_transfers();
+    assert_eq!(transfers.len(), 1);
+    assert_eq!(transfers[0].service_data, 0x1234);
+    assert_eq!(transfers[0].sync.advertiser_address, advertiser_address);
+    assert!(link
+        .controller(receiver_id)
+        .periodic_sync_handles()
+        .contains(&transfers[0].sync.sync_handle));
+    link.propagate_advertising();
+    pump(&mut link, &mut devices);
+    assert_eq!(
+        devices[1].take_periodic_advertisements()[0].data,
+        b"sync transfer"
+    );
+}

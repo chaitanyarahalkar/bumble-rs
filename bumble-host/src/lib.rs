@@ -23,8 +23,8 @@
 //! with controller-buffer-sized ACL fragmentation/reassembly. High-level
 //! legacy and extended advertising, scanning, and connection setup are also
 //! available, along with periodic advertising/synchronization, CIG/CIS control,
-//! and ISO SDU fragmentation/reassembly. Deferred: direct integration of the LE
-//! signaling manager, periodic-sync transfer, and multiple simultaneous
+//! PAST transfer, and ISO SDU fragmentation/reassembly. Deferred: direct
+//! integration of the LE signaling manager and multiple simultaneous
 //! connections per device.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -206,6 +206,14 @@ pub struct PeriodicAdvertisingSyncInfo {
     pub advertiser_clock_accuracy: u8,
 }
 
+/// Metadata accompanying a sync received through PAST over an LE connection.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PeriodicAdvertisingSyncTransferInfo {
+    pub connection_handle: u16,
+    pub service_data: u16,
+    pub sync: PeriodicAdvertisingSyncInfo,
+}
+
 /// One complete periodic advertisement after HCI report-fragment assembly.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PeriodicAdvertisement {
@@ -247,6 +255,7 @@ pub struct Device {
     periodic_advertisements: Vec<PeriodicAdvertisement>,
     periodic_sync_errors: Vec<u8>,
     lost_periodic_syncs: Vec<u16>,
+    periodic_sync_transfers: Vec<PeriodicAdvertisingSyncTransferInfo>,
     acl_data_packet_length: usize,
     acl_assemblers: BTreeMap<u16, AclDataPacketAssembler>,
     acl_packet_queue: DataPacketQueue<AclDataPacket>,
@@ -282,6 +291,7 @@ impl Device {
             periodic_advertisements: Vec::new(),
             periodic_sync_errors: Vec::new(),
             lost_periodic_syncs: Vec::new(),
+            periodic_sync_transfers: Vec::new(),
             acl_data_packet_length: 27,
             acl_assemblers: BTreeMap::new(),
             acl_packet_queue: DataPacketQueue::new(64).expect("nonzero ACL queue capacity"),
@@ -318,6 +328,7 @@ impl Device {
             periodic_advertisements: Vec::new(),
             periodic_sync_errors: Vec::new(),
             lost_periodic_syncs: Vec::new(),
+            periodic_sync_transfers: Vec::new(),
             acl_data_packet_length: 27,
             acl_assemblers: BTreeMap::new(),
             acl_packet_queue: DataPacketQueue::new(64).expect("nonzero ACL queue capacity"),
@@ -589,6 +600,46 @@ impl Device {
         );
     }
 
+    pub fn transfer_periodic_advertising_sync(
+        &mut self,
+        link: &mut LocalLink,
+        sync_handle: u16,
+        service_data: u16,
+    ) -> bool {
+        let Some(connection_handle) = self.connection_handle else {
+            return false;
+        };
+        self.send_hci_command(
+            link,
+            Command::LePeriodicAdvertisingSyncTransfer {
+                connection_handle,
+                service_data,
+                sync_handle,
+            },
+        );
+        true
+    }
+
+    pub fn transfer_periodic_advertising_set_info(
+        &mut self,
+        link: &mut LocalLink,
+        advertising_handle: u8,
+        service_data: u16,
+    ) -> bool {
+        let Some(connection_handle) = self.connection_handle else {
+            return false;
+        };
+        self.send_hci_command(
+            link,
+            Command::LePeriodicAdvertisingSetInfoTransfer {
+                connection_handle,
+                service_data,
+                advertising_handle,
+            },
+        );
+        true
+    }
+
     fn send_extended_advertising_data(
         &mut self,
         link: &mut LocalLink,
@@ -722,6 +773,10 @@ impl Device {
 
     pub fn take_lost_periodic_syncs(&mut self) -> Vec<u16> {
         std::mem::take(&mut self.lost_periodic_syncs)
+    }
+
+    pub fn take_periodic_sync_transfers(&mut self) -> Vec<PeriodicAdvertisingSyncTransferInfo> {
+        std::mem::take(&mut self.periodic_sync_transfers)
     }
 
     pub fn connect_le(&mut self, link: &mut LocalLink, peer_address: Address) {
@@ -1248,6 +1303,41 @@ impl Device {
                         self.periodic_sync_errors.push(status);
                     }
                 }
+                HciPacket::Event(Event::LeMeta(
+                    LeMetaEvent::PeriodicAdvertisingSyncTransferReceived {
+                        status,
+                        connection_handle,
+                        service_data,
+                        sync_handle,
+                        advertising_sid,
+                        advertiser_address_type,
+                        advertiser_address,
+                        advertiser_phy,
+                        periodic_advertising_interval,
+                        advertiser_clock_accuracy,
+                    },
+                )) => {
+                    if status == 0 {
+                        let sync = PeriodicAdvertisingSyncInfo {
+                            sync_handle,
+                            advertising_sid,
+                            advertiser_address_type,
+                            advertiser_address,
+                            advertiser_phy,
+                            interval: periodic_advertising_interval,
+                            advertiser_clock_accuracy,
+                        };
+                        self.periodic_syncs.insert(sync_handle, sync.clone());
+                        self.periodic_sync_transfers
+                            .push(PeriodicAdvertisingSyncTransferInfo {
+                                connection_handle,
+                                service_data,
+                                sync,
+                            });
+                    } else {
+                        self.periodic_sync_errors.push(status);
+                    }
+                }
                 HciPacket::Event(Event::LeMeta(LeMetaEvent::PeriodicAdvertisingReport {
                     sync_handle,
                     tx_power,
@@ -1485,6 +1575,7 @@ pub fn pump(link: &mut LocalLink, devices: &mut [Device]) {
         // Commands such as LE Enable Encryption and remote-feature exchange
         // enqueue link-layer control PDUs rather than host events directly.
         link.pump_ll();
+        link.pump_periodic_sync_transfers();
         let mut active = false;
         for device in devices.iter_mut() {
             if device.poll(link) {

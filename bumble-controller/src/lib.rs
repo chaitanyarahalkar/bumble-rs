@@ -80,7 +80,7 @@
 //! ## Deferred (behavioral simulation, not the codec)
 //!
 //! The remaining deep behavior is not simulated: LTK verification,
-//! periodic-sync transfer between ACL peers, remote-version exchange, and the classic
+//! remote-version exchange, and the classic
 //! authentication/role-switch sub-flows. The HCI
 //! *codec* for all of them (in `bumble-hci`) is complete and oracle-pinned; what
 //! remains is controller-side behavior, which — unlike the codec — has no
@@ -289,7 +289,21 @@ struct PeriodicSync {
     advertising_sid: u8,
     advertiser_address_type: u8,
     advertiser_address: Address,
+    advertiser_phy: u8,
+    interval: u16,
+    advertiser_clock_accuracy: u8,
     receive_enabled: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PeriodicSyncTransfer {
+    service_data: u16,
+    advertising_sid: u8,
+    advertiser_address_type: u8,
+    advertiser_address: Address,
+    advertiser_phy: u8,
+    interval: u16,
+    advertiser_clock_accuracy: u8,
 }
 
 /// An advertising PDU as it travels over the [`LocalLink`]. Since the link is
@@ -337,6 +351,7 @@ pub struct Controller {
     pending_periodic_sync: Option<PendingPeriodicSync>,
     periodic_syncs: Vec<PeriodicSync>,
     next_periodic_sync_handle: u16,
+    outbound_periodic_sync_transfers: Vec<(Address, Address, PeriodicSyncTransfer)>,
     connections: Vec<Connection>,
     initiating: Option<PendingConnection>,
     resolving_list: Vec<ResolvingListEntry>,
@@ -378,6 +393,7 @@ impl Controller {
             pending_periodic_sync: None,
             periodic_syncs: Vec::new(),
             next_periodic_sync_handle: 1,
+            outbound_periodic_sync_transfers: Vec::new(),
             connections: Vec::new(),
             initiating: None,
             resolving_list: Vec::new(),
@@ -425,6 +441,7 @@ impl Controller {
                 self.pending_periodic_sync = None;
                 self.periodic_syncs.clear();
                 self.next_periodic_sync_handle = 1;
+                self.outbound_periodic_sync_transfers.clear();
                 self.connections.clear();
                 self.classic_connections.clear();
                 self.synchronous_connections.clear();
@@ -644,6 +661,26 @@ impl Controller {
                 sync_handle,
                 enable,
             } => self.handle_periodic_advertising_receive_enable(op_code, sync_handle, enable),
+            Command::LePeriodicAdvertisingSyncTransfer {
+                connection_handle,
+                service_data,
+                sync_handle,
+            } => self.handle_periodic_advertising_sync_transfer(
+                op_code,
+                connection_handle,
+                service_data,
+                sync_handle,
+            ),
+            Command::LePeriodicAdvertisingSetInfoTransfer {
+                connection_handle,
+                service_data,
+                advertising_handle,
+            } => self.handle_periodic_advertising_set_info_transfer(
+                op_code,
+                connection_handle,
+                service_data,
+                advertising_handle,
+            ),
             Command::ReadBdAddr => {
                 self.complete(
                     op_code,
@@ -1053,6 +1090,93 @@ impl Controller {
             return self.ack(op_code, UNKNOWN_CONNECTION_IDENTIFIER_ERROR);
         };
         sync.receive_enabled = enable != 0;
+        self.ack(op_code, HCI_SUCCESS);
+    }
+
+    fn handle_periodic_advertising_sync_transfer(
+        &mut self,
+        op_code: u16,
+        connection_handle: u16,
+        service_data: u16,
+        sync_handle: u16,
+    ) {
+        let Some(connection) = self
+            .connections
+            .iter()
+            .find(|connection| connection.handle == connection_handle)
+            .cloned()
+        else {
+            return self.ack(op_code, UNKNOWN_CONNECTION_IDENTIFIER_ERROR);
+        };
+        let Some(sync) = self
+            .periodic_syncs
+            .iter()
+            .find(|sync| sync.handle == sync_handle)
+            .cloned()
+        else {
+            return self.ack(op_code, UNKNOWN_CONNECTION_IDENTIFIER_ERROR);
+        };
+        self.outbound_periodic_sync_transfers.push((
+            connection.self_address,
+            connection.peer_address,
+            PeriodicSyncTransfer {
+                service_data,
+                advertising_sid: sync.advertising_sid,
+                advertiser_address_type: sync.advertiser_address_type,
+                advertiser_address: sync.advertiser_address,
+                advertiser_phy: sync.advertiser_phy,
+                interval: sync.interval,
+                advertiser_clock_accuracy: sync.advertiser_clock_accuracy,
+            },
+        ));
+        self.ack(op_code, HCI_SUCCESS);
+    }
+
+    fn handle_periodic_advertising_set_info_transfer(
+        &mut self,
+        op_code: u16,
+        connection_handle: u16,
+        service_data: u16,
+        advertising_handle: u8,
+    ) {
+        let Some(connection) = self
+            .connections
+            .iter()
+            .find(|connection| connection.handle == connection_handle)
+            .cloned()
+        else {
+            return self.ack(op_code, UNKNOWN_CONNECTION_IDENTIFIER_ERROR);
+        };
+        let Some(set) = self
+            .extended_advertising_sets
+            .iter()
+            .find(|set| set.handle == advertising_handle)
+        else {
+            return self.ack(op_code, UNKNOWN_ADVERTISING_IDENTIFIER_ERROR);
+        };
+        if !set.periodic_enabled {
+            return self.ack(op_code, COMMAND_DISALLOWED_ERROR);
+        }
+        let (Some(parameters), Some(periodic), Some(address)) = (
+            set.parameters.as_ref(),
+            set.periodic_parameters,
+            set.address(&self.public_address),
+        ) else {
+            return self.ack(op_code, COMMAND_DISALLOWED_ERROR);
+        };
+        self.outbound_periodic_sync_transfers.push((
+            connection.self_address,
+            connection.peer_address,
+            PeriodicSyncTransfer {
+                service_data,
+                advertising_sid: parameters.advertising_sid,
+                advertiser_address_type: address.address_type().0,
+                advertiser_address: address,
+                advertiser_phy: parameters.secondary_advertising_phy,
+                interval: periodic.interval_min,
+                advertiser_clock_accuracy: 0,
+            },
+        ));
         self.ack(op_code, HCI_SUCCESS);
     }
 
@@ -1821,6 +1945,53 @@ impl Controller {
         std::mem::take(&mut self.outbound_ll)
     }
 
+    fn take_outbound_periodic_sync_transfers(
+        &mut self,
+    ) -> Vec<(Address, Address, PeriodicSyncTransfer)> {
+        std::mem::take(&mut self.outbound_periodic_sync_transfers)
+    }
+
+    fn on_periodic_sync_transfer(
+        &mut self,
+        sender_address: &Address,
+        transfer: PeriodicSyncTransfer,
+    ) {
+        let Some(connection_handle) = self
+            .connections
+            .iter()
+            .find(|connection| connection.peer_address == *sender_address)
+            .map(|connection| connection.handle)
+        else {
+            return;
+        };
+        let sync_handle = self.next_periodic_sync_handle;
+        self.next_periodic_sync_handle = self.next_periodic_sync_handle.wrapping_add(1);
+        self.periodic_syncs.push(PeriodicSync {
+            handle: sync_handle,
+            advertising_sid: transfer.advertising_sid,
+            advertiser_address_type: transfer.advertiser_address_type,
+            advertiser_address: transfer.advertiser_address.clone(),
+            advertiser_phy: transfer.advertiser_phy,
+            interval: transfer.interval,
+            advertiser_clock_accuracy: transfer.advertiser_clock_accuracy,
+            receive_enabled: true,
+        });
+        self.host_queue.push(HciPacket::Event(Event::LeMeta(
+            LeMetaEvent::PeriodicAdvertisingSyncTransferReceived {
+                status: HCI_SUCCESS,
+                connection_handle,
+                service_data: transfer.service_data,
+                sync_handle,
+                advertising_sid: transfer.advertising_sid,
+                advertiser_address_type: transfer.advertiser_address_type,
+                advertiser_address: transfer.advertiser_address,
+                advertiser_phy: transfer.advertiser_phy,
+                periodic_advertising_interval: transfer.interval,
+                advertiser_clock_accuracy: transfer.advertiser_clock_accuracy,
+            },
+        )));
+    }
+
     /// Handle an LL control PDU received from the peer at `sender_address`,
     /// mirroring upstream `controller.py::on_ll_control_pdu`.
     fn on_ll_control_pdu(&mut self, sender_address: &Address, pdu: ll::ControlPdu) {
@@ -1994,6 +2165,9 @@ impl Controller {
                 advertising_sid: pending.advertising_sid,
                 advertiser_address_type: pending.advertiser_address_type,
                 advertiser_address: pending.advertiser_address.clone(),
+                advertiser_phy: pdu.advertiser_phy,
+                interval: pdu.interval,
+                advertiser_clock_accuracy: 0,
                 receive_enabled: true,
             });
             self.host_queue.push(HciPacket::Event(Event::LeMeta(
@@ -2716,6 +2890,24 @@ impl LocalLink {
                 }) {
                     dst.on_ll_control_pdu(&sender_addr, pdu);
                 }
+            }
+        }
+    }
+
+    /// Route Periodic Advertising Sync Transfer (PAST) messages over existing
+    /// LE ACL connections.
+    pub fn pump_periodic_sync_transfers(&mut self) {
+        let mut pending = Vec::new();
+        for controller in &mut self.controllers {
+            pending.extend(controller.take_outbound_periodic_sync_transfers());
+        }
+        for (sender, receiver, transfer) in pending {
+            if let Some(destination) = self.controllers.iter_mut().find(|controller| {
+                controller.connections().iter().any(|connection| {
+                    connection.self_address == receiver && connection.peer_address == sender
+                })
+            }) {
+                destination.on_periodic_sync_transfer(&sender, transfer);
             }
         }
     }
