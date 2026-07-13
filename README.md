@@ -97,7 +97,8 @@ crate whose behavior is verified against the upstream Python.
 | 80. Linux raw HCI user-channel socket transport | `bumble-transport` | ✅ Linux target check + packet-I/O mock green |
 | 81. Android emulator host/controller gRPC transport | `bumble-transport` | ✅ real bidirectional gRPC loopback green |
 | 82. Android netsim host/controller packet-stream transport | `bumble-transport` | ✅ startup/INI/lease + live gRPC green |
-| 83+. Remaining modules… | — | planned |
+| 83. Intel USB controller firmware driver | `bumble-drivers` | ✅ TLV/SFI/DDC + scripted cold start green |
+| 84+. Remaining modules… | — | planned |
 
 The LE lifecycle is now complete end-to-end through library APIs: **connect →
 discover → read/write → notify → disconnect** between two virtual devices — and
@@ -178,7 +179,7 @@ size, to convey remaining surface.
 | Upstream | Rust crate | Status | Notes |
 |---|---|---|---|
 | `transport/*` — USB, UART/serial, TCP, WebSocket, UDP, PTY, android-netsim, vhci, … | `bumble-transport` | 🟡 | Incremental H4 framing accepts fragmented/coalesced streams and vendor packet layouts. Bumble transport-name/metadata dispatch opens file, serial/UART with RTS/CTS, raw PTY, TCP, UDP, Unix, WebSocket, Linux VHCI/raw HCI user-channel sockets, libusb Bluetooth-controller endpoints, Android emulator gRPC, and Android netsim host/controller packet streams. USB covers discovery, class/forced interface selection, commands, events, ACL, and outgoing ISO-over-bulk compatibility. Deferred: USB SCO/isochronous input, DSR/DTR flow control, and narrower platform-specific endpoints. |
-| `drivers/*` — Intel, Realtek | — | ⬜ | Vendor controller firmware/init. |
+| `drivers/*` — Intel, Realtek | `bumble-drivers` | 🟡 | Intel USB detection, open version TLVs, RSA/ECDSA SFI layout, command-aligned 252-byte secure-send batches, boot/reset vendor events, DDC override/addon priority, and ordered firmware lookup are ported through a transport-neutral host contract. A scripted cold start pins the complete command sequence. Deferred: the Realtek driver and direct external-packet-host binding. |
 
 ### Classic Bluetooth (BR/EDR)
 | Upstream (LOC) | Rust crate | Status | Notes |
@@ -1909,6 +1910,31 @@ The main upstream transport catalog is now represented. Remaining transport
 work is the explicitly narrower USB SCO/isochronous input and serial DSR/DTR
 paths plus platform-specific integrations outside this catalog.
 
+## Slice 83 — what's here
+
+Intel's USB firmware driver now has a complete controller-initialization engine:
+
+- `driver=intel[/...]` forcing and the AX210/AX211/BE200 USB IDs select the
+  driver. `ddc_override` and `ddc_addon` metadata use the upstream hex syntax,
+  with override/file/addon precedence preserved.
+- Open-ended Intel version TLVs retain unknown values while decoding CNVI/CNVR
+  nibble mapping, hardware platform/variant, mode, build/timestamp, security,
+  USB IDs, and public address fields. Truncated or wrongly sized known TLVs are
+  rejected rather than indexing past their input.
+- RSA and ECDSA SFI layouts produce the exact CSS, PKI, signature, and command
+  stream data types. Secure-send payloads are capped at 252 bytes, embedded HCI
+  commands are grouped on four-byte boundaries, and write-boot-params extracts
+  the post-download boot address.
+- The `DriverHost` contract supports command-complete transactions, batched
+  firmware commands, no-response resets, and vendor-event waits. Intel accepts
+  the bootloader's expected Unknown HCI Command reset response, loads firmware,
+  waits for download/boot events, resets to the extracted address, and applies
+  length-prefixed DDC records.
+- Firmware lookup preserves the environment override, project, package, Linux
+  system, and current-directory order. Tests cover exact vendor command bytes,
+  lookup override semantics, malformed firmware/TLV/DDC inputs, already-loaded
+  DDC handling, and a complete scripted cold start.
+
 ## Acceptance
 
 The port's contract is the upstream Python test suite, ported 1:1:
@@ -2066,6 +2092,10 @@ bumble-rs/
 │   ├── tests/usb.rs           # selectors, endpoints, and transfer routing
 │   ├── tests/websocket.rs     # binary framing + client/server handshake
 │   └── tests/vhci.rs          # virtual-controller bootstrap + H4 exchange
+├── bumble-drivers/            # slice-83 vendor controller initialization
+│   ├── src/lib.rs             # driver-host and firmware-provider contracts
+│   ├── src/intel.rs           # Intel TLV, SFI, DDC, and init sequence
+│   └── tests/intel.rs         # exact wire, parser, lookup, full cold-start flow
 └── docs/superpowers/          # design specs + implementation plans
 ```
 
