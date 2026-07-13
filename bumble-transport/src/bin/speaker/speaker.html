@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Bumble Speaker</title>
+  <script defer src="speaker.js"></script>
+  <link rel="stylesheet" href="speaker.css">
+</head>
+<body>
+  <main>
+    <header><img src="logo.svg" width="72" height="72" alt=""><div><h1>Bumble Virtual Speaker</h1><p>Classic A2DP sink monitor</p></div></header>
+    <div id="connectionText" class="alert"></div>
+    <section class="status-grid">
+      <div class="metric"><span>Codec</span><strong id="codecText">—</strong></div>
+      <div class="metric"><span>Packets</span><strong id="packetsReceivedText">0</strong></div>
+      <div class="metric"><span>Bytes</span><strong id="bytesReceivedText">0</strong></div>
+      <div class="metric"><span>Bitrate</span><strong id="bitrate">0 kb/s</strong></div>
+    </section>
+    <section class="states"><span id="streamStateText">IDLE</span><span id="connectionStateText">NOT CONNECTED</span></section>
+    <section id="controlsDiv"><button id="audioOnButton">Enable browser audio</button><span id="audioSupportMessageText"></span></section>
+    <canvas id="bandwidthCanvas" width="800" height="150">Bandwidth graph</canvas>
+    <canvas id="fftCanvas" width="800" height="240">Audio spectrum</canvas>
+  </main>
+</body>
+</html>

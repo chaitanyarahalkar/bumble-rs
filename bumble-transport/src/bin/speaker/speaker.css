@@ -1,0 +1,21 @@
+:root { color-scheme: light dark; font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
+* { box-sizing: border-box; }
+body { margin: 0; background: #101419; color: #e8edf2; }
+main { width: min(960px, calc(100% - 32px)); margin: 32px auto; }
+header { display: flex; align-items: center; gap: 18px; margin-bottom: 24px; }
+header img { filter: drop-shadow(0 8px 18px #0008); }
+h1 { margin: 0; font-size: clamp(1.8rem, 4vw, 3rem); }
+header p { margin: 4px 0 0; color: #9aa8b7; }
+.alert { display: none; padding: 12px 14px; border: 1px solid #e06b60; background: #532c2a; border-radius: 9px; margin-bottom: 16px; }
+.status-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+.metric { padding: 16px; border: 1px solid #303944; border-radius: 12px; background: #171d24; }
+.metric span { display: block; color: #93a2b1; font-size: .8rem; text-transform: uppercase; letter-spacing: .08em; }
+.metric strong { display: block; margin-top: 7px; font: 600 1.2rem ui-monospace, monospace; }
+.states { display: flex; flex-wrap: wrap; gap: 10px; margin: 18px 0; }
+.states span { padding: 9px 13px; border-radius: 999px; background: #234937; border: 1px solid #3b7c5b; font-weight: 700; }
+#connectionStateText { background: #273b57; border-color: #41658f; }
+#controlsDiv { display: flex; align-items: center; gap: 12px; min-height: 44px; }
+button { border: 1px solid #78a8db; border-radius: 9px; padding: 10px 14px; background: #244a70; color: white; font-weight: 700; cursor: pointer; }
+button:disabled { opacity: .45; cursor: default; }
+canvas { display: block; width: 100%; height: auto; margin-top: 16px; border: 1px solid #303944; border-radius: 12px; background: #0b0e12; }
+@media (max-width: 700px) { .status-grid { grid-template-columns: repeat(2, 1fr); } }

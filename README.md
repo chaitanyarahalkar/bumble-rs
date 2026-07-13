@@ -236,6 +236,7 @@ size, to convey remaining surface.
 | `apps/rfcomm_bridge.py` | `bumble-rfcomm-bridge` (`bumble-transport`) | ✅ | Runnable Classic RFCOMM-to-TCP bridge with the full upstream client/server, device-config, transport, trace, channel, UUID, TCP, authentication, and encryption surface. Channel zero advertises or resolves the configured UUID through SDP, repeated DLCs reuse one RFCOMM session, and receive credits are withheld under TCP backpressure. |
 | `apps/gg_bridge.py` | `bumble-gg-bridge` (`bumble-transport`) | ✅ | Runnable Golden Gate Gattlink bridge with the complete upstream transport/address/role and UDP endpoint CLI. Node mode publishes the RX, TX, and CoC-PSM GATT service and advertises; hub mode discovers/subscribes and prefers LE CoC. Both roles retain GATT fallback, exact one-byte packet framing, bounded UDP queues, and controller-aware backpressure. |
 | `apps/player/player.py` | `bumble-player` (`bumble-transport`) | ✅ | Runnable Classic A2DP source with the complete upstream `discover`, `inquire`, `pair`, and `play` command surface. It publishes the source SDP record, persists SSP link keys, discovers sink endpoints, configures SBC/AAC/vendor Opus, opens and controls AVDTP streams, paces RTP media with controller backpressure, and serves AVRCP over incoming AVCTP. |
+| `apps/speaker/speaker.py` | `bumble-speaker` (`bumble-transport`) | ✅ | Runnable Classic A2DP sink with the complete upstream codec, sampling-frequency, bitrate, VBR, discovery, output, UI, peer, device-config, and transport surface. It accepts incoming Classic connections or initiates authenticated/encrypted ones, publishes the sink SDP record, negotiates SBC/AAC/vendor Opus through AVDTP, extracts received RTP audio to files or `ffplay`, and serves the live browser UI over HTTP/WebSocket. |
 | `apps/pair.py` | `bumble-pair` (`bumble-transport`) | ✅ | Runnable LE, Classic, and simultaneous dual-mode listener paths over external controllers with the complete upstream option surface. LE supports direct address/name connection or configurable advertising, Legacy/SC pairing, and OOB data. Classic supports inquiry/name resolution, incoming/outgoing ACL setup, PIN and Secure Simple Pairing delegates, stored link-key reuse, controller encryption, and best-effort SMP-over-BR/EDR CTKD for P-256 link keys. Both paths provide bond policy, JSON key persistence/printing, and linger behavior. |
 | `apps/scan.py` | `bumble-scan` (`bumble-transport`) | ✅ | Runnable external HCI scanner with upstream RSSI/passive/interval/window/PHY/duplicate/raw/IRK/key-store/device-config options, extended scanning with legacy fallback, typed legacy + extended report decoding, exact active/passive scan-response accumulation, labeled AD rendering, RSSI bars, and real RPA identity resolution. |
 | `apps/usb_probe.py` | `bumble-usb-probe` (`bumble-transport`) | ✅ | Runnable libusb device inventory with upstream `--verbose`, `--hci-only`, manufacturer, and product filters; device/interface-level Bluetooth HCI classification; stable index, VID/PID, duplicate, and serial transport names; string-descriptor error tolerance; and verbose configuration/interface/endpoint details including isochronous packet sizes. |
@@ -2819,6 +2820,30 @@ The upstream Classic A2DP player now runs over external controllers:
   open/start, RTP media transfer, AVCTP fragmentation, accepted PID delivery,
   and automatic IPID rejection. CLI and codec-derivation tests pin the complete
   player surface and SBC sink bitpool negotiation.
+
+## Slice 132 — what's here
+
+The upstream Classic A2DP speaker now runs over external controllers:
+
+- `bumble-speaker` preserves the upstream SBC/AAC/Opus codec selection,
+  repeatable sampling frequencies and outputs, AAC bitrate/VBR controls,
+  endpoint discovery, UI port, optional address-or-name connection,
+  device-config, and HCI transport CLI. It listens as `Bumble Speaker` by
+  default or authenticates and encrypts an outgoing Classic ACL, with
+  namespaced JSON link-key persistence in either direction.
+- The speaker publishes an A2DP sink SDP record and exposes a live AVDTP sink
+  with codec-accurate capabilities. It handles SetConfiguration,
+  Reconfigure, Open, Start, Suspend, Close, Abort, and delay reports, attaches
+  the negotiated media channel, decodes RTP framing, and writes SBC/Opus
+  payloads or ADTS-wrapped AAC to files and optional `ffplay` processes.
+- An embedded threaded HTTP/WebSocket service ships the speaker UI,
+  reports connection and stream state, and broadcasts extracted audio through
+  bounded per-client queues. Endpoint discovery queries all capabilities with
+  an AVDTP 1.2-compatible GetCapabilities fallback.
+- A live two-controller test drives the production sink through discovery,
+  configuration, open, media-channel attachment, start, and exact RTP packet
+  receipt. Focused tests also pin the complete CLI, default codec capability
+  masks, payload extraction, and embedded UI delivery.
 
 ## Acceptance
 
