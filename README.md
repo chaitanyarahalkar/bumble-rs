@@ -200,7 +200,7 @@ size, to convey remaining surface.
 ### Transports & drivers
 | Upstream | Rust crate | Status | Notes |
 |---|---|---|---|
-| `transport/*` — USB, UART/serial, TCP, WebSocket, UDP, PTY, android-netsim, vhci, … | `bumble-transport` | 🟡 | Incremental H4 framing accepts fragmented/coalesced streams and vendor packet layouts. Bumble transport-name/metadata dispatch opens file, serial/UART with RTS/CTS, raw PTY, TCP, UDP, Unix, WebSocket, Linux VHCI/raw HCI user-channel sockets, libusb Bluetooth-controller endpoints, Android emulator gRPC, and Android netsim host/controller packet streams. The typed HCI bridge pumps both directions with packet replacement, sender short-circuit responses, and trace hooks; BTSnoop/PCAP writers can wrap any bidirectional transport, and the bounded BTSnoop reader handles H1/H4 captures, timestamps, drops, and truncation. USB covers discovery, class/forced interface selection, commands, events, ACL, and outgoing ISO-over-bulk compatibility. Deferred: USB SCO/isochronous input, DSR/DTR flow control (not exposed by the current `serialport` backend), and narrower platform-specific endpoints. |
+| `transport/*` — USB, UART/serial, TCP, WebSocket, UDP, PTY, android-netsim, vhci, … | `bumble-transport` | 🟡 | Incremental H4 framing accepts fragmented/coalesced streams and vendor packet layouts. Bumble transport-name/metadata dispatch opens file, serial/UART with RTS/CTS, raw PTY, TCP, UDP, Unix, WebSocket, Linux VHCI/raw HCI user-channel sockets, libusb Bluetooth-controller endpoints, Android emulator gRPC, and Android netsim host/controller packet streams. The typed HCI bridge pumps both directions with packet replacement, sender short-circuit responses, and trace hooks; `HciCommandChannel` correlates synchronous command responses while preserving unrelated traffic. BTSnoop/PCAP writers can wrap any bidirectional transport, and the bounded BTSnoop reader handles H1/H4 captures, timestamps, drops, and truncation. USB covers discovery, class/forced interface selection, commands, events, ACL, and outgoing ISO-over-bulk compatibility. Deferred: USB SCO/isochronous input, DSR/DTR flow control (not exposed by the current `serialport` backend), and narrower platform-specific endpoints. |
 | `drivers/*` — Intel, Realtek | `bumble-drivers` | ✅ | Both upstream driver modules and the RTK-before-Intel selector are ported behind a transport-neutral host contract. Intel covers open version TLVs, RSA/ECDSA SFI secure send, boot/reset vendor events, and DDC priority. Realtek covers all upstream USB IDs and 13 controller descriptors, epatch extension/table parsing, ROM patch choice, config append, download-index wrap/end markers, reset retry, and firmware lookup. The legacy 8723A download remains the same explicit no-op as upstream Bumble. |
 
 ### Classic Bluetooth (BR/EDR)
@@ -2401,6 +2401,21 @@ Pairing-key removal now has a runnable file-backed application path:
   pairing, delete an existing pairing, verify persisted removal, and reject
   ambiguous arguments. Controller-backed mode is parsed but returns an explicit
   dependency error until external host bootstrap is ported.
+
+## Slice 110 — what's here
+
+External transports now have a reusable synchronous HCI command path:
+
+- `HciCommandChannel<T>` sends any typed `Command` through a combined
+  `PacketSource + PacketSink`, flushes it, and waits for the matching opcode's
+  Command Complete or Command Status event.
+- Interleaved advertising, vendor, ACL, or wrong-opcode response packets are
+  preserved in arrival order for the caller instead of being discarded or
+  mistaken for the current response. Clean EOF before a match is a named remote
+  transport error rather than an infinite wait.
+- `CommandResponse` exposes command credits, status, and typed return parameters.
+  Mock-transport tests cover completion, status, unrelated-packet retention,
+  exact outbound command/flush behavior, and premature EOF.
 
 ## Acceptance
 
