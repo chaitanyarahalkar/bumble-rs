@@ -20,9 +20,11 @@
 //! ## Scope
 //!
 //! ATT traffic over the fixed ATT CID plus raw fixed/dynamic L2CAP channels,
-//! with controller-buffer-sized ACL fragmentation/reassembly. Deferred: direct
-//! integration of the LE signaling manager and multiple simultaneous
-//! connections per device.
+//! with controller-buffer-sized ACL fragmentation/reassembly. High-level
+//! legacy and extended advertising, scanning, and connection setup are also
+//! available. Deferred: direct integration of the LE signaling manager,
+//! periodic-advertising synchronization, and multiple simultaneous connections
+//! per device.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -32,7 +34,7 @@ use bumble_controller::LocalLink;
 use bumble_gatt::AttRequestHandler;
 use bumble_hci::{
     fragment_l2cap_pdu, AclDataPacket, AclDataPacketAssembler, AdvertisingReport, Command, Event,
-    HciPacket, LeMetaEvent, SynchronousDataPacket,
+    ExtendedAdvertisingReport, HciPacket, LeMetaEvent, SynchronousDataPacket,
 };
 use bumble_l2cap::L2capPdu;
 
@@ -52,6 +54,56 @@ pub struct SynchronousConnectionInfo {
     pub air_mode: u8,
 }
 
+/// Parameters for one high-level extended-advertising set. Values map directly
+/// to `LE Set Extended Advertising Parameters`; data is supplied separately so
+/// the host can fragment it to HCI-sized commands.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExtendedAdvertisingConfig {
+    pub handle: u8,
+    pub event_properties: u16,
+    pub interval_min: u32,
+    pub interval_max: u32,
+    pub channel_map: u8,
+    pub own_address_type: u8,
+    pub peer_address_type: u8,
+    pub peer_address: Address,
+    pub filter_policy: u8,
+    pub tx_power: i8,
+    pub primary_phy: u8,
+    pub secondary_max_skip: u8,
+    pub secondary_phy: u8,
+    pub sid: u8,
+    pub scan_request_notification: bool,
+    pub duration: u16,
+    pub max_events: u8,
+    pub random_address: Option<Address>,
+}
+
+impl ExtendedAdvertisingConfig {
+    pub fn connectable_scannable(handle: u8, random_address: Address) -> Self {
+        Self {
+            handle,
+            event_properties: 0x0003,
+            interval_min: 0x20,
+            interval_max: 0x40,
+            channel_map: 7,
+            own_address_type: 1,
+            peer_address_type: 0,
+            peer_address: Address::from_bytes([0; 6], bumble::AddressType::PUBLIC_DEVICE),
+            filter_policy: 0,
+            tx_power: 0,
+            primary_phy: 1,
+            secondary_max_skip: 0,
+            secondary_phy: 1,
+            sid: handle & 0x0F,
+            scan_request_notification: false,
+            duration: 0,
+            max_events: 0,
+            random_address: Some(random_address),
+        }
+    }
+}
+
 /// A host attached to a controller on a [`LocalLink`]. Owns the
 /// ATT↔L2CAP↔ACL sequencing.
 pub struct Device {
@@ -69,6 +121,7 @@ pub struct Device {
     l2cap_inbox: Vec<(u16, Vec<u8>)>,
     security_requests: Vec<u8>,
     advertising_reports: Vec<AdvertisingReport>,
+    extended_advertising_reports: Vec<ExtendedAdvertisingReport>,
     acl_data_packet_length: usize,
     acl_assemblers: BTreeMap<u16, AclDataPacketAssembler>,
     acl_packet_queue: DataPacketQueue<AclDataPacket>,
@@ -92,6 +145,7 @@ impl Device {
             l2cap_inbox: Vec::new(),
             security_requests: Vec::new(),
             advertising_reports: Vec::new(),
+            extended_advertising_reports: Vec::new(),
             acl_data_packet_length: 27,
             acl_assemblers: BTreeMap::new(),
             acl_packet_queue: DataPacketQueue::new(64).expect("nonzero ACL queue capacity"),
@@ -116,6 +170,7 @@ impl Device {
             l2cap_inbox: Vec::new(),
             security_requests: Vec::new(),
             advertising_reports: Vec::new(),
+            extended_advertising_reports: Vec::new(),
             acl_data_packet_length: 27,
             acl_assemblers: BTreeMap::new(),
             acl_packet_queue: DataPacketQueue::new(64).expect("nonzero ACL queue capacity"),
@@ -195,6 +250,116 @@ impl Device {
         );
     }
 
+    /// Configure and enable one extended-advertising set. Data larger than a
+    /// single HCI command is fragmented with the standard first/intermediate/
+    /// last operations; the controller reassembles up to Bumble's 1650-byte
+    /// advertised maximum.
+    pub fn start_extended_advertising(
+        &mut self,
+        link: &mut LocalLink,
+        config: &ExtendedAdvertisingConfig,
+        data: &[u8],
+        scan_response_data: &[u8],
+    ) -> bool {
+        if data.len() > 0x0672 || scan_response_data.len() > 0x0672 || config.sid > 0x0F {
+            return false;
+        }
+        if let Some(random_address) = config.random_address.clone() {
+            self.send_hci_command(
+                link,
+                Command::LeSetAdvertisingSetRandomAddress {
+                    advertising_handle: config.handle,
+                    random_address,
+                },
+            );
+        }
+        self.send_hci_command(
+            link,
+            Command::LeSetExtendedAdvertisingParameters {
+                advertising_handle: config.handle,
+                advertising_event_properties: config.event_properties,
+                primary_advertising_interval_min: config.interval_min,
+                primary_advertising_interval_max: config.interval_max,
+                primary_advertising_channel_map: config.channel_map,
+                own_address_type: config.own_address_type,
+                peer_address_type: config.peer_address_type,
+                peer_address: config.peer_address.clone(),
+                advertising_filter_policy: config.filter_policy,
+                advertising_tx_power: config.tx_power as u8,
+                primary_advertising_phy: config.primary_phy,
+                secondary_advertising_max_skip: config.secondary_max_skip,
+                secondary_advertising_phy: config.secondary_phy,
+                advertising_sid: config.sid,
+                scan_request_notification_enable: u8::from(config.scan_request_notification),
+            },
+        );
+        self.send_extended_advertising_data(link, config.handle, data, false);
+        self.send_extended_advertising_data(link, config.handle, scan_response_data, true);
+        self.send_hci_command(
+            link,
+            Command::LeSetExtendedAdvertisingEnable {
+                enable: 1,
+                advertising_handles: vec![config.handle],
+                durations: vec![config.duration],
+                max_extended_advertising_events: vec![config.max_events],
+            },
+        );
+        true
+    }
+
+    pub fn stop_extended_advertising(&mut self, link: &mut LocalLink, handle: u8) {
+        self.send_hci_command(
+            link,
+            Command::LeSetExtendedAdvertisingEnable {
+                enable: 0,
+                advertising_handles: vec![handle],
+                durations: vec![0],
+                max_extended_advertising_events: vec![0],
+            },
+        );
+    }
+
+    fn send_extended_advertising_data(
+        &mut self,
+        link: &mut LocalLink,
+        handle: u8,
+        data: &[u8],
+        scan_response: bool,
+    ) {
+        let chunks: Vec<_> = if data.is_empty() {
+            vec![&[][..]]
+        } else {
+            data.chunks(251).collect()
+        };
+        for (index, chunk) in chunks.iter().enumerate() {
+            let operation = if chunks.len() == 1 {
+                0x03
+            } else if index == 0 {
+                0x01
+            } else if index + 1 == chunks.len() {
+                0x02
+            } else {
+                0x00
+            };
+            let command = if scan_response {
+                Command::LeSetExtendedScanResponseData {
+                    advertising_handle: handle,
+                    operation,
+                    fragment_preference: 1,
+                    scan_response_data: chunk.to_vec(),
+                }
+            } else {
+                Command::LeSetExtendedAdvertisingData {
+                    advertising_handle: handle,
+                    operation,
+                    fragment_preference: 1,
+                    advertising_data: chunk.to_vec(),
+                }
+            };
+            self.send_hci_command(link, command);
+        }
+    }
+
     pub fn start_scanning(&mut self, link: &mut LocalLink, active: bool, filter_duplicates: bool) {
         self.send_hci_command(
             link,
@@ -225,8 +390,52 @@ impl Device {
         );
     }
 
+    pub fn start_extended_scanning(
+        &mut self,
+        link: &mut LocalLink,
+        active: bool,
+        filter_duplicates: bool,
+    ) {
+        self.send_hci_command(
+            link,
+            Command::LeSetExtendedScanParameters {
+                own_address_type: 1,
+                scanning_filter_policy: 0,
+                scanning_phys: 1,
+                scan_types: vec![u8::from(active)],
+                scan_intervals: vec![0x0010],
+                scan_windows: vec![0x0010],
+            },
+        );
+        self.send_hci_command(
+            link,
+            Command::LeSetExtendedScanEnable {
+                enable: 1,
+                filter_duplicates: u8::from(filter_duplicates),
+                duration: 0,
+                period: 0,
+            },
+        );
+    }
+
+    pub fn stop_extended_scanning(&mut self, link: &mut LocalLink) {
+        self.send_hci_command(
+            link,
+            Command::LeSetExtendedScanEnable {
+                enable: 0,
+                filter_duplicates: 0,
+                duration: 0,
+                period: 0,
+            },
+        );
+    }
+
     pub fn take_advertising_reports(&mut self) -> Vec<AdvertisingReport> {
         std::mem::take(&mut self.advertising_reports)
+    }
+
+    pub fn take_extended_advertising_reports(&mut self) -> Vec<ExtendedAdvertisingReport> {
+        std::mem::take(&mut self.extended_advertising_reports)
     }
 
     pub fn connect_le(&mut self, link: &mut LocalLink, peer_address: Address) {
@@ -245,6 +454,28 @@ impl Device {
                 supervision_timeout: 42,
                 min_ce_length: 0,
                 max_ce_length: 0,
+            },
+        );
+        link.establish_connections();
+    }
+
+    pub fn connect_le_extended(&mut self, link: &mut LocalLink, peer_address: Address) {
+        self.send_hci_command(
+            link,
+            Command::LeExtendedCreateConnection {
+                initiator_filter_policy: 0,
+                own_address_type: 1,
+                peer_address_type: u8::from(!peer_address.is_public()),
+                peer_address,
+                initiating_phys: 1,
+                scan_intervals: vec![0x0010],
+                scan_windows: vec![0x0010],
+                connection_interval_mins: vec![24],
+                connection_interval_maxs: vec![40],
+                max_latencies: vec![0],
+                supervision_timeouts: vec![42],
+                min_ce_lengths: vec![0],
+                max_ce_lengths: vec![0],
             },
         );
         link.establish_connections();
@@ -533,6 +764,11 @@ impl Device {
                 }
                 HciPacket::Event(Event::LeMeta(LeMetaEvent::AdvertisingReport { reports })) => {
                     self.advertising_reports.extend(reports);
+                }
+                HciPacket::Event(Event::LeMeta(LeMetaEvent::ExtendedAdvertisingReport {
+                    reports,
+                })) => {
+                    self.extended_advertising_reports.extend(reports);
                 }
                 HciPacket::Event(Event::DisconnectionComplete {
                     connection_handle, ..

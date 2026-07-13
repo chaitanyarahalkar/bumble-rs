@@ -19,9 +19,10 @@
 //!
 //! ## Scope
 //!
-//! Implemented: the LE advertising/scanning commands and `LE_Create_Connection`
-//! (slice 7), ACL data routing between connected controllers (slice 8, via
-//! [`LocalLink::send_acl_data`]), and disconnection (slice 13, via
+//! Implemented: legacy and extended LE advertising/scanning commands and both
+//! create-connection forms (slices 7 and 95), ACL data routing between connected
+//! controllers (slice 8, via [`LocalLink::send_acl_data`]), and disconnection
+//! (slice 13, via
 //! [`LocalLink::disconnect`], emitting Disconnection Complete on both sides).
 //! Also handled locally: the read commands (`Read_BD_ADDR`, `Read_Local_Name`,
 //! `LE_Read_Buffer_Size`, `LE_Read_Local_Supported_Features`, `LE_Rand`) and the
@@ -36,9 +37,8 @@
 //! Every command upstream's `controller.py` handles gets a well-formed reply of
 //! the matching HCI shape, driven by the generated [`command_surface`] table:
 //! configuration/"set" commands are acknowledged with Command Complete + SUCCESS
-//! (upstream stores state and returns SUCCESS; the in-process sim has no state to
-//! store, so it simply acknowledges), read commands the sim can't model are
-//! acknowledged SUCCESS without a synthesized payload, and operations that
+//! (state is retained for the functionally modeled commands), read commands the
+//! sim can't model are acknowledged SUCCESS without a synthesized payload, and operations that
 //! complete via a later event (connect, encryption start, remote-features…) are
 //! answered with Command Status. A command upstream *also* doesn't handle gets
 //! the spec-correct "Unknown HCI Command" — an honest report, not a fake success.
@@ -74,9 +74,9 @@
 //!
 //! ## Deferred (behavioral simulation, not the codec)
 //!
-//! The remaining deep behavior is not simulated: LTK verification, extended/
-//! periodic advertising sets, ISO data-path streaming, remote-version exchange,
-//! and the classic authentication/encryption/role-switch/SCO sub-flows. The HCI
+//! The remaining deep behavior is not simulated: LTK verification, periodic
+//! advertising synchronization, ISO data-path streaming, remote-version
+//! exchange, and the classic authentication/role-switch sub-flows. The HCI
 //! *codec* for all of them (in `bumble-hci`) is complete and oracle-pinned; what
 //! remains is controller-side behavior, which — unlike the codec — has no
 //! ground-truth oracle to pin against (upstream's controller is itself a
@@ -90,8 +90,8 @@ use bumble::{Address, AddressType};
 use bumble_crypto::ah;
 use bumble_hci::codes::*;
 use bumble_hci::{
-    AclDataPacket, AdvertisingReport, Command, Event, HciPacket, LeMetaEvent, ReturnParameters,
-    SynchronousDataPacket,
+    AclDataPacket, AdvertisingReport, Command, Event, ExtendedAdvertisingReport, HciPacket,
+    LeMetaEvent, ReturnParameters, SynchronousDataPacket,
 };
 
 /// Legacy connectable-and-scannable undirected advertising event type.
@@ -106,6 +106,8 @@ const DEFAULT_RSSI: i8 = -40;
 const UNKNOWN_HCI_COMMAND_ERROR: u8 = 0x01;
 /// HCI "Invalid HCI Command Parameters" error (e.g. an unknown connection handle).
 const INVALID_COMMAND_PARAMETERS: u8 = 0x12;
+/// HCI "Unknown Advertising Identifier" error.
+const UNKNOWN_ADVERTISING_IDENTIFIER_ERROR: u8 = 0x42;
 /// LE connection role: central (initiator).
 pub const ROLE_CENTRAL: u8 = 0x00;
 /// LE connection role: peripheral (advertiser).
@@ -125,10 +127,10 @@ const UNKNOWN_CONNECTION_IDENTIFIER_ERROR: u8 = 0x02;
 /// placeholders for this in-process controller.
 const LE_ACL_DATA_PACKET_LENGTH: u16 = 27;
 const TOTAL_NUM_LE_ACL_DATA_PACKETS: u8 = 64;
-/// The LE features bitmap reported by `LE_Read_Local_Supported_Features`. All
-/// zero: this controller implements no optional LE features (an honest report,
-/// since encryption, extended advertising, etc. are deferred).
-const LOCAL_LE_FEATURES: [u8; 8] = [0; 8];
+/// The LE features bitmap reported by `LE_Read_Local_Supported_Features`.
+/// Bit 12 advertises the extended-advertising set/scan implementation and bits
+/// 28/29 advertise the central/peripheral CIS paths implemented below.
+const LOCAL_LE_FEATURES: [u8; 8] = [0x00, 0x10, 0x00, 0x30, 0, 0, 0, 0];
 /// PHY value for LE 1M, reported when no specific PHY was requested.
 const LE_1M_PHY: u8 = 1;
 /// The classic LMP features bitmap reported by `Read_Remote_Supported_Features`
@@ -199,6 +201,54 @@ struct ResolvingListEntry {
     local_irk: [u8; 16],
 }
 
+/// The subset of extended-advertising parameters that affects the in-process
+/// link. The full command remains available through `bumble-hci`; these fields
+/// are the ones upstream's software controller retains for packet emission.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ExtendedAdvertisingParameters {
+    advertising_event_properties: u16,
+    own_address_type: u8,
+    peer_address_type: u8,
+    peer_address: Address,
+    advertising_tx_power: i8,
+    primary_advertising_phy: u8,
+    secondary_advertising_phy: u8,
+    advertising_sid: u8,
+}
+
+/// One stateful LE extended-advertising set, keyed by its HCI handle.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ExtendedAdvertisingSet {
+    handle: u8,
+    parameters: Option<ExtendedAdvertisingParameters>,
+    data: Vec<u8>,
+    scan_response_data: Vec<u8>,
+    enabled: bool,
+    random_address: Option<Address>,
+}
+
+impl ExtendedAdvertisingSet {
+    fn new(handle: u8) -> Self {
+        Self {
+            handle,
+            parameters: None,
+            data: Vec::new(),
+            scan_response_data: Vec::new(),
+            enabled: false,
+            random_address: None,
+        }
+    }
+
+    fn address(&self, public_address: &Address) -> Option<Address> {
+        let parameters = self.parameters.as_ref()?;
+        if parameters.own_address_type == ADDRESS_TYPE_PUBLIC {
+            Some(public_address.clone())
+        } else {
+            self.random_address.clone()
+        }
+    }
+}
+
 /// An advertising PDU as it travels over the [`LocalLink`]. Since the link is
 /// in-process, this is a plain struct rather than a serialized LL PDU.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -207,6 +257,14 @@ pub struct AdvertisingPdu {
     pub address_type: u8,
     pub address: Address,
     pub data: Vec<u8>,
+    pub scan_response_data: Vec<u8>,
+    pub extended: bool,
+    pub advertising_handle: u8,
+    pub advertising_sid: u8,
+    pub primary_phy: u8,
+    pub secondary_phy: u8,
+    pub tx_power: i8,
+    pub direct_address: Option<Address>,
 }
 
 /// A minimal LE software controller: it consumes HCI commands from a host and
@@ -219,6 +277,8 @@ pub struct Controller {
     advertising_data: Vec<u8>,
     advertising_enabled: bool,
     scanning_enabled: bool,
+    extended_scanning: bool,
+    extended_advertising_sets: Vec<ExtendedAdvertisingSet>,
     connections: Vec<Connection>,
     initiating: Option<PendingConnection>,
     resolving_list: Vec<ResolvingListEntry>,
@@ -255,6 +315,8 @@ impl Controller {
             advertising_data: Vec::new(),
             advertising_enabled: false,
             scanning_enabled: false,
+            extended_scanning: false,
+            extended_advertising_sets: Vec::new(),
             connections: Vec::new(),
             initiating: None,
             resolving_list: Vec::new(),
@@ -281,7 +343,7 @@ impl Controller {
     }
 
     pub fn is_advertising(&self) -> bool {
-        self.advertising_enabled
+        self.advertising_enabled || self.extended_advertising_sets.iter().any(|set| set.enabled)
     }
 
     pub fn is_scanning(&self) -> bool {
@@ -296,7 +358,9 @@ impl Controller {
             Command::Reset => {
                 self.advertising_enabled = false;
                 self.scanning_enabled = false;
+                self.extended_scanning = false;
                 self.advertising_data.clear();
+                self.extended_advertising_sets.clear();
                 self.connections.clear();
                 self.classic_connections.clear();
                 self.synchronous_connections.clear();
@@ -339,7 +403,126 @@ impl Controller {
             }
             Command::LeSetScanEnable { le_scan_enable, .. } => {
                 self.scanning_enabled = le_scan_enable != 0;
+                self.extended_scanning = false;
                 self.ack(op_code, HCI_SUCCESS);
+            }
+            Command::LeSetAdvertisingSetRandomAddress {
+                advertising_handle,
+                random_address,
+            } => {
+                self.extended_advertising_set_mut(advertising_handle)
+                    .random_address = Some(random_address);
+                self.ack(op_code, HCI_SUCCESS);
+            }
+            Command::LeSetExtendedAdvertisingParameters {
+                advertising_handle,
+                advertising_event_properties,
+                own_address_type,
+                peer_address_type,
+                peer_address,
+                advertising_tx_power,
+                primary_advertising_phy,
+                secondary_advertising_phy,
+                advertising_sid,
+                ..
+            } => {
+                let tx_power = advertising_tx_power as i8;
+                self.extended_advertising_set_mut(advertising_handle)
+                    .parameters = Some(ExtendedAdvertisingParameters {
+                    advertising_event_properties,
+                    own_address_type,
+                    peer_address_type,
+                    peer_address,
+                    advertising_tx_power: tx_power,
+                    primary_advertising_phy,
+                    secondary_advertising_phy,
+                    advertising_sid,
+                });
+                self.complete(
+                    op_code,
+                    ReturnParameters::Raw {
+                        data: vec![HCI_SUCCESS, 0],
+                    },
+                );
+            }
+            Command::LeSetExtendedAdvertisingData {
+                advertising_handle,
+                operation,
+                advertising_data,
+                ..
+            } => self.handle_extended_advertising_data(
+                op_code,
+                advertising_handle,
+                operation,
+                &advertising_data,
+                false,
+            ),
+            Command::LeSetExtendedScanResponseData {
+                advertising_handle,
+                operation,
+                scan_response_data,
+                ..
+            } => self.handle_extended_advertising_data(
+                op_code,
+                advertising_handle,
+                operation,
+                &scan_response_data,
+                true,
+            ),
+            Command::LeSetExtendedAdvertisingEnable {
+                enable,
+                advertising_handles,
+                ..
+            } => {
+                self.handle_extended_advertising_enable(enable, &advertising_handles);
+                self.ack(op_code, HCI_SUCCESS);
+            }
+            Command::LeReadMaximumAdvertisingDataLength => {
+                self.complete(
+                    op_code,
+                    ReturnParameters::Raw {
+                        data: vec![HCI_SUCCESS, 0x72, 0x06],
+                    },
+                );
+            }
+            Command::LeReadNumberOfSupportedAdvertisingSets => {
+                self.complete(
+                    op_code,
+                    ReturnParameters::Raw {
+                        data: vec![HCI_SUCCESS, 0xF0],
+                    },
+                );
+            }
+            Command::LeRemoveAdvertisingSet { advertising_handle } => {
+                self.extended_advertising_sets
+                    .retain(|set| set.handle != advertising_handle);
+                self.ack(op_code, HCI_SUCCESS);
+            }
+            Command::LeClearAdvertisingSets => {
+                self.extended_advertising_sets.clear();
+                self.ack(op_code, HCI_SUCCESS);
+            }
+            Command::LeSetExtendedScanParameters { .. } => {
+                self.extended_scanning = true;
+                self.ack(op_code, HCI_SUCCESS);
+            }
+            Command::LeSetExtendedScanEnable { enable, .. } => {
+                self.scanning_enabled = enable != 0;
+                self.extended_scanning = true;
+                self.ack(op_code, HCI_SUCCESS);
+            }
+            Command::LeExtendedCreateConnection {
+                peer_address,
+                peer_address_type,
+                own_address_type,
+                ..
+            } => {
+                self.initiating = Some(PendingConnection {
+                    peer_address,
+                    peer_address_type,
+                    own_address_type,
+                });
+                self.command_status(op_code, HCI_SUCCESS);
             }
             Command::ReadBdAddr => {
                 self.complete(
@@ -523,6 +706,74 @@ impl Controller {
                 Some(command_surface::Resp::Status) => self.command_status(op_code, HCI_SUCCESS),
                 None => self.ack(op_code, UNKNOWN_HCI_COMMAND_ERROR),
             },
+        }
+    }
+
+    fn extended_advertising_set_mut(&mut self, handle: u8) -> &mut ExtendedAdvertisingSet {
+        if let Some(index) = self
+            .extended_advertising_sets
+            .iter()
+            .position(|set| set.handle == handle)
+        {
+            return &mut self.extended_advertising_sets[index];
+        }
+        self.extended_advertising_sets
+            .push(ExtendedAdvertisingSet::new(handle));
+        self.extended_advertising_sets
+            .last_mut()
+            .expect("advertising set was just inserted")
+    }
+
+    fn handle_extended_advertising_data(
+        &mut self,
+        op_code: u16,
+        handle: u8,
+        operation: u8,
+        fragment: &[u8],
+        scan_response: bool,
+    ) {
+        let Some(set) = self
+            .extended_advertising_sets
+            .iter_mut()
+            .find(|set| set.handle == handle)
+        else {
+            return self.ack(op_code, UNKNOWN_ADVERTISING_IDENTIFIER_ERROR);
+        };
+        let data = if scan_response {
+            &mut set.scan_response_data
+        } else {
+            &mut set.data
+        };
+        match operation {
+            // INTERMEDIATE_FRAGMENT or LAST_FRAGMENT.
+            0x00 | 0x02 => data.extend_from_slice(fragment),
+            // FIRST_FRAGMENT or COMPLETE_DATA.
+            0x01 | 0x03 => {
+                data.clear();
+                data.extend_from_slice(fragment);
+            }
+            // UNCHANGED_DATA leaves the existing value intact, matching Bumble.
+            0x04 => {}
+            _ => return self.ack(op_code, INVALID_COMMAND_PARAMETERS),
+        }
+        self.ack(op_code, HCI_SUCCESS);
+    }
+
+    fn handle_extended_advertising_enable(&mut self, enable: u8, handles: &[u8]) {
+        if enable == 0 && handles.is_empty() {
+            for set in &mut self.extended_advertising_sets {
+                set.enabled = false;
+            }
+            return;
+        }
+        for handle in handles {
+            if let Some(set) = self
+                .extended_advertising_sets
+                .iter_mut()
+                .find(|set| set.handle == *handle)
+            {
+                set.enabled = enable != 0;
+            }
         }
     }
 
@@ -1310,7 +1561,60 @@ impl Controller {
             address_type: ADDRESS_TYPE_RANDOM,
             address: self.random_address.clone(),
             data: self.advertising_data.clone(),
+            scan_response_data: Vec::new(),
+            extended: false,
+            advertising_handle: 0,
+            advertising_sid: 0,
+            primary_phy: LE_1M_PHY,
+            secondary_phy: LE_1M_PHY,
+            tx_power: 0,
+            direct_address: None,
         })
+    }
+
+    /// Every legacy or extended advertising PDU currently emitted by this
+    /// controller. Extended sets without parameters or a usable own address do
+    /// not go on air, matching upstream's `AdvertisingSet.address` guard.
+    pub fn advertising_pdus(&self) -> Vec<AdvertisingPdu> {
+        let mut pdus = Vec::new();
+        if let Some(legacy) = self.advertising_pdu() {
+            pdus.push(legacy);
+        }
+        for set in self
+            .extended_advertising_sets
+            .iter()
+            .filter(|set| set.enabled)
+        {
+            let Some(parameters) = set.parameters.as_ref() else {
+                continue;
+            };
+            let Some(address) = set.address(&self.public_address) else {
+                continue;
+            };
+            let direct_address = if parameters.advertising_event_properties & 0x0004 != 0 {
+                Some(Address::from_bytes(
+                    *parameters.peer_address.address_bytes(),
+                    AddressType(parameters.peer_address_type),
+                ))
+            } else {
+                None
+            };
+            pdus.push(AdvertisingPdu {
+                event_type: (parameters.advertising_event_properties & 0x1F) as u8,
+                address_type: address.address_type().0,
+                address,
+                data: set.data.clone(),
+                scan_response_data: set.scan_response_data.clone(),
+                extended: true,
+                advertising_handle: set.handle,
+                advertising_sid: parameters.advertising_sid,
+                primary_phy: parameters.primary_advertising_phy,
+                secondary_phy: parameters.secondary_advertising_phy,
+                tx_power: parameters.advertising_tx_power,
+                direct_address,
+            });
+        }
+        pdus
     }
 
     /// Handle an advertising PDU received over the link. If scanning is
@@ -1319,14 +1623,57 @@ impl Controller {
         if !self.scanning_enabled {
             return;
         }
+        if self.extended_scanning {
+            self.push_extended_advertising_report(pdu, false);
+            if !pdu.scan_response_data.is_empty() {
+                self.push_extended_advertising_report(pdu, true);
+            }
+        } else {
+            self.host_queue.push(HciPacket::Event(Event::LeMeta(
+                LeMetaEvent::AdvertisingReport {
+                    reports: vec![AdvertisingReport {
+                        event_type: pdu.event_type,
+                        address_type: pdu.address_type,
+                        address: pdu.address.clone(),
+                        data: pdu.data.clone(),
+                        rssi: DEFAULT_RSSI,
+                    }],
+                },
+            )));
+        }
+    }
+
+    fn push_extended_advertising_report(&mut self, pdu: &AdvertisingPdu, scan_response: bool) {
+        let direct_address = pdu
+            .direct_address
+            .clone()
+            .unwrap_or_else(|| Address::from_bytes([0; 6], AddressType::PUBLIC_DEVICE));
         self.host_queue.push(HciPacket::Event(Event::LeMeta(
-            LeMetaEvent::AdvertisingReport {
-                reports: vec![AdvertisingReport {
-                    event_type: pdu.event_type,
+            LeMetaEvent::ExtendedAdvertisingReport {
+                reports: vec![ExtendedAdvertisingReport {
+                    event_type: if scan_response {
+                        0x0008
+                    } else {
+                        u16::from(pdu.event_type)
+                    },
                     address_type: pdu.address_type,
                     address: pdu.address.clone(),
-                    data: pdu.data.clone(),
+                    primary_phy: pdu.primary_phy,
+                    secondary_phy: pdu.secondary_phy,
+                    advertising_sid: pdu.advertising_sid,
+                    tx_power: pdu.tx_power,
                     rssi: DEFAULT_RSSI,
+                    periodic_advertising_interval: 0,
+                    direct_address_type: pdu
+                        .direct_address
+                        .as_ref()
+                        .map_or(ADDRESS_TYPE_PUBLIC, |address| address.address_type().0),
+                    direct_address,
+                    data: if scan_response {
+                        pdu.scan_response_data.clone()
+                    } else {
+                        pdu.data.clone()
+                    },
                 }],
             },
         )));
@@ -1366,6 +1713,13 @@ impl Controller {
     /// `true` if an `LE_Create_Connection` is pending (initiating).
     pub fn is_initiating(&self) -> bool {
         self.initiating.is_some()
+    }
+
+    /// `true` when the identified extended advertising set is enabled.
+    pub fn is_extended_advertising(&self, handle: u8) -> bool {
+        self.extended_advertising_sets
+            .iter()
+            .any(|set| set.handle == handle && set.enabled)
     }
 
     fn allocate_handle(&mut self) -> u16 {
@@ -1452,11 +1806,24 @@ impl Controller {
     /// Accept an incoming connection as the peripheral. Emits a Connection
     /// Complete (role = peripheral) and stops advertising.
     pub fn connect_as_peripheral(&mut self, central_address: Address, central_address_type: u8) {
+        self.connect_as_peripheral_at(
+            self.random_address.clone(),
+            central_address,
+            central_address_type,
+        );
+    }
+
+    fn connect_as_peripheral_at(
+        &mut self,
+        self_address: Address,
+        central_address: Address,
+        central_address_type: u8,
+    ) {
         let handle = self.allocate_handle();
         let connection = Connection {
             handle,
             role: ROLE_PERIPHERAL,
-            self_address: self.random_address.clone(),
+            self_address,
             peer_address: central_address,
         };
         self.push_connection_complete(
@@ -1751,7 +2118,12 @@ impl LocalLink {
             .controllers
             .iter()
             .enumerate()
-            .filter_map(|(i, c)| c.advertising_pdu().map(|pdu| (i, pdu)))
+            .flat_map(|(i, controller)| {
+                controller
+                    .advertising_pdus()
+                    .into_iter()
+                    .map(move |pdu| (i, pdu))
+            })
             .collect();
 
         for (sender, pdu) in pdus {
@@ -1831,23 +2203,22 @@ impl LocalLink {
                 .iter()
                 .enumerate()
                 .find_map(|(pi, peripheral)| {
-                    if !peripheral.is_advertising() {
-                        return None;
-                    }
-                    let actual = peripheral.random_address();
-                    if *actual == target {
-                        return Some((pi, actual.clone(), actual.clone(), ADDRESS_TYPE_RANDOM));
-                    }
-                    central
-                        .resolve_peer_identity(&target, actual)
-                        .map(|identity| {
-                            (
+                    peripheral.advertising_pdus().into_iter().find_map(|pdu| {
+                        let actual = pdu.address;
+                        if actual == target {
+                            return Some((
                                 pi,
                                 actual.clone(),
-                                identity.clone(),
-                                identity.address_type().0,
-                            )
-                        })
+                                actual.clone(),
+                                actual.address_type().0,
+                            ));
+                        }
+                        central
+                            .resolve_peer_identity(&target, &actual)
+                            .map(|identity| {
+                                (pi, actual, identity.clone(), identity.address_type().0)
+                            })
+                    })
                 })
             {
                 if pi != ci {
@@ -1868,7 +2239,11 @@ impl LocalLink {
             pairs
         {
             // Peripheral accepts, seeing the central's address.
-            self.controllers[pi].connect_as_peripheral(central_addr, central_addr_type);
+            self.controllers[pi].connect_as_peripheral_at(
+                actual_peer.clone(),
+                central_addr,
+                central_addr_type,
+            );
             // Central completes its pending connection.
             self.controllers[ci].connect_as_central_to(actual_peer, reported_peer, reported_type);
         }

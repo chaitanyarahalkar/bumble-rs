@@ -109,7 +109,8 @@ crate whose behavior is verified against the upstream Python.
 | 92. Broadcast Audio Scan and Common Audio profiles | `bumble-profiles` | ✅ all operations/states + live encrypted BASS/CAS inclusion green |
 | 93. Hearing Access Profile | `bumble-profiles` | ✅ encrypted preset lifecycle + indications/synchronization green |
 | 94. Apple Media and Notification Center profiles | `bumble-profiles` | ✅ 128-bit GATT + commands/fragmented data/live clients green |
-| 95+. Repository completion audit and remaining gaps | workspace | in progress |
+| 95. Extended advertising sets, scanning, reports, and connection setup | `bumble-controller` / `bumble-host` | ✅ fragmented 1650-byte data + live two-device flow green |
+| 96+. Repository completion audit and remaining gaps | workspace | in progress |
 
 The LE lifecycle is now complete end-to-end through library APIs: **connect →
 discover → read/write → notify → disconnect** between two virtual devices — and
@@ -160,11 +161,11 @@ size, to convey remaining surface.
 | Upstream (LOC) | Rust crate | Status | Notes |
 |---|---|---|---|
 | `hci.py` (8.3k) | `bumble-hci` | ✅ | **Full typed catalog: 196 command op codes + 81 event / LE-meta sub-event codes**, generated from upstream's declarative field specs by [`tools/hcigen`](bumble-hci/tools/hcigen/) and **byte-pinned against real Python Bumble** (320 oracle tests). Framing (Command/Event/ACL/SCO/ISO), `Command_Complete` with typed `ReturnParameters`, the open-enum `Generic` tail, and upstream-equivalent ACL/L2CAP fragmentation/reassembly with PB-flag, length, continuation, handle, and overflow validation. Two phys-derived array commands and the two nested-report events are hand-written; everything else is generated. |
-| `controller.py` (2.8k) | `bumble-controller` | 🟡 | **Full command surface**: every command upstream's `controller.py` handles (93, via the generated [`command_surface`](bumble-controller/src/command_surface.rs) table) gets a reply of the matching HCI shape — Command Complete + SUCCESS for config/set commands, Command Status for operations completing via a later event, and the spec-correct "Unknown HCI Command" for anything upstream also doesn't handle. **Functionally simulated**: LE advertising/scanning, connection establishment, IRK resolving-list offload with identity-targeted RPA connections, ACL routing with PB/BC preservation and Number Of Completed Packets flow events, disconnection, the read commands (`Read_BD_ADDR`/`Read_Local_Name`/`LE_Read_Buffer_Size`/`LE_Read_Local_Supported_Features`/`LE_Rand`), per-connection `LE_Set_Data_Length`/`LE_Set_PHY` (with follow-up meta events), and — via LL control-PDU exchange over the link — **encryption start**, **remote-features**, and **CIS establishment**. Also **classic (BR/EDR)** connection/name/features and SCO/eSCO request/accept/reject/disconnect with synchronous-data routing. Other read commands are acknowledged SUCCESS **without a synthesized payload** (a documented stub, not a full read). Deferred: LTK verification, ISO data-path streaming, remote-version exchange, extended/periodic advertising, and classic auth/encryption/role-switch sub-flows. |
+| `controller.py` (2.8k) | `bumble-controller` | 🟡 | **Full command surface**: every command upstream's `controller.py` handles (93, via the generated [`command_surface`](bumble-controller/src/command_surface.rs) table) gets a reply of the matching HCI shape — Command Complete + SUCCESS for config/set commands, Command Status for operations completing via a later event, and the spec-correct "Unknown HCI Command" for anything upstream also doesn't handle. **Functionally simulated**: legacy and extended LE advertising/scanning/connection establishment, multi-set parameters/random addresses/fragmented data/scan responses, IRK resolving-list offload with identity-targeted RPA connections, ACL routing with PB/BC preservation and Number Of Completed Packets flow events, disconnection, the read commands (`Read_BD_ADDR`/`Read_Local_Name`/`LE_Read_Buffer_Size`/`LE_Read_Local_Supported_Features`/`LE_Rand`), per-connection `LE_Set_Data_Length`/`LE_Set_PHY` (with follow-up meta events), and — via LL control-PDU exchange over the link — **encryption start**, **remote-features**, and **CIS establishment**. Also **classic (BR/EDR)** connection/name/features and SCO/eSCO request/accept/reject/disconnect with synchronous-data routing. Other read commands are acknowledged SUCCESS **without a synthesized payload** (a documented stub, not a full read). Deferred: LTK verification, ISO data-path streaming, remote-version exchange, periodic-advertising synchronization (upstream's software-controller set-periodic handlers are also no-ops), and classic authentication/role-switch sub-flows. |
 | `link.py` (0.15k) | `bumble-controller` | 🟡 | In-process **synchronous** `LocalLink` with LL-control, simplified LMP, ACL, and SCO/eSCO routing. Deferred: serialized over-the-air PDUs and async scheduling. |
 | `ll.py` (0.2k) | `bumble-controller` | 🟡 | Advertising/connection PDUs modeled as in-process structs, not serialized LL PDUs. Control PDUs (`EncReq`, `FeatureReq`/`PeripheralFeatureReq`/`FeatureRsp`, `TerminateInd`) are exchanged between controllers via `LocalLink::pump_ll` to drive the encryption-start, remote-features, and CIS-establishment (`CisReq`/`CisRsp`/`CisInd`) flows. |
 | `host.py` (2.1k) | `bumble-host` | 🟡 | `Device` glue (ATT↔L2CAP↔ACL sequencing + pairing transport), controller-buffer-sized outbound ACL fragmentation, per-connection inbound reassembly, a global/per-handle `DataPacketQueue` driven by Number Of Completed Packets, LE/Classic encryption, resolving-list programming, Classic and LE L2CAP, plus synchronous audio APIs. The host pump advances LL control and HCI/ACL traffic. Deferred: direct LE signaling-manager integration and the broader host feature set. |
-| `device.py` (7.0k) | `bumble-host` | 🟡 | High-level legacy LE advertising, active/passive scanning with typed report collection, identity/RPA-aware LE connection setup, peer/role state, and disconnect now run through `Device` without raw HCI. GATT/ATT, SMP, Classic, and synchronous operations are also exposed by the same type. Deferred: extended/periodic advertising, multi-connection ownership, and listener/async conveniences. |
+| `device.py` (7.0k) | `bumble-host` | 🟡 | High-level legacy and extended LE advertising, active/passive scan report collection, identity/RPA-aware legacy and extended connection setup, peer/role state, and disconnect run through `Device` without raw HCI. Extended data and scan responses are fragmented across HCI commands up to the controller's 1650-byte limit. GATT/ATT, SMP, Classic, and synchronous operations are also exposed by the same type. Deferred: periodic-advertising synchronization, multi-connection ownership, and listener/async conveniences. |
 | `lmp.py` (0.4k) | `bumble-controller::lmp` | 🟡 | Classic Link Manager Protocol PDUs modeled as in-process structs (`HostConnectionReq`/`Accepted`, `NameReq`/`NameRes`, `FeaturesReq`/`FeaturesRes`, synchronous request/accept/reject, `Detach`) driving the classic connection/name/features/SCO-eSCO flows via `LocalLink::pump_classic`. The role-switch / authentication / encryption LMP sub-dance is simplified away. |
 
 ### L2CAP
@@ -200,11 +201,11 @@ size, to convey remaining surface.
 | `at.py` (0.1k) + HFP AT models | `bumble-at` | ✅ | Parameter tokenizer/parser ported 1:1, nested values, HFP `AtCommand`/`AtResponse` forms, and incremental command (`\r`) / response (`\r\n`) stream framing. |
 | `hfp.py` (2.1k) | `bumble-hfp` | 🟡 | Normative HF/AG models and paired SLC state machines, serialized post-SLC command completion, call control/current-call listing, HF/AG indicators, ring/volume/typed caller-ID/typed voice events, codec request/selection, CMEE/CCWA/BIA/CLIP controls, HF/AG SDP record generation/discovery, and all eight upstream HFP 1.8 SCO/eSCO parameter presets. Control flows run end-to-end over RFCOMM/L2CAP and records through SDP client/server; negotiated CVSD/mSBC codecs establish and route audio through the host/controller link. The core synchronous protocol surface covers the upstream behavior families; deferred: asyncio/event-emitter convenience and actual CVSD/mSBC media encoding. |
 | `hid.py` (0.6k) | `bumble-hid` | ✅ | Complete HIDP message codec (handshake/control/get+set report/get+set protocol/data), open protocol identifiers, exact little-endian GET_REPORT buffer sizing, host/device dispatch, callback-to-handshake mapping, suspend/unplug events, role-correct input/output reports, MTU enforcement, and paired control (`0x0011`) + interrupt (`0x0013`) transports over live Classic L2CAP. |
-| `avdtp.py` (2.4k) | `bumble-avdtp` | 🟡 | Slice 29 ports all 38 upstream signaling command/accept/reject forms, endpoint descriptors, generic and media-codec capability TLVs, open protocol enums, exact payload encoding/decoding, unknown-signal preservation, and safe single/fragmented PDU assembly. Slice 30 adds local endpoint registration, command dispatch, atomic multi-SEP validation, the configured/open/streaming/idle lifecycle, event capture, transaction labels, and a live Classic L2CAP binding. Deferred: initiator-side high-level stream proxy, RTP media channel/pump, listener convenience, and SDP discovery. |
+| `avdtp.py` (2.4k) | `bumble-avdtp` / `bumble-a2dp` | ✅ | All 38 upstream signaling command/accept/reject forms, endpoint descriptors, generic and media-codec capability TLVs, safe fragmentation, local endpoint dispatch, atomic multi-SEP validation, lifecycle/event capture, transaction labels, and live Classic L2CAP signaling are present. The high-level initiator/stream orchestration, RTP media channel, packet sources, and SDP discovery live in `bumble-a2dp`; synchronous drive callbacks and explicit event collections replace asyncio listeners/pumps. |
 | `a2dp.py` (1.0k) | `bumble-a2dp` | ✅ | Open codec identifiers and exact SBC, MPEG-2/4 AAC, vendor-specific, and Opus capability models; upstream byte vectors; SBC/ADTS AAC/Ogg Opus parsers and RTP packet sources; live Classic L2CAP media transport; source/sink SDP records; and a high-level initiator that discovers SEPs, verifies media transport + codec compatibility, and drives configure/open/start/suspend/close over AVDTP. Async generators/listeners are represented by synchronous collections and a caller-supplied drive callback. |
 | `rtp.py` (0.1k) | `bumble-rtp` | ✅ | Slice 32 ports RTP v2 media packet parsing/serialization with marker/payload type, wrapping sequence/timestamp fields, SSRC and correctly spaced CSRC entries. It additionally implements standard header extensions and padding, validates bit fields/lengths, and returns errors for truncated input instead of upstream's unchecked indexing. |
-| `avc.py` (0.5k) | `bumble-avc` | 🟡 | Slice 39 ports open subunit/opcode/command/response/operation identifiers; generic command and response frames; single and double-extended subunit IDs; 24-bit-company vendor-dependent frames; and panel pass-through press/release operations with bounded operation data. Upstream AVRCP vectors are byte-pinned and malformed frames return errors. Deferred: additional typed AV/C opcode subclasses beyond the two used by AVRCP. |
-| `avctp.py` (0.3k) | `bumble-avctp` | 🟡 | Slice 40 ports transaction labels, single/start/continue/end packets, command/response and IPID flags, 16-bit PIDs, safe fragmented-message assembly, MTU-aware outbound fragmentation, and a live Classic L2CAP binding. Registered PIDs receive commands; unknown PIDs automatically produce IPID responses. Deferred: handler callbacks and browsing-channel policy are provided by the higher AVRCP runtime. |
+| `avc.py` (0.5k) | `bumble-avc` | ✅ | Open subunit/opcode/command/response/operation identifiers; generic command and response frames; single and double-extended subunit IDs; 24-bit-company vendor-dependent frames; and panel pass-through press/release operations with bounded operation data. These are the only two typed opcode subclasses upstream defines; all other opcodes round-trip through the generic raw form. Upstream AVRCP vectors are byte-pinned and malformed frames return errors. |
+| `avctp.py` (0.3k) | `bumble-avctp` | ✅ | Transaction labels, single/start/continue/end packets, command/response and IPID flags, 16-bit PIDs, safe fragmented-message assembly, MTU-aware outbound fragmentation, and a live Classic L2CAP binding are complete. Registered PIDs receive commands, unknown PIDs automatically produce IPID responses, and explicit message queues plus the higher AVRCP runtime replace Python callback registration. |
 | `avrcp` (2.9k) | `bumble-avrcp` | ✅ | Slices 41–46 port the complete typed wire catalog, bounded controller/target runtime, delegate behavior, interim→changed notifications, pass-through keys, both fragmentation layers over live Classic L2CAP, and controller/target SDP records + discovery. The browsing PSM is advertised exactly when supported; upstream itself does not implement a separate browsing-channel runtime. Async iterators are represented by explicit `RuntimeEvent` values. |
 | `codecs.py` (0.5k) | `bumble-codecs` | ✅ | Complete bit reader/writer plus MPEG-4 LATM `AudioMuxElement`, `StreamMuxConfig`, `AudioSpecificConfig`, GA config, AAC-LC constructor, arbitrary-length payload framing, and ADTS conversion. Upstream's long LATM fixture produces the exact ADTS oracle; unaligned bit chunks and 255/510-byte length boundaries round-trip safely. |
 
@@ -216,21 +217,18 @@ size, to convey remaining surface.
 
 ### Roughly where that leaves things
 
-Fully or substantially covered for the **LE core data + security path**: core
-types, HCI framing, L2CAP/ATT/GATT/SMP codecs, the SMP crypto toolbox, both
-sides of GATT (server **and** a client that discovers, reads, writes, and
-subscribes), and a controller/link/host that runs the LE lifecycle end-to-end.
-Classic Bluetooth now has its **two foundation protocols and their channel
-layer** — SDP
-(`bumble-sdp`: codec + a client/server continuation runtime), which the classic
-profiles build service records on, and RFCOMM (`bumble-rfcomm`: frame codec + a
-`Multiplexer`/`DLC` credit-flow session runtime), the serial-cable transport
-those profiles run over, plus a Classic L2CAP connection-oriented runtime with
-configuration and MTU negotiation. Both protocol runtimes now bind directly to
-those channels. Everything else — the full high-level device/host
-orchestration, LE Secure Connections state machine, real transports, and the
-**rest of Classic Bluetooth (A2DP/AVRCP/HFP/HID/…) and the profiles** — is still
-the large majority of the ~82k upstream lines and remains to do.
+The codec and protocol inventory is now broad rather than LE-only: HCI,
+L2CAP/ERTM/LE CoC, ATT/GATT, SMP/CTKD/privacy/signing, SDP, RFCOMM, HFP,
+AVDTP/A2DP, AV/C/AVCTP/AVRCP, HID, transports/drivers, and all 23 profile
+modules have live Rust implementations. Both legacy and extended LE
+advertising/scan/connect paths run end-to-end through the high-level `Device`.
+
+The completion audit is therefore concentrated on deeper orchestration rather
+than missing wire catalogs: periodic-advertising synchronization, controller
+ISO streaming and a few Classic control sub-flows, multi-connection host
+ownership, platform-specific transport edges, and Python-only harness/app
+surfaces. Asyncio listeners and generators are represented by explicit events,
+queues, and caller-supplied drive callbacks throughout the synchronous port.
 
 ## Slice 1 — what's here
 
@@ -2141,6 +2139,26 @@ Apple Media Service and Apple Notification Center Service complete the
 - The live ANCS service/proxy/client capture control commands, subscribe to both
   data sources, emit and decode notification-source values, assemble arbitrarily
   fragmented data responses, serialize command access, and perform actions.
+
+## Slice 95 — what's here
+
+Extended LE advertising now runs through both the software controller and the
+high-level host API:
+
+- The controller retains multiple advertising sets with independent random
+  addresses, full parameters, advertising and scan-response data, enable state,
+  remove/clear behavior, and upstream-compatible maximum-length/set-count
+  results. First/intermediate/last/complete operations reassemble extended data
+  and unknown handles return the specified HCI error.
+- Extended scanners receive typed `LE Extended Advertising Report` events with
+  PHY, SID, power, address, data, and distinct scan-response records. The link
+  propagates every enabled set and extended create-connection uses the actual
+  set address on both sides.
+- `Device` exposes typed extended advertising configuration, fragments payloads
+  up to 1650 bytes into HCI-sized commands, starts/stops extended scanning,
+  collects typed reports, and establishes extended LE connections without raw
+  HCI. A live two-device test covers a 600-byte fragmented payload through scan
+  and connection setup.
 
 ## Acceptance
 

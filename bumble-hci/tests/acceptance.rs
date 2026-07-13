@@ -694,6 +694,7 @@ fn test_hci_le_advertising_report_event() {
 // hci_test.py::test_HCI_LE_Extended_Advertising_Report_Event
 #[test]
 fn test_hci_le_extended_advertising_report_event() {
+    let encoded = "043e380d010100005544332211000103000a640200005544332211001e0201061106ba5689a6fabfa2bd01467d6e00fbabad08160a181604659b03";
     check(
         HciPacket::Event(Event::LeMeta(LeMetaEvent::ExtendedAdvertisingReport {
             reports: vec![ExtendedAdvertisingReport {
@@ -711,7 +712,20 @@ fn test_hci_le_extended_advertising_report_event() {
                 data: unhex("0201061106ba5689a6fabfa2bd01467d6e00fbabad08160a181604659b03"),
             }],
         })),
-        "043e380d010100005544332211000103000a640200005544332211001e0201061106ba5689a6fabfa2bd01467d6e00fbabad08160a181604659b03",
+        encoded,
+    );
+    let HciPacket::Event(Event::LeMeta(LeMetaEvent::ExtendedAdvertisingReport { reports })) =
+        HciPacket::from_bytes(&unhex(encoded)).unwrap()
+    else {
+        panic!("expected extended advertising report");
+    };
+    assert_eq!(
+        reports[0].address.address_type(),
+        AddressType::PUBLIC_DEVICE
+    );
+    assert_eq!(
+        reports[0].direct_address.address_type(),
+        AddressType::PUBLIC_DEVICE
     );
 }
 
