@@ -13,8 +13,11 @@ pub const MAX_HCI_PACKET_SIZE: usize = 1 + 4 + u16::MAX as usize;
 pub enum Error {
     Io(io::Error),
     Hci(bumble_hci::Error),
+    Serial(serialport::Error),
     InvalidPacketType(u8),
     InvalidLayout,
+    InvalidSpec(String),
+    Unsupported(String),
     PacketTooLarge(usize),
     TruncatedPacket(usize),
 }
@@ -24,10 +27,13 @@ impl fmt::Display for Error {
         match self {
             Self::Io(error) => write!(formatter, "transport I/O error: {error}"),
             Self::Hci(error) => write!(formatter, "{error}"),
+            Self::Serial(error) => write!(formatter, "serial transport error: {error}"),
             Self::InvalidPacketType(packet_type) => {
                 write!(formatter, "invalid HCI packet type {packet_type:#04x}")
             }
             Self::InvalidLayout => write!(formatter, "invalid HCI packet layout"),
+            Self::InvalidSpec(message) => write!(formatter, "invalid transport spec: {message}"),
+            Self::Unsupported(feature) => write!(formatter, "unsupported transport: {feature}"),
             Self::PacketTooLarge(size) => write!(formatter, "HCI packet is too large: {size}"),
             Self::TruncatedPacket(size) => {
                 write!(
@@ -44,6 +50,7 @@ impl std::error::Error for Error {
         match self {
             Self::Io(error) => Some(error),
             Self::Hci(error) => Some(error),
+            Self::Serial(error) => Some(error),
             _ => None,
         }
     }
@@ -58,6 +65,12 @@ impl From<io::Error> for Error {
 impl From<bumble_hci::Error> for Error {
     fn from(error: bumble_hci::Error) -> Self {
         Self::Hci(error)
+    }
+}
+
+impl From<serialport::Error> for Error {
+    fn from(error: serialport::Error) -> Self {
+        Self::Serial(error)
     }
 }
 

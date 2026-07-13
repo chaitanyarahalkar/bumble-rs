@@ -13,3 +13,4 @@ description = "HCI packet framing and external transports for bumble-rs"
 
 [dependencies]
 bumble-hci = { path = "../bumble-hci" }
+serialport = { version = "4.9.0", default-features = false }

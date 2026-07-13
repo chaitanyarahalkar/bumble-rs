@@ -90,7 +90,8 @@ crate whose behavior is verified against the upstream Python.
 | 73. Encrypted SMP-over-BR/EDR CTKD orchestration | `bumble-smp`, `bumble-controller`, `bumble-host` | ✅ h6/h7 + CID 0x0007 green |
 | 74. High-level LE advertise, scan, connect, and disconnect API | `bumble-host` | ✅ no raw-HCI lifecycle green |
 | 75. H4 framing and file/TCP/UDP/Unix transports | `bumble-transport` | ✅ fragmented streams + socket loopbacks green |
-| 76+. Remaining modules… | — | planned |
+| 76. Transport-spec dispatch, serial, and raw PTY endpoints | `bumble-transport` | ✅ metadata + PTY loopback green |
+| 77+. Remaining modules… | — | planned |
 
 The LE lifecycle is now complete end-to-end through library APIs: **connect →
 discover → read/write → notify → disconnect** between two virtual devices — and
@@ -170,7 +171,7 @@ size, to convey remaining surface.
 ### Transports & drivers
 | Upstream | Rust crate | Status | Notes |
 |---|---|---|---|
-| `transport/*` — USB, UART/serial, TCP, WebSocket, UDP, PTY, android-netsim, vhci, … | `bumble-transport` | 🟡 | Incremental H4 framing accepts fragmented/coalesced streams and vendor packet layouts. Blocking file/PTY, TCP client/server, connected UDP, and Unix client/server endpoints are live. Deferred: transport-spec dispatch, serial/USB, WebSocket, PTY spawning, VHCI, netsim, and platform-specific endpoints. |
+| `transport/*` — USB, UART/serial, TCP, WebSocket, UDP, PTY, android-netsim, vhci, … | `bumble-transport` | 🟡 | Incremental H4 framing accepts fragmented/coalesced streams and vendor packet layouts. Bumble transport-name/metadata dispatch opens file, serial/UART with RTS/CTS, raw PTY, TCP client/server, connected UDP, and Unix client/server endpoints. Deferred: DSR/DTR flow control, USB, WebSocket, VHCI, netsim, and other platform-specific endpoints. |
 | `drivers/*` — Intel, Realtek | — | ⬜ | Vendor controller firmware/init. |
 
 ### Classic Bluetooth (BR/EDR)
@@ -1735,8 +1736,32 @@ External controllers can now exchange typed HCI packets with the Rust stack:
   addition to testing every split point in a coalesced five-packet stream that
   covers every standard H4 packet type.
 
-The remaining transport work is transport-spec parsing plus serial, USB,
-WebSocket, PTY-spawn, VHCI, netsim, and other platform-specific endpoints.
+The next layer adds transport-spec parsing, serial configuration, and PTY
+creation on top of this framing foundation.
+
+## Slice 76 — what's here
+
+Host-local transport configuration now follows Bumble's named endpoint model:
+
+- `TransportSpec` parses `<scheme>:[key=value,...]parameters`, including the
+  optional trailing metadata comma used upstream, without corrupting colons in
+  socket addresses.
+- `open_transport` dispatches file, serial, PTY, TCP client/server, UDP, and
+  Unix client/server names while retaining source metadata. Synchronous server
+  dispatch documents that it blocks for the first client; the separate server
+  types remain available when bind and accept must be controlled independently.
+- `SerialConfig` matches Bumble's 1 Mbaud default, optional numeric speed,
+  `rtscts`, `dsrdtr`, and 500 ms `delay` flags. The live backend configures
+  RTS/CTS and asserts DTR; DSR/DTR flow control returns an explicit unsupported
+  error because the portable backend cannot enable it safely.
+- `PtyTransport` creates a raw primary/replica pair, optionally publishes the
+  replica through a symlink, and removes that link on drop. Its acceptance test
+  sends typed HCI packets in both directions over the real PTY; a second test
+  opens that replica through serial dispatch and verifies the live UART path.
+
+The transport crate now reaches local serial devices and controller processes.
+Remaining backends are USB, WebSocket, VHCI/HCI sockets, Android emulator/netsim,
+and platform-specific integrations.
 
 ## Acceptance
 
@@ -1883,9 +1908,10 @@ bumble-rs/
 ├── bumble-codecs/             # slice-48 common media bitstreams/codecs
 │   ├── src/lib.rs             # bit I/O + MPEG-4 LATM AAC and ADTS conversion
 │   └── tests/codecs.rs        # upstream fixture + length-boundary round trips
-├── bumble-transport/          # slice-75 external HCI transports
-│   ├── src/{lib,common,file,tcp,udp,unix}.rs # H4 framing + blocking endpoints
-│   └── tests/transports.rs    # fragmentation, EOF, and real loopback coverage
+├── bumble-transport/          # slices 75-76 external HCI transports
+│   ├── src/{lib,common,dispatch,file,serial,pty,tcp,udp,unix}.rs
+│   ├── tests/transports.rs    # fragmentation, EOF, and socket loopbacks
+│   └── tests/specs.rs         # dispatch, serial config, and raw PTY coverage
 └── docs/superpowers/          # design specs + implementation plans
 ```
 
