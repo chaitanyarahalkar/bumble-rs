@@ -88,7 +88,8 @@ crate whose behavior is verified against the upstream Python.
 | 71. CSRK authenticated ATT signed writes and persistent counters | `bumble-att`, `bumble-gatt`, `bumble-host` | ✅ CMAC/replay/restart green |
 | 72. Multi-connection LE pairing manager | `bumble-smp`, `bumble-host` | ✅ concurrent + live manager green |
 | 73. Encrypted SMP-over-BR/EDR CTKD orchestration | `bumble-smp`, `bumble-controller`, `bumble-host` | ✅ h6/h7 + CID 0x0007 green |
-| 74+. Remaining modules… | — | planned |
+| 74. High-level LE advertise, scan, connect, and disconnect API | `bumble-host` | ✅ no raw-HCI lifecycle green |
+| 75+. Remaining modules… | — | planned |
 
 The LE lifecycle is now complete end-to-end through library APIs: **connect →
 discover → read/write → notify → disconnect** between two virtual devices — and
@@ -142,8 +143,8 @@ size, to convey remaining surface.
 | `controller.py` (2.8k) | `bumble-controller` | 🟡 | **Full command surface**: every command upstream's `controller.py` handles (93, via the generated [`command_surface`](bumble-controller/src/command_surface.rs) table) gets a reply of the matching HCI shape — Command Complete + SUCCESS for config/set commands, Command Status for operations completing via a later event, and the spec-correct "Unknown HCI Command" for anything upstream also doesn't handle. **Functionally simulated**: LE advertising/scanning, connection establishment, IRK resolving-list offload with identity-targeted RPA connections, ACL routing with PB/BC preservation and Number Of Completed Packets flow events, disconnection, the read commands (`Read_BD_ADDR`/`Read_Local_Name`/`LE_Read_Buffer_Size`/`LE_Read_Local_Supported_Features`/`LE_Rand`), per-connection `LE_Set_Data_Length`/`LE_Set_PHY` (with follow-up meta events), and — via LL control-PDU exchange over the link — **encryption start**, **remote-features**, and **CIS establishment**. Also **classic (BR/EDR)** connection/name/features and SCO/eSCO request/accept/reject/disconnect with synchronous-data routing. Other read commands are acknowledged SUCCESS **without a synthesized payload** (a documented stub, not a full read). Deferred: LTK verification, ISO data-path streaming, remote-version exchange, extended/periodic advertising, and classic auth/encryption/role-switch sub-flows. |
 | `link.py` (0.15k) | `bumble-controller` | 🟡 | In-process **synchronous** `LocalLink` with LL-control, simplified LMP, ACL, and SCO/eSCO routing. Deferred: serialized over-the-air PDUs and async scheduling. |
 | `ll.py` (0.2k) | `bumble-controller` | 🟡 | Advertising/connection PDUs modeled as in-process structs, not serialized LL PDUs. Control PDUs (`EncReq`, `FeatureReq`/`PeripheralFeatureReq`/`FeatureRsp`, `TerminateInd`) are exchanged between controllers via `LocalLink::pump_ll` to drive the encryption-start, remote-features, and CIS-establishment (`CisReq`/`CisRsp`/`CisInd`) flows. |
-| `host.py` (2.1k) | `bumble-host` | 🟡 | `Device` glue (ATT↔L2CAP↔ACL sequencing + pairing transport), controller-buffer-sized outbound ACL fragmentation, per-connection inbound reassembly, a global/per-handle `DataPacketQueue` driven by Number Of Completed Packets, LE encryption state and STK/LTK enablement, resolving-list programming from stored IRKs with identity reporting, plus Classic ACL and synchronous APIs. The host pump now advances LL control exchanges as well as HCI/ACL traffic. Deferred: direct LE signaling-manager integration and the broader host feature set. |
-| `device.py` (7.0k) | `bumble-host` | 🟡 | Minimal `Device`/`pump`; the high-level device API (advertising/scanning/connection orchestration, GATT client, listeners) is not ported. |
+| `host.py` (2.1k) | `bumble-host` | 🟡 | `Device` glue (ATT↔L2CAP↔ACL sequencing + pairing transport), controller-buffer-sized outbound ACL fragmentation, per-connection inbound reassembly, a global/per-handle `DataPacketQueue` driven by Number Of Completed Packets, LE/Classic encryption, resolving-list programming, Classic and LE L2CAP, plus synchronous audio APIs. The host pump advances LL control and HCI/ACL traffic. Deferred: direct LE signaling-manager integration and the broader host feature set. |
+| `device.py` (7.0k) | `bumble-host` | 🟡 | High-level legacy LE advertising, active/passive scanning with typed report collection, identity/RPA-aware LE connection setup, peer/role state, and disconnect now run through `Device` without raw HCI. GATT/ATT, SMP, Classic, and synchronous operations are also exposed by the same type. Deferred: extended/periodic advertising, multi-connection ownership, and listener/async conveniences. |
 | `lmp.py` (0.4k) | `bumble-controller::lmp` | 🟡 | Classic Link Manager Protocol PDUs modeled as in-process structs (`HostConnectionReq`/`Accepted`, `NameReq`/`NameRes`, `FeaturesReq`/`FeaturesRes`, synchronous request/accept/reject, `Detach`) driving the classic connection/name/features/SCO-eSCO flows via `LocalLink::pump_classic`. The role-switch / authentication / encryption LMP sub-dance is simplified away. |
 
 ### L2CAP
@@ -163,7 +164,7 @@ size, to convey remaining surface.
 | Upstream (LOC) | Rust crate | Status | Notes |
 |---|---|---|---|
 | `crypto/` | `bumble-crypto` | ✅ | All SMP **symmetric** security functions — `e`, AES-CMAC, `c1`, `s1`, `f4`/`f5`/`f6`, `g2`, `h6`/`h7`, `ah` — spec/RFC-4493 vector-verified, plus **P-256 `EccKey`** (slice 19: keygen, `from_private_key_bytes`, public-key coordinates, ECDH) oracle-pinned to upstream. Deferred: none of the crypto primitives. |
-| `smp.py` (2.0k), `pairing.py` (0.3k) | `bumble-smp` | 🟡 | PDU codec (incl. all **LE Secure Connections** PDUs), live Legacy and SC sessions covering every association model through host/controller encryption, responder-first encrypted key distribution, SC LTK handling, peer/local signing keys with persistent counters, negotiated h6/h7 CTKD, memory/JSON bond persistence, Security Request evaluation/reconnect, host-side RPA resolution, and a concurrent handle-keyed manager for LE plus encrypted SMP-over-BR/EDR CTKD. Also includes the complete method matrix, auth/key-distribution policy, and SC + Legacy OOB contexts/AD interchange. Deferred: live keypress-notification UI progress. |
+| `smp.py` (2.0k), `pairing.py` (0.3k) | `bumble-smp` | ✅ | Complete PDU codec and synchronous protocol behavior: Legacy and SC sessions cover every association model through encryption; responder-first phase 3 retains LTK/IRK/CSRK/Link Key material and counters; h6/h7 CTKD runs over LE and encrypted BR/EDR; bonds drive Security Request reconnect, privacy resolution, and signed ATT; and the handle-keyed manager owns concurrent session lifecycle. Keypress Notification is codec-complete, matching upstream Bumble whose live session leaves `keypress = False`. |
 
 ### Transports & drivers
 | Upstream | Rust crate | Status | Notes |
@@ -1693,9 +1694,27 @@ Cross-transport derivation now runs on a real Classic ACL:
   runs CTKD over CID `0x0007`, and verifies identical outcomes and retained Link
   Key material.
 
-The remaining SMP behavior gap is live Keypress Notification progress during
-Passkey entry; the pairing, distribution, persistence, reconnect, privacy,
-signing, manager, and cross-transport paths are present.
+Upstream Bumble declares Keypress Notification but its live session leaves the
+feature disabled, so the codec plus the implemented pairing/distribution paths
+now represent the complete synchronous SMP behavior surface.
+
+## Slice 74 — what's here
+
+The common LE lifecycle no longer requires tests or applications to construct
+HCI commands directly:
+
+- `Device::set_random_address`, `start_advertising`, and `stop_advertising`
+  configure connectable legacy advertising with a bounded 31-byte payload.
+- Active/passive scan start/stop methods collect typed `AdvertisingReport`
+  values, preserving address/type, data, event type, and RSSI.
+- `connect_le` applies the standard scan/connection parameters, chooses the
+  peer address type, initiates through the controller/link, and updates peer
+  address plus central/peripheral role from Connection Complete.
+- The acceptance test advertises, scans, validates payload/report identity,
+  connects, checks both roles, and disconnects using only `Device` methods.
+
+The larger remaining device work is extended/periodic advertising,
+multi-connection ownership, and higher-level profile/listener conveniences.
 
 ## Acceptance
 

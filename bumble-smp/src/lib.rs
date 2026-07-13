@@ -32,8 +32,9 @@
 //! [`security_request_action`] adds CT2-aware stored-bond evaluation for
 //! Security Request reconnects. [`AddressResolver`] and the RPA helpers add
 //! host-side privacy resolution. [`PairingManager`] owns concurrent LE sessions
-//! by connection handle, including encrypted SMP-over-BR/EDR CTKD. Deferred:
-//! live Keypress Notification progress during Passkey entry.
+//! by connection handle, including encrypted SMP-over-BR/EDR CTKD. Keypress
+//! Notification is codec-complete; upstream Bumble's live session likewise
+//! leaves that optional progress feature disabled.
 
 use bumble::Address;
 use core::fmt;

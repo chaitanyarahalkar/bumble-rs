@@ -31,8 +31,8 @@ use bumble_att::AttPdu;
 use bumble_controller::LocalLink;
 use bumble_gatt::AttRequestHandler;
 use bumble_hci::{
-    fragment_l2cap_pdu, AclDataPacket, AclDataPacketAssembler, Command, Event, HciPacket,
-    LeMetaEvent, SynchronousDataPacket,
+    fragment_l2cap_pdu, AclDataPacket, AclDataPacketAssembler, AdvertisingReport, Command, Event,
+    HciPacket, LeMetaEvent, SynchronousDataPacket,
 };
 use bumble_l2cap::L2capPdu;
 
@@ -68,6 +68,7 @@ pub struct Device {
     /// Received payloads on non-ATT L2CAP channels, as `(cid, payload)`.
     l2cap_inbox: Vec<(u16, Vec<u8>)>,
     security_requests: Vec<u8>,
+    advertising_reports: Vec<AdvertisingReport>,
     acl_data_packet_length: usize,
     acl_assemblers: BTreeMap<u16, AclDataPacketAssembler>,
     acl_packet_queue: DataPacketQueue<AclDataPacket>,
@@ -90,6 +91,7 @@ impl Device {
             inbox: Vec::new(),
             l2cap_inbox: Vec::new(),
             security_requests: Vec::new(),
+            advertising_reports: Vec::new(),
             acl_data_packet_length: 27,
             acl_assemblers: BTreeMap::new(),
             acl_packet_queue: DataPacketQueue::new(64).expect("nonzero ACL queue capacity"),
@@ -113,6 +115,7 @@ impl Device {
             inbox: Vec::new(),
             l2cap_inbox: Vec::new(),
             security_requests: Vec::new(),
+            advertising_reports: Vec::new(),
             acl_data_packet_length: 27,
             acl_assemblers: BTreeMap::new(),
             acl_packet_queue: DataPacketQueue::new(64).expect("nonzero ACL queue capacity"),
@@ -140,6 +143,111 @@ impl Device {
 
     pub fn peer_address(&self) -> Option<&Address> {
         self.peer_address.as_ref()
+    }
+
+    pub fn set_random_address(&mut self, link: &mut LocalLink, address: Address) {
+        self.send_hci_command(
+            link,
+            Command::LeSetRandomAddress {
+                random_address: address,
+            },
+        );
+    }
+
+    pub fn start_advertising(&mut self, link: &mut LocalLink, data: &[u8]) -> bool {
+        if data.len() > 31 {
+            return false;
+        }
+        self.send_hci_command(
+            link,
+            Command::LeSetAdvertisingParameters {
+                advertising_interval_min: 0x0800,
+                advertising_interval_max: 0x0800,
+                advertising_type: 0,
+                own_address_type: 1,
+                peer_address_type: 0,
+                peer_address: Address::from_bytes([0; 6], bumble::AddressType::PUBLIC_DEVICE),
+                advertising_channel_map: 7,
+                advertising_filter_policy: 0,
+            },
+        );
+        self.send_hci_command(
+            link,
+            Command::LeSetAdvertisingData {
+                advertising_data: data.to_vec(),
+            },
+        );
+        self.send_hci_command(
+            link,
+            Command::LeSetAdvertisingEnable {
+                advertising_enable: 1,
+            },
+        );
+        true
+    }
+
+    pub fn stop_advertising(&mut self, link: &mut LocalLink) {
+        self.send_hci_command(
+            link,
+            Command::LeSetAdvertisingEnable {
+                advertising_enable: 0,
+            },
+        );
+    }
+
+    pub fn start_scanning(&mut self, link: &mut LocalLink, active: bool, filter_duplicates: bool) {
+        self.send_hci_command(
+            link,
+            Command::LeSetScanParameters {
+                le_scan_type: u8::from(active),
+                le_scan_interval: 0x0010,
+                le_scan_window: 0x0010,
+                own_address_type: 1,
+                scanning_filter_policy: 0,
+            },
+        );
+        self.send_hci_command(
+            link,
+            Command::LeSetScanEnable {
+                le_scan_enable: 1,
+                filter_duplicates: u8::from(filter_duplicates),
+            },
+        );
+    }
+
+    pub fn stop_scanning(&mut self, link: &mut LocalLink) {
+        self.send_hci_command(
+            link,
+            Command::LeSetScanEnable {
+                le_scan_enable: 0,
+                filter_duplicates: 0,
+            },
+        );
+    }
+
+    pub fn take_advertising_reports(&mut self) -> Vec<AdvertisingReport> {
+        std::mem::take(&mut self.advertising_reports)
+    }
+
+    pub fn connect_le(&mut self, link: &mut LocalLink, peer_address: Address) {
+        self.send_hci_command(
+            link,
+            Command::LeCreateConnection {
+                le_scan_interval: 0x0010,
+                le_scan_window: 0x0010,
+                initiator_filter_policy: 0,
+                peer_address_type: u8::from(!peer_address.is_public()),
+                peer_address,
+                own_address_type: 1,
+                connection_interval_min: 24,
+                connection_interval_max: 40,
+                max_latency: 0,
+                supervision_timeout: 42,
+                min_ce_length: 0,
+                max_ce_length: 0,
+            },
+        );
+        link.establish_connections();
     }
 
     pub fn is_encrypted(&self) -> bool {
@@ -422,6 +530,9 @@ impl Device {
                     self.connection_handle = Some(connection_handle);
                     self.connection_role = Some(role);
                     self.peer_address = Some(peer_address);
+                }
+                HciPacket::Event(Event::LeMeta(LeMetaEvent::AdvertisingReport { reports })) => {
+                    self.advertising_reports.extend(reports);
                 }
                 HciPacket::Event(Event::DisconnectionComplete {
                     connection_handle, ..
