@@ -1,6 +1,7 @@
 use crate::{
-    Error, FileTransport, PacketSink, PacketSource, Result, SerialTransport, SystemUsbTransport,
-    TcpServer, TcpTransport, UdpTransport, VhciTransport, WebSocketServer, WebSocketTransport,
+    Error, FileTransport, PacketSink, PacketSource, Result, SerialTransport,
+    SystemHciSocketTransport, SystemUsbTransport, TcpServer, TcpTransport, UdpTransport,
+    VhciTransport, WebSocketServer, WebSocketTransport,
 };
 use bumble_hci::HciPacket;
 use std::collections::BTreeMap;
@@ -85,6 +86,7 @@ impl TransportSpec {
 /// Any packet endpoint supported by [`open_transport`].
 pub enum ExternalTransport {
     File(FileTransport),
+    HciSocket(SystemHciSocketTransport),
     Serial(SerialTransport),
     Tcp(TcpTransport),
     Udp(UdpTransport),
@@ -101,6 +103,7 @@ impl PacketSource for ExternalTransport {
     fn read_packet(&mut self) -> Result<Option<HciPacket>> {
         match self {
             Self::File(transport) => transport.read_packet(),
+            Self::HciSocket(transport) => transport.read_packet(),
             Self::Serial(transport) => transport.read_packet(),
             Self::Tcp(transport) => transport.read_packet(),
             Self::Udp(transport) => transport.read_packet(),
@@ -119,6 +122,7 @@ impl PacketSink for ExternalTransport {
     fn write_packet(&mut self, packet: &HciPacket) -> Result<()> {
         match self {
             Self::File(transport) => transport.write_packet(packet),
+            Self::HciSocket(transport) => transport.write_packet(packet),
             Self::Serial(transport) => transport.write_packet(packet),
             Self::Tcp(transport) => transport.write_packet(packet),
             Self::Udp(transport) => transport.write_packet(packet),
@@ -135,6 +139,7 @@ impl PacketSink for ExternalTransport {
     fn flush(&mut self) -> Result<()> {
         match self {
             Self::File(transport) => transport.flush(),
+            Self::HciSocket(transport) => transport.flush(),
             Self::Serial(transport) => transport.flush(),
             Self::Tcp(transport) => transport.flush(),
             Self::Udp(transport) => transport.flush(),
@@ -179,6 +184,9 @@ pub fn open_transport(name: &str) -> Result<OpenedTransport> {
     let spec = TransportSpec::parse(name)?;
     let transport = match spec.scheme.as_str() {
         "file" => ExternalTransport::File(FileTransport::open(spec.required_parameters()?)?),
+        "hci-socket" => ExternalTransport::HciSocket(SystemHciSocketTransport::open(
+            spec.parameters.as_deref(),
+        )?),
         "serial" => ExternalTransport::Serial(SerialTransport::open(spec.required_parameters()?)?),
         "tcp-client" => ExternalTransport::Tcp(TcpTransport::connect(spec.required_parameters()?)?),
         "tcp-server" => {

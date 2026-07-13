@@ -8,6 +8,7 @@
 mod common;
 mod dispatch;
 mod file;
+mod hci_socket;
 #[cfg(unix)]
 mod pty;
 mod serial;
@@ -25,6 +26,10 @@ pub use common::{
 };
 pub use dispatch::{open_transport, ExternalTransport, OpenedTransport, TransportSpec};
 pub use file::FileTransport;
+pub use hci_socket::{
+    HciSocketAddress, HciSocketIo, HciSocketSpec, HciSocketTransport, RawHciSocket,
+    SystemHciSocketTransport, HCI_CHANNEL_USER,
+};
 #[cfg(unix)]
 pub use pty::PtyTransport;
 pub use serial::{SerialConfig, SerialTransport, DEFAULT_POST_OPEN_DELAY, DEFAULT_SERIAL_SPEED};

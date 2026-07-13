@@ -94,7 +94,8 @@ crate whose behavior is verified against the upstream Python.
 | 77. WebSocket client/server HCI transport | `bumble-transport` | ✅ binary/coalesced loopback green |
 | 78. Linux VHCI bootstrap and H4 transport | `bumble-transport` | ✅ config/index handshake green |
 | 79. USB HCI discovery and command/event/ACL transport | `bumble-transport` | ✅ libusb backend + transfer mock green |
-| 80+. Remaining modules… | — | planned |
+| 80. Linux raw HCI user-channel socket transport | `bumble-transport` | ✅ Linux target check + packet-I/O mock green |
+| 81+. Remaining modules… | — | planned |
 
 The LE lifecycle is now complete end-to-end through library APIs: **connect →
 discover → read/write → notify → disconnect** between two virtual devices — and
@@ -174,7 +175,7 @@ size, to convey remaining surface.
 ### Transports & drivers
 | Upstream | Rust crate | Status | Notes |
 |---|---|---|---|
-| `transport/*` — USB, UART/serial, TCP, WebSocket, UDP, PTY, android-netsim, vhci, … | `bumble-transport` | 🟡 | Incremental H4 framing accepts fragmented/coalesced streams and vendor packet layouts. Bumble transport-name/metadata dispatch opens file, serial/UART with RTS/CTS, raw PTY, TCP, UDP, Unix, WebSocket, Linux VHCI, and libusb Bluetooth-controller endpoints. USB covers discovery, class/forced interface selection, commands, events, ACL, and outgoing ISO-over-bulk compatibility. Deferred: USB SCO/isochronous input, DSR/DTR flow control, raw HCI sockets, netsim, and other platform-specific endpoints. |
+| `transport/*` — USB, UART/serial, TCP, WebSocket, UDP, PTY, android-netsim, vhci, … | `bumble-transport` | 🟡 | Incremental H4 framing accepts fragmented/coalesced streams and vendor packet layouts. Bumble transport-name/metadata dispatch opens file, serial/UART with RTS/CTS, raw PTY, TCP, UDP, Unix, WebSocket, Linux VHCI/raw HCI user-channel sockets, and libusb Bluetooth-controller endpoints. USB covers discovery, class/forced interface selection, commands, events, ACL, and outgoing ISO-over-bulk compatibility. Deferred: USB SCO/isochronous input, DSR/DTR flow control, netsim, and other platform-specific endpoints. |
 | `drivers/*` — Intel, Realtek | — | ⬜ | Vendor controller firmware/init. |
 
 ### Classic Bluetooth (BR/EDR)
@@ -1825,6 +1826,31 @@ Bluetooth USB controllers now have a live libusb-backed transport:
 
 Linux raw HCI sockets are the remaining direct local-controller transport gap.
 
+## Slice 80 — what's here
+
+Linux hosts can now attach directly to a kernel Bluetooth adapter through its
+exclusive HCI user channel:
+
+- `HciSocketSpec` accepts Bumble's empty/default selector and decimal 0-based
+  adapter indices with bounded `u16` validation. `HciSocketAddress` exposes the
+  exact six-byte native `sockaddr_hci` layout used for adapter/channel binding.
+- `RawHciSocket` owns an `AF_BLUETOOTH`/`SOCK_RAW`/`BTPROTO_HCI` descriptor,
+  binds `HCI_CHANNEL_USER`, closes it through `OwnedFd`, and uses checked
+  blocking `recv`/`send` calls. Non-Linux opens fail with a precise unsupported
+  error rather than exposing a placeholder endpoint.
+- `HciSocketTransport` retains the shared H4 framer, so complete kernel packets,
+  fragments, and coalesced reads all produce the same typed packets. A partial
+  datagram send is rejected instead of silently dropping the packet tail.
+- `hci-socket`, `hci-socket:`, and `hci-socket:<index>` participate in standard
+  transport dispatch. Five mock-backed tests cover selectors, ABI bytes,
+  fragmentation/coalescing, queued packets, complete/partial sends, truncation,
+  and I/O failures; the Linux-only syscall branch is additionally compiled for
+  `x86_64-unknown-linux-musl`.
+
+The remaining transport breadth is Android netsim/emulator integration and
+narrower platform-specific endpoints; USB SCO input still needs an
+isochronous-capable backend.
+
 ## Acceptance
 
 The port's contract is the upstream Python test suite, ported 1:1:
@@ -1970,8 +1996,9 @@ bumble-rs/
 ├── bumble-codecs/             # slice-48 common media bitstreams/codecs
 │   ├── src/lib.rs             # bit I/O + MPEG-4 LATM AAC and ADTS conversion
 │   └── tests/codecs.rs        # upstream fixture + length-boundary round trips
-├── bumble-transport/          # slices 75-79 external HCI transports
-│   ├── src/{lib,common,dispatch,file,serial,pty,tcp,udp,usb,unix,websocket,vhci}.rs
+├── bumble-transport/          # slices 75-80 external HCI transports
+│   ├── src/{lib,common,dispatch,file,hci_socket,serial,pty,tcp,udp,usb,unix,websocket,vhci}.rs
+│   ├── tests/hci_socket.rs    # selectors, Linux ABI, framing, and I/O failures
 │   ├── tests/transports.rs    # fragmentation, EOF, and socket loopbacks
 │   ├── tests/specs.rs         # dispatch, serial config, and raw PTY coverage
 │   ├── tests/usb.rs           # selectors, endpoints, and transfer routing
