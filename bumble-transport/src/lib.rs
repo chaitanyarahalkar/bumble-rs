@@ -5,6 +5,7 @@
 //! streams, while [`H4Transport`] adapts any blocking `Read + Write` object.
 //! File, TCP, UDP, and Unix-domain socket endpoints build on that common layer.
 
+mod android_emulator;
 mod common;
 mod dispatch;
 mod file;
@@ -20,6 +21,11 @@ mod usb;
 mod vhci;
 mod websocket;
 
+pub use android_emulator::{
+    android_emulator_proto, AndroidEmulatorIo, AndroidEmulatorMode, AndroidEmulatorPacket,
+    AndroidEmulatorSpec, AndroidEmulatorTransport, GrpcAndroidEmulatorIo,
+    SystemAndroidEmulatorTransport, DEFAULT_ANDROID_EMULATOR_ADDRESS,
+};
 pub use common::{
     Error, H4Transport, PacketFramer, PacketLayout, PacketSink, PacketSource, Result,
     MAX_HCI_PACKET_SIZE,

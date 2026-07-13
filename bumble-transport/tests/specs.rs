@@ -44,9 +44,33 @@ fn transport_spec_parses_upstream_metadata_forms() {
         }
     );
     assert!(matches!(
-        TransportSpec::parse("tcp-client:[broken]localhost:1"),
+        TransportSpec::parse("tcp-client:[broken=]localhost:1"),
         Err(Error::InvalidSpec(_))
     ));
+
+    for (name, parameters) in [
+        (
+            "android-netsim:[::1]:8554,mode=host[a=b,c=d]",
+            "[::1]:8554,mode=host",
+        ),
+        (
+            "android-netsim:localhost:8554,mode=host[a=b,c=d]",
+            "localhost:8554,mode=host",
+        ),
+        (
+            "android-netsim:[a=b,c=d][::1]:8554,mode=host",
+            "[::1]:8554,mode=host",
+        ),
+        (
+            "android-netsim:[a=b,c=d]localhost:8554,mode=host",
+            "localhost:8554,mode=host",
+        ),
+    ] {
+        let parsed = TransportSpec::parse(name).unwrap();
+        assert_eq!(parsed.parameters.as_deref(), Some(parameters));
+        assert_eq!(parsed.metadata["a"], "b");
+        assert_eq!(parsed.metadata["c"], "d");
+    }
 }
 
 #[test]

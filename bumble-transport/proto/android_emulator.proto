@@ -1,0 +1,25 @@
+syntax = "proto3";
+
+package android.emulation.bluetooth;
+
+message HCIPacket {
+  enum PacketType {
+    PACKET_TYPE_UNSPECIFIED = 0;
+    PACKET_TYPE_HCI_COMMAND = 1;
+    PACKET_TYPE_ACL = 2;
+    PACKET_TYPE_SCO = 3;
+    PACKET_TYPE_EVENT = 4;
+    PACKET_TYPE_ISO = 5;
+  }
+
+  PacketType type = 1;
+  bytes packet = 2;
+}
+
+service EmulatedBluetoothService {
+  rpc registerHCIDevice(stream HCIPacket) returns (stream HCIPacket);
+}
+
+service VhciForwardingService {
+  rpc attachVhci(stream HCIPacket) returns (stream HCIPacket);
+}

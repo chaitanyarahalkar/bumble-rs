@@ -14,6 +14,8 @@ pub enum Error {
     Io(io::Error),
     Hci(bumble_hci::Error),
     Serial(serialport::Error),
+    GrpcStatus(Box<tonic::Status>),
+    GrpcTransport(Box<tonic::transport::Error>),
     Usb(rusb::Error),
     WebSocket(tungstenite::Error),
     InvalidPacketType(u8),
@@ -30,6 +32,8 @@ impl fmt::Display for Error {
             Self::Io(error) => write!(formatter, "transport I/O error: {error}"),
             Self::Hci(error) => write!(formatter, "{error}"),
             Self::Serial(error) => write!(formatter, "serial transport error: {error}"),
+            Self::GrpcStatus(error) => write!(formatter, "gRPC stream error: {error}"),
+            Self::GrpcTransport(error) => write!(formatter, "gRPC transport error: {error}"),
             Self::Usb(error) => write!(formatter, "USB transport error: {error}"),
             Self::WebSocket(error) => write!(formatter, "WebSocket transport error: {error}"),
             Self::InvalidPacketType(packet_type) => {
@@ -55,6 +59,8 @@ impl std::error::Error for Error {
             Self::Io(error) => Some(error),
             Self::Hci(error) => Some(error),
             Self::Serial(error) => Some(error),
+            Self::GrpcStatus(error) => Some(error.as_ref()),
+            Self::GrpcTransport(error) => Some(error.as_ref()),
             Self::Usb(error) => Some(error),
             Self::WebSocket(error) => Some(error),
             _ => None,
@@ -77,6 +83,18 @@ impl From<bumble_hci::Error> for Error {
 impl From<serialport::Error> for Error {
     fn from(error: serialport::Error) -> Self {
         Self::Serial(error)
+    }
+}
+
+impl From<tonic::Status> for Error {
+    fn from(error: tonic::Status) -> Self {
+        Self::GrpcStatus(Box::new(error))
+    }
+}
+
+impl From<tonic::transport::Error> for Error {
+    fn from(error: tonic::transport::Error) -> Self {
+        Self::GrpcTransport(Box::new(error))
     }
 }
 

@@ -1,7 +1,7 @@
 use crate::{
     Error, FileTransport, PacketSink, PacketSource, Result, SerialTransport,
-    SystemHciSocketTransport, SystemUsbTransport, TcpServer, TcpTransport, UdpTransport,
-    VhciTransport, WebSocketServer, WebSocketTransport,
+    SystemAndroidEmulatorTransport, SystemHciSocketTransport, SystemUsbTransport, TcpServer,
+    TcpTransport, UdpTransport, VhciTransport, WebSocketServer, WebSocketTransport,
 };
 use bumble_hci::HciPacket;
 use std::collections::BTreeMap;
@@ -32,16 +32,28 @@ impl TransportSpec {
         let mut parameters = parameters.map(str::to_owned);
         let mut metadata = BTreeMap::new();
         if let Some(value) = parameters.as_mut() {
-            if let Some(open) = value.find('[') {
-                let close = value[open + 1..]
-                    .find(']')
-                    .map(|offset| open + 1 + offset)
-                    .ok_or_else(|| Error::InvalidSpec("unterminated metadata section".into()))?;
+            let mut search_start = 0;
+            let mut metadata_section = None;
+            while let Some(offset) = value[search_start..].find('[') {
+                let open = search_start + offset;
+                let Some(close_offset) = value[open + 1..].find(']') else {
+                    if value[open + 1..].contains('=') {
+                        return Err(Error::InvalidSpec("unterminated metadata section".into()));
+                    }
+                    break;
+                };
+                let close = open + 1 + close_offset;
+                let contents = &value[open + 1..close];
+                if contents.contains('=') {
+                    metadata_section = Some((open, close));
+                    break;
+                }
+                search_start = close + 1;
+            }
+
+            if let Some((open, close)) = metadata_section {
                 let contents = &value[open + 1..close];
                 let contents = contents.strip_suffix(',').unwrap_or(contents);
-                if contents.is_empty() {
-                    return Err(Error::InvalidSpec("empty metadata section".into()));
-                }
                 for entry in contents.split(',') {
                     let (key, metadata_value) = entry.split_once('=').ok_or_else(|| {
                         Error::InvalidSpec(format!("invalid metadata entry {entry}"))
@@ -85,6 +97,7 @@ impl TransportSpec {
 
 /// Any packet endpoint supported by [`open_transport`].
 pub enum ExternalTransport {
+    AndroidEmulator(SystemAndroidEmulatorTransport),
     File(FileTransport),
     HciSocket(SystemHciSocketTransport),
     Serial(SerialTransport),
@@ -102,6 +115,7 @@ pub enum ExternalTransport {
 impl PacketSource for ExternalTransport {
     fn read_packet(&mut self) -> Result<Option<HciPacket>> {
         match self {
+            Self::AndroidEmulator(transport) => transport.read_packet(),
             Self::File(transport) => transport.read_packet(),
             Self::HciSocket(transport) => transport.read_packet(),
             Self::Serial(transport) => transport.read_packet(),
@@ -121,6 +135,7 @@ impl PacketSource for ExternalTransport {
 impl PacketSink for ExternalTransport {
     fn write_packet(&mut self, packet: &HciPacket) -> Result<()> {
         match self {
+            Self::AndroidEmulator(transport) => transport.write_packet(packet),
             Self::File(transport) => transport.write_packet(packet),
             Self::HciSocket(transport) => transport.write_packet(packet),
             Self::Serial(transport) => transport.write_packet(packet),
@@ -138,6 +153,7 @@ impl PacketSink for ExternalTransport {
 
     fn flush(&mut self) -> Result<()> {
         match self {
+            Self::AndroidEmulator(transport) => transport.flush(),
             Self::File(transport) => transport.flush(),
             Self::HciSocket(transport) => transport.flush(),
             Self::Serial(transport) => transport.flush(),
@@ -183,6 +199,9 @@ impl PacketSink for OpenedTransport {
 pub fn open_transport(name: &str) -> Result<OpenedTransport> {
     let spec = TransportSpec::parse(name)?;
     let transport = match spec.scheme.as_str() {
+        "android-emulator" => ExternalTransport::AndroidEmulator(
+            SystemAndroidEmulatorTransport::open(spec.parameters.as_deref())?,
+        ),
         "file" => ExternalTransport::File(FileTransport::open(spec.required_parameters()?)?),
         "hci-socket" => ExternalTransport::HciSocket(SystemHciSocketTransport::open(
             spec.parameters.as_deref(),
