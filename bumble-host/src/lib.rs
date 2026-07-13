@@ -23,8 +23,8 @@
 //! with controller-buffer-sized ACL fragmentation/reassembly. High-level
 //! legacy and extended advertising, scanning, and connection setup are also
 //! available, along with periodic advertising/synchronization, CIG/CIS control,
-//! PAST transfer, and ISO SDU fragmentation/reassembly. Deferred: direct
-//! integration of the LE signaling manager.
+//! PAST transfer, ISO SDU fragmentation/reassembly, and handle-scoped LE
+//! credit-based channel managers driven over the same ACL path.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -37,7 +37,11 @@ use bumble_hci::{
     Command, Event, ExtendedAdvertisingReport, HciPacket, IsoDataPacket, LeMetaEvent,
     SynchronousDataPacket,
 };
-use bumble_l2cap::L2capPdu;
+use bumble_l2cap::{
+    Error as L2capError, L2capPdu, LeCreditBasedChannel, LeCreditBasedChannelSpec,
+    LeCreditChannelManager, L2CAP_LE_PSM_DYNAMIC_RANGE_END, L2CAP_LE_PSM_DYNAMIC_RANGE_START,
+    L2CAP_LE_SIGNALING_CID,
+};
 
 mod data_queue;
 pub use data_queue::{DataPacketQueue, DataPacketQueueError};
@@ -250,6 +254,9 @@ pub struct Device {
     connection_role: Option<u8>,
     peer_address: Option<Address>,
     le_connections: BTreeMap<u16, LeConnectionInfo>,
+    le_credit_managers: BTreeMap<u16, LeCreditChannelManager>,
+    le_credit_server_specs: BTreeMap<u16, LeCreditBasedChannelSpec>,
+    le_credit_errors: Vec<(u16, String)>,
     classic_connection_handle: Option<u16>,
     classic_connection_role: Option<u8>,
     classic_connections: BTreeMap<u16, ClassicConnectionInfo>,
@@ -291,6 +298,9 @@ impl Device {
             connection_role: None,
             peer_address: None,
             le_connections: BTreeMap::new(),
+            le_credit_managers: BTreeMap::new(),
+            le_credit_server_specs: BTreeMap::new(),
+            le_credit_errors: Vec::new(),
             classic_connection_handle: None,
             classic_connection_role: None,
             classic_connections: BTreeMap::new(),
@@ -332,6 +342,9 @@ impl Device {
             connection_role: None,
             peer_address: None,
             le_connections: BTreeMap::new(),
+            le_credit_managers: BTreeMap::new(),
+            le_credit_server_specs: BTreeMap::new(),
+            le_credit_errors: Vec::new(),
             classic_connection_handle: None,
             classic_connection_role: None,
             classic_connections: BTreeMap::new(),
@@ -1453,6 +1466,189 @@ impl Device {
         self.flush_acl_queue(link)
     }
 
+    pub fn le_credit_channel(
+        &self,
+        connection_handle: u16,
+        source_cid: u16,
+    ) -> Option<&LeCreditBasedChannel> {
+        self.le_credit_managers
+            .get(&connection_handle)?
+            .channel(source_cid)
+    }
+
+    pub fn register_le_credit_server(
+        &mut self,
+        mut spec: LeCreditBasedChannelSpec,
+    ) -> bumble_l2cap::Result<u16> {
+        spec = spec.validate()?;
+        let psm = match spec.psm {
+            Some(0) => return Err(L2capError::InvalidPacket("LE PSM cannot be zero".into())),
+            Some(psm) => psm,
+            None => (L2CAP_LE_PSM_DYNAMIC_RANGE_START..=L2CAP_LE_PSM_DYNAMIC_RANGE_END)
+                .find(|candidate| !self.le_credit_server_specs.contains_key(candidate))
+                .ok_or_else(|| L2capError::InvalidPacket("no free LE PSM".into()))?,
+        };
+        if self.le_credit_server_specs.contains_key(&psm) {
+            return Err(L2capError::InvalidPacket(format!(
+                "LE PSM {psm:#06x} is already in use"
+            )));
+        }
+        spec.psm = Some(psm);
+        for manager in self.le_credit_managers.values_mut() {
+            manager.register_server(spec)?;
+        }
+        self.le_credit_server_specs.insert(psm, spec);
+        Ok(psm)
+    }
+
+    pub fn unregister_le_credit_server(&mut self, psm: u16) -> bool {
+        let removed = self.le_credit_server_specs.remove(&psm).is_some();
+        for manager in self.le_credit_managers.values_mut() {
+            manager.unregister_server(psm);
+        }
+        removed
+    }
+
+    pub fn connect_le_credit_channel(
+        &mut self,
+        link: &mut LocalLink,
+        connection_handle: u16,
+        psm: u16,
+        spec: LeCreditBasedChannelSpec,
+    ) -> bumble_l2cap::Result<u16> {
+        let source_cid = self
+            .le_credit_manager_mut(connection_handle)?
+            .connect(psm, spec)?;
+        self.flush_le_credit_manager(link, connection_handle)?;
+        Ok(source_cid)
+    }
+
+    pub fn connect_enhanced_le_credit_channels(
+        &mut self,
+        link: &mut LocalLink,
+        connection_handle: u16,
+        psm: u16,
+        spec: LeCreditBasedChannelSpec,
+        count: usize,
+    ) -> bumble_l2cap::Result<Vec<u16>> {
+        let source_cids = self
+            .le_credit_manager_mut(connection_handle)?
+            .connect_enhanced(psm, spec, count)?;
+        self.flush_le_credit_manager(link, connection_handle)?;
+        Ok(source_cids)
+    }
+
+    pub fn reconfigure_le_credit_channels(
+        &mut self,
+        link: &mut LocalLink,
+        connection_handle: u16,
+        source_cids: &[u16],
+        mtu: u16,
+        mps: u16,
+    ) -> bumble_l2cap::Result<u8> {
+        let identifier =
+            self.le_credit_manager_mut(connection_handle)?
+                .reconfigure(source_cids, mtu, mps)?;
+        self.flush_le_credit_manager(link, connection_handle)?;
+        Ok(identifier)
+    }
+
+    pub fn le_credit_connection_result(
+        &self,
+        connection_handle: u16,
+        source_cid: u16,
+    ) -> Option<u16> {
+        self.le_credit_managers
+            .get(&connection_handle)?
+            .connection_result(source_cid)
+    }
+
+    pub fn le_credit_reconfiguration_result(
+        &self,
+        connection_handle: u16,
+        identifier: u8,
+    ) -> Option<u16> {
+        self.le_credit_managers
+            .get(&connection_handle)?
+            .reconfiguration_result(identifier)
+    }
+
+    pub fn take_accepted_le_credit_channels(&mut self, connection_handle: u16) -> Vec<u16> {
+        let Some(manager) = self.le_credit_managers.get_mut(&connection_handle) else {
+            return Vec::new();
+        };
+        std::iter::from_fn(|| manager.poll_accepted_channel()).collect()
+    }
+
+    pub fn send_le_credit_sdu(
+        &mut self,
+        link: &mut LocalLink,
+        connection_handle: u16,
+        source_cid: u16,
+        data: &[u8],
+    ) -> bumble_l2cap::Result<()> {
+        self.le_credit_manager_mut(connection_handle)?
+            .send(source_cid, data)?;
+        self.flush_le_credit_manager(link, connection_handle)
+    }
+
+    pub fn take_le_credit_sdus(&mut self, connection_handle: u16, source_cid: u16) -> Vec<Vec<u8>> {
+        let Some(channel) = self
+            .le_credit_managers
+            .get_mut(&connection_handle)
+            .and_then(|manager| manager.channel_mut(source_cid))
+        else {
+            return Vec::new();
+        };
+        std::iter::from_fn(|| channel.pop_received()).collect()
+    }
+
+    pub fn disconnect_le_credit_channel(
+        &mut self,
+        link: &mut LocalLink,
+        connection_handle: u16,
+        source_cid: u16,
+    ) -> bumble_l2cap::Result<()> {
+        self.le_credit_manager_mut(connection_handle)?
+            .disconnect(source_cid)?;
+        self.flush_le_credit_manager(link, connection_handle)
+    }
+
+    pub fn take_le_credit_errors(&mut self) -> Vec<(u16, String)> {
+        std::mem::take(&mut self.le_credit_errors)
+    }
+
+    fn le_credit_manager_mut(
+        &mut self,
+        connection_handle: u16,
+    ) -> bumble_l2cap::Result<&mut LeCreditChannelManager> {
+        self.le_credit_managers
+            .get_mut(&connection_handle)
+            .ok_or_else(|| {
+                L2capError::InvalidPacket(format!(
+                    "unknown LE connection handle {connection_handle:#06x}"
+                ))
+            })
+    }
+
+    fn flush_le_credit_manager(
+        &mut self,
+        link: &mut LocalLink,
+        connection_handle: u16,
+    ) -> bumble_l2cap::Result<()> {
+        let outbound = self
+            .le_credit_manager_mut(connection_handle)?
+            .drain_outbound();
+        for pdu in outbound {
+            if !self.send_l2cap_on_handle(link, connection_handle, pdu.cid, &pdu.payload) {
+                return Err(L2capError::InvalidPacket(format!(
+                    "failed to send LE credit PDU on handle {connection_handle:#06x}"
+                )));
+            }
+        }
+        Ok(())
+    }
+
     /// Send an ATT PDU to the peer on the ATT channel.
     pub fn send_att(&mut self, link: &mut LocalLink, pdu: &AttPdu) -> bool {
         self.send_l2cap(link, ATT_CID, &pdu.to_bytes())
@@ -1566,6 +1762,13 @@ impl Device {
                             peer_address,
                         },
                     );
+                    let mut manager = LeCreditChannelManager::new();
+                    for spec in self.le_credit_server_specs.values().copied() {
+                        manager
+                            .register_server(spec)
+                            .expect("stored LE credit server spec is valid");
+                    }
+                    self.le_credit_managers.insert(connection_handle, manager);
                     self.select_connection(connection_handle);
                 }
                 HciPacket::Event(Event::LeMeta(LeMetaEvent::AdvertisingReport { reports })) => {
@@ -1725,6 +1928,9 @@ impl Device {
                     self.acl_assemblers.remove(&connection_handle);
                     self.acl_packet_queue.flush(connection_handle);
                     self.le_connections.remove(&connection_handle);
+                    self.le_credit_managers.remove(&connection_handle);
+                    self.le_credit_errors
+                        .retain(|(handle, _)| *handle != connection_handle);
                     if self.connection_handle == Some(connection_handle) {
                         if let Some(next_handle) = self.le_connections.keys().next().copied() {
                             self.select_connection(next_handle);
@@ -1880,6 +2086,24 @@ impl Device {
         let Ok(l2cap) = L2capPdu::from_bytes(&data) else {
             return;
         };
+        let managed_le_credit_pdu = self.le_credit_managers.get(&handle).is_some_and(|manager| {
+            l2cap.cid == L2CAP_LE_SIGNALING_CID || manager.channel(l2cap.cid).is_some()
+        });
+        if managed_le_credit_pdu {
+            if let Err(error) = self
+                .le_credit_managers
+                .get_mut(&handle)
+                .expect("manager was just found")
+                .process_pdu(l2cap)
+            {
+                self.le_credit_errors.push((handle, error.to_string()));
+                return;
+            }
+            if let Err(error) = self.flush_le_credit_manager(link, handle) {
+                self.le_credit_errors.push((handle, error.to_string()));
+            }
+            return;
+        }
         // Non-ATT channels (e.g. SMP on 0x0006) are queued raw for the caller.
         if l2cap.cid != ATT_CID {
             if l2cap.cid == SMP_CID && l2cap.payload.len() == 2 && l2cap.payload[0] == 0x0B {
