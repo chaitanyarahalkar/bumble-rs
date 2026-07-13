@@ -65,7 +65,8 @@ crate whose behavior is verified against the upstream Python.
 | 48. Common bitstreams and MPEG-4 LATM AAC-to-ADTS codec | `bumble-codecs` | ✅ upstream fixture green |
 | 49. Complete ATT wire PDU catalog | `bumble-att` | ✅ all upstream subclasses typed |
 | 50. GATT multiple reads and atomic queued writes | `bumble-gatt` | ✅ fixed/variable + prepare/execute green |
-| 51+. Remaining modules… | — | planned |
+| 51. Pairing key JSON/memory stores and resolving-list extraction | `bumble` | ✅ atomic persistence green |
+| 52+. Remaining modules… | — | planned |
 
 The LE lifecycle is now complete end-to-end through library APIs: **connect →
 discover → read/write → notify → disconnect** between two virtual devices — and
@@ -108,7 +109,7 @@ size, to convey remaining surface.
 |---|---|---|---|
 | `core.py` (2.1k), `data_types.py` (1.0k) | `bumble` | ✅ | Core types (`Uuid`, `Address`, `Appearance`, `ClassOfDevice`, `AdvertisingData`), the full typed `DataType` AD hierarchy (~40 types, oracle-pinned), well-known 16-bit UUID names, and `PhysicalTransport`/`LeRole`. |
 | `company_ids.py` (3.3k) | `bumble::company_ids` | ✅ | 3,327-entry SIG company table + `company_name()` binary-search lookup. |
-| `keys.py` (0.4k) | `bumble::keys` | ✅ | `PairingKeys` / `Key` data structures. Persistent key stores (JSON/async I/O) deferred. |
+| `keys.py` (0.4k) | `bumble::keys` | ✅ | Complete `PairingKeys` / `Key` JSON model, replacement-style memory store, namespaced JSON store with upstream merge/default-namespace semantics and atomic replacement, delete/get/get-all/delete-all, platform data-path selection, and IRK resolving-list extraction to typed addresses. Rust uses synchronous filesystem calls rather than wrapping them in nominal async methods. |
 | `utils.py` (0.5k) | `bumble::util` (+ spread) | ✅ | Generic helpers (`bit_flags_to_strings`, `name_or_number`); `crc_16` lives in `bumble-l2cap`; the open-enum/flag pattern is realized as newtypes throughout. The asyncio event infra (`EventEmitter`/`AsyncRunner`/`FlowControlAsyncPipe`) is **N/A** for this synchronous port. |
 | `colors`, `logging`, `helpers`, `snoop`, `decoder` | — | N/A | Debug/logging tooling with idiomatic Rust equivalents rather than library surface: `colors` (ANSI), `logging` (→ `log`/`tracing`), `helpers.PacketTracer` (debug trace), `snoop` (BTSnoop/pcap capture). `decoder.py` is a **G.722 audio codec** — it belongs with the audio subsystem, not core. |
 
@@ -1147,6 +1148,24 @@ Both Rust attribute servers now execute the newly completed ATT requests:
 
 Next work continues closing GATT's service model and access/security semantics.
 
+## Slice 51 — what's here
+
+Bonded-peer key persistence now completes upstream `keys.py`:
+
+- `PairingKeys` and each key's value/authentication/EDIV/random metadata convert
+  to and from the same lowercase-hex JSON object shape as Python Bumble.
+- `MemoryKeyStore` provides replacement update, get/list/delete/delete-all, and
+  deterministic enumeration. IRKs turn into `(key, typed peer address)`
+  resolving-list entries with the stored address type or random-device default.
+- `JsonKeyStore` groups peers beneath controller namespaces. Partial updates
+  merge only present fields; a default store adopts the only existing namespace
+  exactly as upstream does.
+- Saves create parent directories, serialize deterministically to a sibling
+  temporary file, and atomically rename it over the database. Corrupt JSON,
+  invalid hex, bad peer addresses, and filesystem errors remain typed failures.
+
+The next slice returns to the remaining GATT service/access model gaps.
+
 ## Acceptance
 
 The port's contract is the upstream Python test suite, ported 1:1:
@@ -1183,8 +1202,9 @@ cargo fmt --check
 bumble-rs/
 ├── Cargo.toml                 # workspace
 ├── bumble/                    # slice-1 library crate
-│   ├── src/{lib,uuid,address,appearance,class_of_device,advertising_data}.rs
-│   └── tests/acceptance.rs    # ported upstream tests
+│   ├── src/{lib,uuid,address,appearance,class_of_device,advertising_data,keys}.rs
+│   ├── tests/acceptance.rs    # ported upstream tests
+│   └── tests/key_store.rs     # slice-51 atomic namespaced persistence
 ├── bumble-hci/                # slice-2 HCI codec crate
 │   ├── src/{lib,codes,command,event,packet,return_parameters}.rs
 │   └── tests/acceptance.rs    # ported hci_test.py cases (oracle-pinned)

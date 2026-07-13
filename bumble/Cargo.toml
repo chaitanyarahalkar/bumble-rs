@@ -12,3 +12,5 @@ categories.workspace = true
 description = "Rust port of google/bumble core Bluetooth primitives (slice 1: core types & advertising data)"
 
 [dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
