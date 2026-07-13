@@ -31,8 +31,10 @@ fn remaining_upstream_pdu_catalog_is_byte_exact() {
             AttPdu::SignedWriteCommand {
                 attribute_handle: 0x1234,
                 attribute_value: vec![0xDE, 0xAD],
+                sign_counter: 0x0102_0304,
+                signature: [0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88],
             },
-            "d23412dead",
+            "d23412dead040302011122334455667788",
         ),
         (
             AttPdu::PrepareWriteRequest {
@@ -72,6 +74,8 @@ fn command_and_signature_bits_match_the_registered_opcodes() {
     let signed = AttPdu::SignedWriteCommand {
         attribute_handle: 1,
         attribute_value: vec![],
+        sign_counter: 0,
+        signature: [0; 8],
     };
     assert_eq!(signed.op_code(), codes::ATT_SIGNED_WRITE_COMMAND);
     assert!(signed.is_command());
@@ -83,6 +87,7 @@ fn malformed_handle_sets_and_variable_tuples_are_rejected() {
     assert!(AttPdu::from_bytes(&[codes::ATT_READ_MULTIPLE_REQUEST, 1]).is_err());
     assert!(AttPdu::from_bytes(&[codes::ATT_READ_MULTIPLE_VARIABLE_RESPONSE, 3, 0, 1, 2]).is_err());
     assert!(AttPdu::from_bytes(&[codes::ATT_PREPARE_WRITE_REQUEST, 1, 0, 2]).is_err());
+    assert!(AttPdu::from_bytes(&[codes::ATT_SIGNED_WRITE_COMMAND, 1, 0]).is_err());
     assert!(AttPdu::from_bytes(&[codes::ATT_EXECUTE_WRITE_REQUEST]).is_err());
 }
 

@@ -260,6 +260,7 @@ fn security_request_reuses_a_satisfactory_persisted_bond() {
             authenticated: true,
             ediv: None,
             rand: None,
+            sign_counter: None,
         }),
         ..PairingKeys::default()
     };

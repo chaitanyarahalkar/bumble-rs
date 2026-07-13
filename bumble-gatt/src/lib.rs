@@ -28,15 +28,15 @@
 //! makes any [`AttRequestHandler`] usable as a transport, so a client and server
 //! talk directly in the crate's `client` integration test.
 //!
-//! Read Multiple/Variable, signed commands, and atomic Prepare/Execute queued
-//! writes are supported. The remaining architectural difference is the async
+//! Read Multiple/Variable, CSRK-authenticated signed commands with replay
+//! protection, and atomic Prepare/Execute queued writes are supported. The remaining architectural difference is the async
 //! bearer/event convenience layer.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use bumble::Uuid;
-use bumble_att::{codes, AttPdu};
+use bumble_att::{codes, AttPdu, SignedWriteVerifier};
 
 mod adapters;
 pub use adapters::*;
@@ -129,6 +129,7 @@ pub struct AttServer {
     attributes: BTreeMap<u16, Vec<u8>>,
     mtu: u16,
     prepared_writes: Vec<(u16, u16, Vec<u8>)>,
+    signed_write_verifier: Option<SignedWriteVerifier>,
 }
 
 impl Default for AttServer {
@@ -137,6 +138,7 @@ impl Default for AttServer {
             attributes: BTreeMap::new(),
             mtu: ATT_DEFAULT_MTU,
             prepared_writes: Vec::new(),
+            signed_write_verifier: None,
         }
     }
 }
@@ -158,6 +160,16 @@ impl AttServer {
 
     pub fn prepared_write_count(&self) -> usize {
         self.prepared_writes.len()
+    }
+
+    pub fn set_signed_write_key(&mut self, csrk: [u8; 16], last_counter: Option<u32>) {
+        self.signed_write_verifier = Some(SignedWriteVerifier::new(csrk, last_counter));
+    }
+
+    pub fn signed_write_counter(&self) -> Option<u32> {
+        self.signed_write_verifier
+            .as_ref()
+            .and_then(SignedWriteVerifier::last_counter)
     }
 
     /// Turn an incoming ATT request into the appropriate ATT response.
@@ -207,9 +219,22 @@ impl AttServer {
                 }
                 AttPdu::HandleValueConfirmation
             }
-            // Verification requires a signing counter and CSRK from the SMP
-            // security context. Never write the signature bytes as value data.
-            AttPdu::SignedWriteCommand { .. } => AttPdu::HandleValueConfirmation,
+            AttPdu::SignedWriteCommand {
+                attribute_handle,
+                attribute_value,
+                ..
+            } => {
+                let verified = self
+                    .signed_write_verifier
+                    .as_mut()
+                    .is_some_and(|verifier| verifier.verify(request));
+                if verified {
+                    if let Some(slot) = self.attributes.get_mut(attribute_handle) {
+                        *slot = attribute_value.clone();
+                    }
+                }
+                AttPdu::HandleValueConfirmation
+            }
             AttPdu::PrepareWriteRequest {
                 attribute_handle,
                 value_offset,
@@ -518,6 +543,7 @@ pub struct GattServer {
     /// The negotiated MTU (min of both peers), used to size read responses.
     negotiated_mtu: u16,
     prepared_writes: Vec<(u16, u16, Vec<u8>)>,
+    signed_write_verifier: Option<SignedWriteVerifier>,
 }
 
 impl GattServer {
@@ -718,6 +744,7 @@ impl GattServer {
             mtu: ATT_DEFAULT_MTU,
             negotiated_mtu: ATT_DEFAULT_MTU,
             prepared_writes: Vec::new(),
+            signed_write_verifier: None,
         })
     }
 
@@ -755,6 +782,16 @@ impl GattServer {
 
     pub fn prepared_write_count(&self) -> usize {
         self.prepared_writes.len()
+    }
+
+    pub fn set_signed_write_key(&mut self, csrk: [u8; 16], last_counter: Option<u32>) {
+        self.signed_write_verifier = Some(SignedWriteVerifier::new(csrk, last_counter));
+    }
+
+    pub fn signed_write_counter(&self) -> Option<u32> {
+        self.signed_write_verifier
+            .as_ref()
+            .and_then(SignedWriteVerifier::last_counter)
     }
 
     /// Turn an incoming ATT request into a response.
@@ -898,8 +935,31 @@ impl GattServer {
                 // Callers ignore the returned PDU for commands; surface a no-op.
                 AttPdu::HandleValueConfirmation
             }
-            // Verification requires the connection's CSRK/signing counter.
-            AttPdu::SignedWriteCommand { .. } => AttPdu::HandleValueConfirmation,
+            AttPdu::SignedWriteCommand {
+                attribute_handle,
+                attribute_value,
+                ..
+            } => {
+                let verified = self
+                    .signed_write_verifier
+                    .as_mut()
+                    .is_some_and(|verifier| verifier.verify(request));
+                if verified {
+                    let signed_context = AccessContext {
+                        authenticated: true,
+                        ..context
+                    };
+                    if let Some(attribute) = self.find(*attribute_handle) {
+                        if check_write_access(attribute.permissions, signed_context).is_ok() {
+                            let _ = self
+                                .find_mut(*attribute_handle)
+                                .expect("attribute was just found")
+                                .write_value(signed_context, attribute_value);
+                        }
+                    }
+                }
+                AttPdu::HandleValueConfirmation
+            }
             AttPdu::PrepareWriteRequest {
                 attribute_handle,
                 value_offset,

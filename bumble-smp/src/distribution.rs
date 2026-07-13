@@ -203,12 +203,14 @@ impl KeyDistributionSession {
             authenticated: self.config.authenticated,
             ediv: None,
             rand: None,
+            sign_counter: None,
         };
         let legacy_key = |value: [u8; 16], ediv: u16, rand: [u8; 8]| Key {
             value: value.to_vec(),
             authenticated: self.config.authenticated,
             ediv: Some(ediv),
             rand: Some(rand.to_vec()),
+            sign_counter: None,
         };
 
         let mut keys = PairingKeys {
@@ -221,6 +223,11 @@ impl KeyDistributionSession {
             PairingRole::Initiator => self.config.initiator_keys,
             PairingRole::Responder => self.config.responder_keys,
         };
+        if local_flags.contains(KeyDistribution::SIGNING_KEY) {
+            let mut local_csrk = key(self.config.local_keys.csrk);
+            local_csrk.sign_counter = Some(0);
+            keys.local_csrk = Some(local_csrk);
+        }
         if self.config.secure_connections {
             keys.ltk = Some(key(self.config.pairing_ltk));
         } else {

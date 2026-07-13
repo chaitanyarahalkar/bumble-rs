@@ -13,3 +13,4 @@ description = "Rust port of google/bumble ATT protocol PDU codec (slice 5)"
 
 [dependencies]
 bumble = { path = "../bumble" }
+bumble-crypto = { path = "../bumble-crypto" }

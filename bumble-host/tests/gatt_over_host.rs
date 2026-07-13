@@ -4,7 +4,7 @@
 //! [`pump`] drives the exchange.
 
 use bumble::{Address, AddressType, Uuid};
-use bumble_att::AttPdu;
+use bumble_att::{AttPdu, SignedWriteSigner};
 use bumble_controller::{Controller, LocalLink};
 use bumble_gatt::{
     AttServer, Characteristic, GattServer, Service, GATT_CHARACTERISTIC_UUID,
@@ -106,6 +106,55 @@ fn characteristic_write_read_via_device_api() {
 
     // The read-back above already proves the server stored the written value.
     assert!(devices[1].has_server());
+}
+
+#[test]
+fn authenticated_signed_write_runs_over_att_l2cap_acl_with_replay_protection() {
+    let mut link = LocalLink::new();
+    let central_id = link.add_controller(Controller::new("C", addr("00:00:00:00:00:01")));
+    let peripheral_id = link.add_controller(Controller::new("P", addr("00:00:00:00:00:02")));
+    let csrk = [0x5A; 16];
+    let mut server = AttServer::new();
+    server.set_attribute(0x0025, b"initial".to_vec());
+    server.set_signed_write_key(csrk, None);
+    let mut devices = [
+        Device::new(central_id),
+        Device::with_server(peripheral_id, server),
+    ];
+    connect(&mut link, central_id, peripheral_id);
+    pump(&mut link, &mut devices);
+
+    let mut signer = SignedWriteSigner::new(csrk, 40);
+    let first = signer.sign(0x0025, b"first".to_vec()).unwrap();
+    let second = signer.sign(0x0025, b"second".to_vec()).unwrap();
+    assert!(devices[0].send_att(&mut link, &first));
+    assert!(devices[0].send_att(&mut link, &second));
+    pump(&mut link, &mut devices);
+    assert!(devices[0].take_inbox().is_empty());
+
+    // A replayed lower counter and a higher-counter packet with a changed MAC
+    // are both commands (no response) and both leave the value untouched.
+    assert!(devices[0].send_att(&mut link, &first));
+    let mut tampered = signer.sign(0x0025, b"tampered".to_vec()).unwrap();
+    if let AttPdu::SignedWriteCommand { signature, .. } = &mut tampered {
+        signature[7] ^= 1;
+    }
+    assert!(devices[0].send_att(&mut link, &tampered));
+    pump(&mut link, &mut devices);
+
+    assert!(devices[0].send_att(
+        &mut link,
+        &AttPdu::ReadRequest {
+            attribute_handle: 0x0025,
+        },
+    ));
+    pump(&mut link, &mut devices);
+    assert_eq!(
+        devices[0].take_inbox(),
+        vec![AttPdu::ReadResponse {
+            attribute_value: b"second".to_vec(),
+        }]
+    );
 }
 
 /// Only respond to the caller's single request and return the one inbox PDU.

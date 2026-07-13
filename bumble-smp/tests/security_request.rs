@@ -9,6 +9,7 @@ fn key(value: u8, authenticated: bool) -> Key {
         authenticated,
         ediv: None,
         rand: None,
+        sign_counter: None,
     }
 }
 
@@ -56,12 +57,14 @@ fn legacy_bond_selects_role_direction_and_preserves_ediv_rand() {
             authenticated: true,
             ediv: Some(0x1234),
             rand: Some(vec![0x56; 8]),
+            sign_counter: None,
         }),
         ltk_peripheral: Some(Key {
             value: vec![0xD0; 16],
             authenticated: true,
             ediv: Some(0xABCD),
             rand: Some(vec![0x78; 8]),
+            sign_counter: None,
         }),
         ..PairingKeys::default()
     };

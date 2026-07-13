@@ -12,13 +12,14 @@
 //! Read_Multiple_Variable, Read_By_Type_Request/Response,
 //! Read_By_Group_Type_Request/Response, Find_Information_Request/Response,
 //! Find_By_Type_Value_Request/Response, Write_Request/Response, Write_Command,
-//! Signed_Write_Command, Prepare/Execute_Write,
+//! Signed_Write_Command (including CSRK CMAC and monotonic counters), Prepare/Execute_Write,
 //! Handle_Value_Notification, and Handle_Value_Indication/Confirmation, with an
 //! [`AttPdu::Generic`] fallback. This is the set the GATT client (slice 18)
 //! drives for discovery, long reads, writes, and subscriptions.
 //!
 //! Every PDU subclass registered by upstream `att.py` is represented.
 
+use bumble::keys::PairingKeys;
 use bumble::Uuid;
 use core::fmt;
 
@@ -76,6 +77,134 @@ impl fmt::Display for Error {
 impl std::error::Error for Error {}
 
 pub type Result<T> = core::result::Result<T, Error>;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SignedWriteSigner {
+    csrk: [u8; 16],
+    next_counter: u32,
+}
+
+impl SignedWriteSigner {
+    pub fn new(csrk: [u8; 16], next_counter: u32) -> Self {
+        Self { csrk, next_counter }
+    }
+
+    pub fn next_counter(&self) -> u32 {
+        self.next_counter
+    }
+
+    pub fn from_pairing_keys(keys: &PairingKeys) -> Option<Self> {
+        let key = keys.local_csrk.as_ref()?;
+        Some(Self::new(
+            key.value.as_slice().try_into().ok()?,
+            key.sign_counter.unwrap_or(0),
+        ))
+    }
+
+    pub fn save_counter(&self, keys: &mut PairingKeys) -> bool {
+        let Some(key) = keys.local_csrk.as_mut() else {
+            return false;
+        };
+        key.sign_counter = Some(self.next_counter);
+        true
+    }
+
+    pub fn sign(&mut self, attribute_handle: u16, attribute_value: Vec<u8>) -> Option<AttPdu> {
+        let sign_counter = self.next_counter;
+        self.next_counter = self.next_counter.checked_add(1)?;
+        let signature =
+            signed_write_signature(&self.csrk, attribute_handle, &attribute_value, sign_counter);
+        Some(AttPdu::SignedWriteCommand {
+            attribute_handle,
+            attribute_value,
+            sign_counter,
+            signature,
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SignedWriteVerifier {
+    csrk: [u8; 16],
+    last_counter: Option<u32>,
+}
+
+impl SignedWriteVerifier {
+    pub fn new(csrk: [u8; 16], last_counter: Option<u32>) -> Self {
+        Self { csrk, last_counter }
+    }
+
+    pub fn last_counter(&self) -> Option<u32> {
+        self.last_counter
+    }
+
+    pub fn from_pairing_keys(keys: &PairingKeys) -> Option<Self> {
+        let key = keys.csrk.as_ref()?;
+        Some(Self::new(
+            key.value.as_slice().try_into().ok()?,
+            key.sign_counter,
+        ))
+    }
+
+    pub fn save_counter(&self, keys: &mut PairingKeys) -> bool {
+        let Some(key) = keys.csrk.as_mut() else {
+            return false;
+        };
+        key.sign_counter = self.last_counter;
+        true
+    }
+
+    pub fn verify(&mut self, pdu: &AttPdu) -> bool {
+        let AttPdu::SignedWriteCommand {
+            attribute_handle,
+            attribute_value,
+            sign_counter,
+            signature,
+        } = pdu
+        else {
+            return false;
+        };
+        if self
+            .last_counter
+            .is_some_and(|last_counter| *sign_counter <= last_counter)
+        {
+            return false;
+        }
+        let expected = signed_write_signature(
+            &self.csrk,
+            *attribute_handle,
+            attribute_value,
+            *sign_counter,
+        );
+        let difference = signature
+            .iter()
+            .zip(expected)
+            .fold(0u8, |difference, (actual, expected)| {
+                difference | (*actual ^ expected)
+            });
+        if difference != 0 {
+            return false;
+        }
+        self.last_counter = Some(*sign_counter);
+        true
+    }
+}
+
+pub fn signed_write_signature(
+    csrk: &[u8; 16],
+    attribute_handle: u16,
+    attribute_value: &[u8],
+    sign_counter: u32,
+) -> [u8; 8] {
+    let mut signed_data = Vec::with_capacity(7 + attribute_value.len());
+    signed_data.push(codes::ATT_SIGNED_WRITE_COMMAND);
+    signed_data.extend_from_slice(&attribute_handle.to_le_bytes());
+    signed_data.extend_from_slice(attribute_value);
+    signed_data.extend_from_slice(&sign_counter.to_le_bytes());
+    bumble_crypto::aes_cmac(&signed_data, csrk)[..8]
+        .try_into()
+        .expect("eight-byte CMAC prefix")
+}
 
 /// An ATT protocol PDU. Typed variants carry decoded fields;
 /// [`AttPdu::Generic`] preserves any op code not decoded by this slice.
@@ -175,6 +304,8 @@ pub enum AttPdu {
     SignedWriteCommand {
         attribute_handle: u16,
         attribute_value: Vec<u8>,
+        sign_counter: u32,
+        signature: [u8; 8],
     },
     PrepareWriteRequest {
         attribute_handle: u16,
@@ -398,13 +529,20 @@ impl AttPdu {
             AttPdu::WriteCommand {
                 attribute_handle,
                 attribute_value,
-            }
-            | AttPdu::SignedWriteCommand {
-                attribute_handle,
-                attribute_value,
             } => {
                 push_u16(&mut p, *attribute_handle);
                 p.extend_from_slice(attribute_value);
+            }
+            AttPdu::SignedWriteCommand {
+                attribute_handle,
+                attribute_value,
+                sign_counter,
+                signature,
+            } => {
+                push_u16(&mut p, *attribute_handle);
+                p.extend_from_slice(attribute_value);
+                p.extend_from_slice(&sign_counter.to_le_bytes());
+                p.extend_from_slice(signature);
             }
             AttPdu::PrepareWriteRequest {
                 attribute_handle,
@@ -561,10 +699,24 @@ impl AttPdu {
                 attribute_handle: le16(payload, 0)?,
                 attribute_value: payload.get(2..).unwrap_or(&[]).to_vec(),
             },
-            codes::ATT_SIGNED_WRITE_COMMAND => AttPdu::SignedWriteCommand {
-                attribute_handle: le16(payload, 0)?,
-                attribute_value: payload.get(2..).unwrap_or(&[]).to_vec(),
-            },
+            codes::ATT_SIGNED_WRITE_COMMAND => {
+                if payload.len() < 14 {
+                    return Err(Error::InvalidPacket(
+                        "Signed Write Command requires a 12-byte authentication signature".into(),
+                    ));
+                }
+                let trailer = payload.len() - 12;
+                AttPdu::SignedWriteCommand {
+                    attribute_handle: le16(payload, 0)?,
+                    attribute_value: payload[2..trailer].to_vec(),
+                    sign_counter: u32::from_le_bytes(
+                        payload[trailer..trailer + 4]
+                            .try_into()
+                            .expect("four-byte slice"),
+                    ),
+                    signature: payload[trailer + 4..].try_into().expect("eight-byte slice"),
+                }
+            }
             codes::ATT_PREPARE_WRITE_REQUEST => AttPdu::PrepareWriteRequest {
                 attribute_handle: le16(payload, 0)?,
                 value_offset: le16(payload, 2)?,

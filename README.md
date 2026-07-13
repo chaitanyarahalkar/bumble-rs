@@ -85,7 +85,8 @@ crate whose behavior is verified against the upstream Python.
 | 68. Encrypted SMP key distribution and bond persistence | `bumble-smp`, `bumble` | ✅ responder-first phase 3 + stores green |
 | 69. CT2 negotiation and bonded Security Request reconnect | `bumble-smp`, `bumble-host` | ✅ h7 + live reuse green |
 | 70. IRK address resolution and controller privacy offload | `bumble-smp`, `bumble-controller`, `bumble-host` | ✅ identity→RPA reconnect green |
-| 71+. Remaining modules… | — | planned |
+| 71. CSRK authenticated ATT signed writes and persistent counters | `bumble-att`, `bumble-gatt`, `bumble-host` | ✅ CMAC/replay/restart green |
+| 72+. Remaining modules… | — | planned |
 
 The LE lifecycle is now complete end-to-end through library APIs: **connect →
 discover → read/write → notify → disconnect** between two virtual devices — and
@@ -151,8 +152,8 @@ size, to convey remaining surface.
 ### ATT / GATT
 | Upstream (LOC) | Rust crate | Status | Notes |
 |---|---|---|---|
-| `att.py` (1.1k) | `bumble-att` | ✅ | Complete typed catalog for every upstream `ATT_PDU` subclass: discovery, MTU, Read/Blob/Multiple/Multiple Variable/By Type/By Group, Write/Command/Signed, Prepare/Execute Write, notifications/indications, and confirmation. All added forms are Python-oracle pinned; variable tuples and handle sets add safe truncation/shape checks. |
-| `gatt.py` (0.6k), `gatt_server.py` (1.2k) | `bumble-gatt` | 🟡 | Attribute DB, primary/secondary services, include declarations, characteristic descriptors, automatic CCCDs, explicit access/security permissions, bearer-aware dynamic read/write callbacks, primary discovery, read/write/notify, Find_Information/Find_By_Type_Value, MTU-sized Read/Blob, fixed + variable Read Multiple, and atomic Prepare/Execute Write with cancel/rollback. Signed writes are deliberately ignored until a connection CSRK/counter can authenticate them. Deferred: the async bearer/event convenience layer. |
+| `att.py` (1.1k) | `bumble-att` | ✅ | Complete typed catalog for every upstream `ATT_PDU` subclass: discovery, MTU, Read/Blob/Multiple/Multiple Variable/By Type/By Group, Write/Command/Signed, Prepare/Execute Write, notifications/indications, and confirmation. Signed Write separates value/counter/MAC, computes the CSRK AES-CMAC, and provides monotonic signer/verifier state. All added forms are Python-oracle or independent CMAC-vector pinned; variable tuples and handle sets add safe truncation/shape checks. |
+| `gatt.py` (0.6k), `gatt_server.py` (1.2k) | `bumble-gatt` | 🟡 | Attribute DB, primary/secondary services, include declarations, characteristic descriptors, automatic CCCDs, explicit access/security permissions, bearer-aware dynamic read/write callbacks, primary discovery, read/write/notify, Find_Information/Find_By_Type_Value, MTU-sized Read/Blob, fixed + variable Read Multiple, atomic Prepare/Execute Write with cancel/rollback, and authenticated signed-write client/server handling with replay protection. Deferred: the async bearer/event convenience layer. |
 | `gatt_client.py` (1.2k) | `bumble-gatt` | 🟡 | **`GattClient` (slice 18)**: service / characteristic / descriptor discovery, reads (with long-read via Read_Blob), writes (with and without response), and notify/indicate subscriptions (CCCD write + notification/indication handling), over an `AttTransport`. Deferred: async bearer/event listeners. |
 | `gatt_adapters.py` (0.4k) | `bumble-gatt` | ✅ | Typed server/proxy adapters for delegated, packed, mapped, UTF-8, serializable, and enum values, including typed dynamic server state and cached proxy decoding. `PackedCodec` covers Python 3.14 portable and native-aligned `struct` modes, zero-repeat tail alignment, pointer-sized integers, binary16, and complex32/64, with host-Python oracle vectors. |
 
@@ -160,7 +161,7 @@ size, to convey remaining surface.
 | Upstream (LOC) | Rust crate | Status | Notes |
 |---|---|---|---|
 | `crypto/` | `bumble-crypto` | ✅ | All SMP **symmetric** security functions — `e`, AES-CMAC, `c1`, `s1`, `f4`/`f5`/`f6`, `g2`, `h6`/`h7`, `ah` — spec/RFC-4493 vector-verified, plus **P-256 `EccKey`** (slice 19: keygen, `from_private_key_bytes`, public-key coordinates, ECDH) oracle-pinned to upstream. Deferred: none of the crypto primitives. |
-| `smp.py` (2.0k), `pairing.py` (0.3k) | `bumble-smp` | 🟡 | PDU codec (incl. all **LE Secure Connections** PDUs), live Legacy and SC sessions covering every association model through host/controller encryption, responder-first encrypted key distribution, SC LTK handling, peer identity/signing keys, negotiated h6/h7 CTKD, memory/JSON bond persistence, Security Request evaluation/reconnect, and host-side RPA generation/resolution from stored IRKs. Also includes the complete method matrix, auth/key-distribution policy, and SC + Legacy OOB contexts/AD interchange. Deferred: automatic pairing-manager lifecycle and signed-data counters. |
+| `smp.py` (2.0k), `pairing.py` (0.3k) | `bumble-smp` | 🟡 | PDU codec (incl. all **LE Secure Connections** PDUs), live Legacy and SC sessions covering every association model through host/controller encryption, responder-first encrypted key distribution, SC LTK handling, peer/local signing keys with persistent counters, negotiated h6/h7 CTKD, memory/JSON bond persistence, Security Request evaluation/reconnect, and host-side RPA generation/resolution from stored IRKs. Also includes the complete method matrix, auth/key-distribution policy, and SC + Legacy OOB contexts/AD interchange. Deferred: automatic pairing-manager lifecycle. |
 
 ### Transports & drivers
 | Upstream | Rust crate | Status | Notes |
@@ -1623,8 +1624,31 @@ Bond identities now survive privacy address rotation:
   Random Identity address to the central host, and sends L2CAP/ACL data across
   the actual RPA-backed link.
 
-The remaining SMP work is an automatic multi-connection pairing manager and
-signed-write CSRK counters.
+## Slice 71 — what's here
+
+The signing keys distributed in phase 3 now protect real ATT traffic:
+
+- Signed Write Command parsing separates the attribute value from its 4-byte
+  little-endian sign counter and 8-byte authentication MAC; short trailers are
+  rejected instead of being mistaken for value bytes.
+- `SignedWriteSigner` computes AES-128-CMAC over opcode, handle, value, and
+  counter and truncates the 128-bit result to the required 64-bit signature.
+  The fixed vector is independently pinned with OpenSSL CMAC.
+- `SignedWriteVerifier` compares the MAC without an early byte exit and accepts
+  only counters greater than the last valid packet. Wrong keys, changed values,
+  changed signatures, and replays do not advance state.
+- Bare ATT and permission-aware GATT servers apply only verified commands; the
+  GATT client can produce them directly. The host now dispatches ATT commands
+  to its server without fabricating a response.
+- Bond records retain both the peer CSRK/last incoming counter and local
+  CSRK/next outgoing counter. Signer/verifier state reconstructs from
+  `PairingKeys`, writes back through `MemoryKeyStore`/`JsonKeyStore`, and a
+  restart test proves that a previously accepted packet remains a replay.
+- A live test sends accepted, replayed, and tampered signed writes through
+  ATT/L2CAP/ACL and reads back only the last authenticated value.
+
+The remaining SMP architectural work is an automatic multi-connection pairing
+manager that owns session selection and bond lifecycle around these primitives.
 
 ## Acceptance
 

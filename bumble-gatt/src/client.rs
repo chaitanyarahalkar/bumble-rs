@@ -11,7 +11,7 @@
 use std::collections::BTreeMap;
 
 use bumble::Uuid;
-use bumble_att::AttPdu;
+use bumble_att::{AttPdu, SignedWriteSigner};
 
 use crate::{AttRequestHandler, GATT_CHARACTERISTIC_UUID, GATT_PRIMARY_SERVICE_UUID};
 
@@ -496,6 +496,21 @@ impl GattClient {
             });
             Ok(())
         }
+    }
+
+    /// Send an authenticated Signed Write Command using the local CSRK state.
+    pub fn write_signed_value(
+        &mut self,
+        t: &mut impl AttTransport,
+        signer: &mut SignedWriteSigner,
+        attribute_handle: u16,
+        value: Vec<u8>,
+    ) -> Result<()> {
+        let command = signer
+            .sign(attribute_handle, value)
+            .ok_or_else(|| GattError::Protocol("signed-write counter exhausted".into()))?;
+        let _ = t.request(&command);
+        Ok(())
     }
 
     /// Subscribe to a characteristic by writing its CCCD (Vol 3, Part G - 4.10)

@@ -510,6 +510,14 @@ impl Device {
             return;
         };
 
+        // ATT commands are server inputs but never produce a response.
+        if pdu.is_command() {
+            if let Some(server) = self.server.as_mut() {
+                let _ = server.handle_request(&pdu);
+            }
+            return;
+        }
+
         // A server answers requests automatically; everything else is for the
         // client (this device's user) to collect.
         if is_request(&pdu) {

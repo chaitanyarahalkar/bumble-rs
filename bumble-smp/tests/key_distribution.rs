@@ -118,6 +118,9 @@ fn legacy_responder_distributes_first_and_both_roles_assemble_bond_keys() {
     assert_eq!(initiator_keys.ltk_peripheral.unwrap().value, vec![0x10; 16]);
     assert_eq!(initiator_keys.irk.unwrap().value, vec![0x22; 16]);
     assert_eq!(initiator_keys.csrk.unwrap().value, vec![0x23; 16]);
+    let local_csrk = initiator_keys.local_csrk.unwrap();
+    assert_eq!(local_csrk.value, vec![0x13; 16]);
+    assert_eq!(local_csrk.sign_counter, Some(0));
     assert_eq!(
         initiator.peer_address().to_string(false),
         "C4:F2:17:1A:1D:BB"
@@ -208,6 +211,9 @@ fn completed_distribution_persists_and_reads_back_from_key_store() {
     assert_eq!(stored.ltk.unwrap().value, vec![0x55; 16]);
     assert_eq!(stored.irk.unwrap().value, vec![0x22; 16]);
     assert_eq!(stored.csrk.unwrap().value, vec![0x23; 16]);
+    let local_csrk = stored.local_csrk.unwrap();
+    assert_eq!(local_csrk.value, vec![0x13; 16]);
+    assert_eq!(local_csrk.sign_counter, Some(0));
 }
 
 #[test]

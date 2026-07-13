@@ -13,6 +13,7 @@ pub struct Key {
     pub authenticated: bool,
     pub ediv: Option<u16>,
     pub rand: Option<Vec<u8>>,
+    pub sign_counter: Option<u32>,
 }
 
 impl Key {
@@ -32,6 +33,7 @@ pub struct PairingKeys {
     pub ltk_peripheral: Option<Key>,
     pub irk: Option<Key>,
     pub csrk: Option<Key>,
+    pub local_csrk: Option<Key>,
     pub link_key: Option<Key>,
     pub link_key_type: Option<u8>,
 }
@@ -258,6 +260,8 @@ struct StoredKey {
     ediv: Option<u16>,
     #[serde(skip_serializing_if = "Option::is_none")]
     rand: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sign_counter: Option<u32>,
 }
 
 impl From<&Key> for StoredKey {
@@ -267,6 +271,7 @@ impl From<&Key> for StoredKey {
             authenticated: key.authenticated,
             ediv: key.ediv,
             rand: key.rand.as_deref().map(hex),
+            sign_counter: key.sign_counter,
         }
     }
 }
@@ -280,6 +285,7 @@ impl TryFrom<StoredKey> for Key {
             authenticated: key.authenticated,
             ediv: key.ediv,
             rand: key.rand.map(|value| decode_hex(&value)).transpose()?,
+            sign_counter: key.sign_counter,
         })
     }
 }
@@ -298,6 +304,8 @@ struct StoredPairingKeys {
     irk: Option<StoredKey>,
     #[serde(skip_serializing_if = "Option::is_none")]
     csrk: Option<StoredKey>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    local_csrk: Option<StoredKey>,
     #[serde(skip_serializing_if = "Option::is_none")]
     link_key: Option<StoredKey>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -318,6 +326,7 @@ impl StoredPairingKeys {
             ltk_peripheral,
             irk,
             csrk,
+            local_csrk,
             link_key,
             link_key_type,
         );
@@ -333,6 +342,7 @@ impl From<&PairingKeys> for StoredPairingKeys {
             ltk_peripheral: keys.ltk_peripheral.as_ref().map(StoredKey::from),
             irk: keys.irk.as_ref().map(StoredKey::from),
             csrk: keys.csrk.as_ref().map(StoredKey::from),
+            local_csrk: keys.local_csrk.as_ref().map(StoredKey::from),
             link_key: keys.link_key.as_ref().map(StoredKey::from),
             link_key_type: keys.link_key_type,
         }
@@ -350,6 +360,7 @@ impl TryFrom<StoredPairingKeys> for PairingKeys {
             ltk_peripheral: keys.ltk_peripheral.map(TryInto::try_into).transpose()?,
             irk: keys.irk.map(TryInto::try_into).transpose()?,
             csrk: keys.csrk.map(TryInto::try_into).transpose()?,
+            local_csrk: keys.local_csrk.map(TryInto::try_into).transpose()?,
             link_key: keys.link_key.map(TryInto::try_into).transpose()?,
             link_key_type: keys.link_key_type,
         })
@@ -392,6 +403,7 @@ mod tests {
                 authenticated: true,
                 ediv: Some(0x1234),
                 rand: Some(vec![0xBB; 8]),
+                sign_counter: None,
             }),
             irk: Some(Key::new(vec![0xCC; 16])),
             ..PairingKeys::default()

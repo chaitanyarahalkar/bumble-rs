@@ -86,7 +86,9 @@ fn bare_server_supports_multiple_reads_and_atomic_queued_writes() {
 
     server.on_request(&AttPdu::SignedWriteCommand {
         attribute_handle: 1,
-        attribute_value: vec![0; 12],
+        attribute_value: b"not authenticated".to_vec(),
+        sign_counter: 0,
+        signature: [0; 8],
     });
     assert_eq!(server.attribute(1), Some(&b"hXXYY"[..]));
 }
