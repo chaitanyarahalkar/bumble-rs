@@ -1528,15 +1528,17 @@ mod tests {
         let mut pipe = RfcommPipe::new(dlci, bridge_stream, false).unwrap();
 
         tcp_peer.write_all(b"TCP to RFCOMM").unwrap();
-        for _ in 0..8 {
+        let deadline = Instant::now() + Duration::from_secs(1);
+        let mut tcp_to_rfcomm = Vec::new();
+        while tcp_to_rfcomm.len() < b"TCP to RFCOMM".len() {
             pipe.pump(&mut link, &mut devices[0], &mut initiator)
                 .unwrap();
             drive_rfcomm(&mut link, &mut devices, &mut initiator, &mut responder);
+            tcp_to_rfcomm.extend(responder.multiplexer.take_rx(dlci).concat());
+            assert!(Instant::now() < deadline, "TCP data was not bridged");
+            std::thread::yield_now();
         }
-        assert_eq!(
-            responder.multiplexer.take_rx(dlci).concat(),
-            b"TCP to RFCOMM"
-        );
+        assert_eq!(tcp_to_rfcomm, b"TCP to RFCOMM");
 
         responder.multiplexer.write(dlci, b"RFCOMM to TCP").unwrap();
         responder.flush(&mut link, &mut devices[1]).unwrap();

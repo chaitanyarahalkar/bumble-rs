@@ -234,6 +234,7 @@ size, to convey remaining surface.
 | `apps/device_info.py` | `bumble-device-info` (`bumble-transport`) | ✅ | Runnable external-controller device inspection in initiator or advertising/listener mode, with address-or-active-name resolution, optional real LE encryption, complete service/characteristic discovery, and typed GAP, Device Information, Battery, TMAP, PACS, and VCS reads. Profile-specific protocol errors are reported without suppressing later sections. |
 | `apps/l2cap_bridge.py` | `bumble-l2cap-bridge` (`bumble-transport`) | ✅ | Runnable LE credit-based L2CAP-to-TCP bridge with the full upstream client/server, device-config, transport, PSM, credit, MTU/MPS, TCP host, and TCP port surface. The client accepts repeated local TCP connections over one LE ACL; the server accepts CoC channels and opens remote TCP connections. Both directions honor controller flow control and withhold CoC receive credits under TCP backpressure. |
 | `apps/rfcomm_bridge.py` | `bumble-rfcomm-bridge` (`bumble-transport`) | ✅ | Runnable Classic RFCOMM-to-TCP bridge with the full upstream client/server, device-config, transport, trace, channel, UUID, TCP, authentication, and encryption surface. Channel zero advertises or resolves the configured UUID through SDP, repeated DLCs reuse one RFCOMM session, and receive credits are withheld under TCP backpressure. |
+| `apps/gg_bridge.py` | `bumble-gg-bridge` (`bumble-transport`) | ✅ | Runnable Golden Gate Gattlink bridge with the complete upstream transport/address/role and UDP endpoint CLI. Node mode publishes the RX, TX, and CoC-PSM GATT service and advertises; hub mode discovers/subscribes and prefers LE CoC. Both roles retain GATT fallback, exact one-byte packet framing, bounded UDP queues, and controller-aware backpressure. |
 | `apps/pair.py` | `bumble-pair` (`bumble-transport`) | ✅ | Runnable LE, Classic, and simultaneous dual-mode listener paths over external controllers with the complete upstream option surface. LE supports direct address/name connection or configurable advertising, Legacy/SC pairing, and OOB data. Classic supports inquiry/name resolution, incoming/outgoing ACL setup, PIN and Secure Simple Pairing delegates, stored link-key reuse, controller encryption, and best-effort SMP-over-BR/EDR CTKD for P-256 link keys. Both paths provide bond policy, JSON key persistence/printing, and linger behavior. |
 | `apps/scan.py` | `bumble-scan` (`bumble-transport`) | ✅ | Runnable external HCI scanner with upstream RSSI/passive/interval/window/PHY/duplicate/raw/IRK/key-store/device-config options, extended scanning with legacy fallback, typed legacy + extended report decoding, exact active/passive scan-response accumulation, labeled AD rendering, RSSI bars, and real RPA identity resolution. |
 | `apps/usb_probe.py` | `bumble-usb-probe` (`bumble-transport`) | ✅ | Runnable libusb device inventory with upstream `--verbose`, `--hci-only`, manufacturer, and product filters; device/interface-level Bluetooth HCI classification; stable index, VID/PID, duplicate, and serial transport names; string-descriptor error tolerance; and verbose configuration/interface/endpoint details including isochronous packet sizes. |
@@ -2772,6 +2773,27 @@ The Classic RFCOMM/TCP bridge now runs over external controllers:
 - A real loopback TCP test drives the production pipe in both directions across
   two in-memory controllers, Classic L2CAP, and RFCOMM. Focused tests also pin
   Classic channel lifecycle, DLC reuse, and receive-credit pause/resume.
+
+## Slice 130 — what's here
+
+The Golden Gate Gattlink bridge now runs over external controllers:
+
+- `bumble-gg-bridge` preserves the upstream HCI transport, local address,
+  `node`-or-peer role, and short/long UDP endpoint options. Both UDP sockets are
+  nonblocking, the receive queue is bounded, and invalid zero-length or
+  over-256-byte Gattlink datagrams are rejected explicitly.
+- Node mode exposes the upstream 128-bit service plus writable RX, notifying
+  TX, and readable/notifying CoC-PSM characteristics, advertises `Bumble GG`,
+  accepts LE credit channels on PSM `0x00FB`, and falls back to GATT when no CoC
+  is active. Hub mode negotiates MTU 256, discovers the service, subscribes,
+  reads the PSM, and prefers CoC while retaining RX/TX GATT compatibility.
+- CoC data uses the upstream one-octet `packet_length - 1` framing and handles
+  packets split across or coalesced within SDUs. Both CoC and GATT writes wait
+  for controller ACL output to drain, and dynamic RX queues reject overflow.
+- A live integration test crosses real UDP sockets, the production endpoint,
+  Gattlink framing, LE credit flow control, controller ACL queues, and two
+  software controllers in both directions. Separate tests cover the complete
+  GATT database/discovery/write/read/subscription contract and CLI parity.
 
 ## Acceptance
 

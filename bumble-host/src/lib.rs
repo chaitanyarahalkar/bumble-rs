@@ -1427,6 +1427,12 @@ impl Device {
     }
 
     pub fn classic_channel_output_is_drained(&self, connection_handle: u16) -> bool {
+        self.acl_output_is_drained(connection_handle)
+    }
+
+    /// Whether all host-to-controller ACL packets queued for this connection
+    /// have been acknowledged by controller flow control.
+    pub fn acl_output_is_drained(&self, connection_handle: u16) -> bool {
         self.acl_packet_queue.is_drained(connection_handle)
     }
 
@@ -2041,7 +2047,7 @@ impl Device {
     pub fn le_credit_output_is_drained(&self, connection_handle: u16, source_cid: u16) -> bool {
         self.le_credit_channel(connection_handle, source_cid)
             .is_some_and(LeCreditBasedChannel::is_drained)
-            && self.acl_packet_queue.is_drained(connection_handle)
+            && self.acl_output_is_drained(connection_handle)
     }
 
     pub fn take_le_credit_sdus(&mut self, connection_handle: u16, source_cid: u16) -> Vec<Vec<u8>> {
