@@ -55,6 +55,7 @@ pub enum KeyStoreError {
     Json(serde_json::Error),
     InvalidHex(String),
     InvalidAddress(String),
+    NotFound(String),
 }
 
 impl core::fmt::Display for KeyStoreError {
@@ -211,7 +212,9 @@ impl JsonKeyStore {
 impl KeyStore for JsonKeyStore {
     fn delete(&mut self, name: &str) -> KeyStoreResult<()> {
         let (mut db, selected) = self.load()?;
-        db.entry(selected).or_default().remove(name);
+        if db.entry(selected).or_default().remove(name).is_none() {
+            return Err(KeyStoreError::NotFound(name.to_string()));
+        }
         self.save(&db)
     }
 

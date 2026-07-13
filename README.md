@@ -160,7 +160,7 @@ size, to convey remaining surface.
 |---|---|---|---|
 | `core.py` (2.1k), `data_types.py` (1.0k) | `bumble` | ✅ | Core types (`Uuid`, `Address`, `Appearance`, `ClassOfDevice`, `AdvertisingData`), the full typed `DataType` AD hierarchy (~40 types, oracle-pinned), well-known 16-bit UUID names, and `PhysicalTransport`/`LeRole`. |
 | `company_ids.py` (3.3k) | `bumble::company_ids` | ✅ | 3,327-entry SIG company table + `company_name()` binary-search lookup. |
-| `keys.py` (0.4k) | `bumble::keys` | ✅ | Complete `PairingKeys` / `Key` JSON model, replacement-style memory store, namespaced JSON store with upstream merge/default-namespace semantics and atomic replacement, delete/get/get-all/delete-all, platform data-path selection, and IRK resolving-list extraction to typed addresses. Rust uses synchronous filesystem calls rather than wrapping them in nominal async methods. |
+| `keys.py` (0.4k) | `bumble::keys` | ✅ | Complete `PairingKeys` / `Key` JSON model, replacement-style memory store, namespaced JSON store with upstream merge/default-namespace semantics and atomic replacement, delete/get/get-all/delete-all, platform data-path selection, and IRK resolving-list extraction to typed addresses. JSON deletion reports an absent peer while memory deletion remains a no-op, matching the two upstream backends. Rust uses synchronous filesystem calls rather than wrapping them in nominal async methods. |
 | `utils.py` (0.5k) | `bumble::util` (+ spread) | ✅ | Generic helpers (`bit_flags_to_strings`, `name_or_number`); `crc_16` lives in `bumble-l2cap`; the open-enum/flag pattern is realized as newtypes throughout. The asyncio event infra (`EventEmitter`/`AsyncRunner`/`FlowControlAsyncPipe`) is **N/A** for this synchronous port. |
 | `colors`, `logging`, `helpers` | — | N/A | Debug/logging tooling with idiomatic Rust equivalents rather than library surface: `colors` (ANSI), `logging` (→ `log`/`tracing`), and `helpers.PacketTracer` (debug trace). |
 | `snoop.py` (0.3k) | `bumble-transport::snoop` | ✅ | Byte-exact BTSnoop and PCAP HCI-H4 writers, deterministic timestamp injection, direction/pseudo-header flags, file/pipe specification parsing, file-backed snoopers, and a transparent bidirectional `SnoopingTransport` wrapper. |
@@ -227,6 +227,7 @@ size, to convey remaining surface.
 | `bridge.py` (0.1k) | `bumble-transport::HciBridge` | ✅ | Separate host/controller sources and sinks, directional single-packet pumping, typed replacement filters, responses short-circuited to the sender, post-filter directional tracing, EOF reporting, and transport-error propagation. |
 | `apps/show.py` | `bumble-show` (`bumble-transport`) | ✅ | Runnable H4/BTSnoop capture decoder with upstream `--format` and repeatable Android/Zephyr `--vendor` options, typed HCI parsing, direction/timestamp output, and explicit truncated-record reporting. Rust vendor codecs are statically linked rather than dynamically registered. |
 | `apps/ble_rpa_tool.py` | `bumble-rpa-tool` (`bumble-smp`) | ✅ | Runnable `gen-irk`, `gen-rpa`, and `verify-rpa` commands backed by the OS RNG and the real SMP `ah` primitive. Flexible Python-style hex input, address validation, colored verification results, and malformed/extra argument errors are covered. |
+| `apps/unbond.py` | `bumble-unbond` (`bumble`) | 🟡 | File-backed list/delete mode is runnable with namespace selection, upstream-style colored key rendering, atomic persistence, and `!!! pairing not found` behavior. Controller-backed device-config discovery remains deferred until the external-transport host bootstrap is available without introducing a crate cycle. |
 | `pandora/`, remaining apps | — | ⬜ | Conformance harnesses and the remaining command-line applications; still unported. |
 
 ### Roughly where that leaves things
@@ -2383,6 +2384,23 @@ The upstream BLE RPA command-line utility is now runnable in Rust:
 - Tests cover the upstream `ah` vector, correct/wrong keys, non-RPAs, all three
   commands, Python-style whitespace-tolerant hex, generated-value round trips,
   and malformed keys, addresses, commands, and arity.
+
+## Slice 109 — what's here
+
+Pairing-key removal now has a runnable file-backed application path:
+
+- `bumble-unbond --keystore-file` lists all entries or atomically deletes one
+  address. Optional namespace selection handles multi-controller JSON files,
+  and rendering includes every Rust pairing-key field with upstream-style
+  address/property coloring.
+- `JsonKeyStore::delete` now returns `KeyStoreError::NotFound` for a missing
+  peer, matching upstream's `del key_map[name]`; the CLI translates that to
+  `!!! pairing not found`. The memory backend intentionally keeps upstream's
+  no-op-on-missing behavior.
+- Tests create a real namespaced store, list key details, report a missing
+  pairing, delete an existing pairing, verify persisted removal, and reject
+  ambiguous arguments. Controller-backed mode is parsed but returns an explicit
+  dependency error until external host bootstrap is ported.
 
 ## Acceptance
 

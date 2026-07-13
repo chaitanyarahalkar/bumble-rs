@@ -45,6 +45,11 @@ fn json_store_is_atomic_namespaced_and_merges_partial_updates() {
 
     let fallback = JsonKeyStore::new(None, &filename);
     assert!(fallback.get("C4:F2:17:1A:1D:BB").unwrap().is_some());
+    let mut fallback = fallback;
+    assert!(matches!(
+        fallback.delete("missing"),
+        Err(bumble::keys::KeyStoreError::NotFound(name)) if name == "missing"
+    ));
     assert!(!filename.with_extension("json.tmp").exists());
     std::fs::remove_file(filename).unwrap();
 }
