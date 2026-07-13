@@ -13,18 +13,23 @@
 //! every upstream signaling control frame, and a synchronous Classic channel
 //! manager with a [`ControlFrame::Generic`] fallback for extension codes.
 //!
-//! Deferred to later slices: enhanced-retransmission control fields and the
-//! remaining asynchronous manager conveniences.
+//! Deferred to later slices: wiring the enhanced-retransmission engine into
+//! Classic channel configuration and the remaining asynchronous conveniences.
 
 use core::fmt;
 
 pub mod classic;
+pub mod ertm;
 pub mod le_credit;
 
 pub use classic::{
     ChannelManager, ClassicChannel, ClassicChannelSpec, ClassicChannelState,
     L2CAP_ACL_U_DYNAMIC_CID_RANGE_END, L2CAP_ACL_U_DYNAMIC_CID_RANGE_START, L2CAP_DEFAULT_MTU,
     L2CAP_MIN_BR_EDR_MTU, L2CAP_PSM_DYNAMIC_RANGE_END, L2CAP_PSM_DYNAMIC_RANGE_START,
+};
+pub use ertm::{
+    EnhancedControlField, ErtmConfig, ErtmEngine, SegmentationAndReassembly, SupervisoryFunction,
+    ERTM_SEQUENCE_MODULUS,
 };
 pub use le_credit::{
     LeCreditBasedChannel, LeCreditBasedChannelSpec, LeCreditBasedChannelState,

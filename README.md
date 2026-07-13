@@ -76,7 +76,8 @@ crate whose behavior is verified against the upstream Python.
 | 59. HCI ACL fragmentation and host reassembly | `bumble-hci`, `bumble-host` | ✅ buffer-boundary end-to-end green |
 | 60. HCI ACL completed-packet flow-control queue | `bumble-host`, `bumble-controller` | ✅ bounded in-flight window green |
 | 61. Enhanced credit-based multi-channel and reconfigure runtime | `bumble-l2cap` | ✅ five-channel + refusal matrix green |
-| 62+. Remaining modules… | — | planned |
+| 62. Enhanced Retransmission Mode control fields and data engine | `bumble-l2cap` | ✅ loss/busy/window/timer paths green |
+| 63+. Remaining modules… | — | planned |
 
 The LE lifecycle is now complete end-to-end through library APIs: **connect →
 discover → read/write → notify → disconnect** between two virtual devices — and
@@ -137,7 +138,7 @@ size, to convey remaining surface.
 ### L2CAP
 | Upstream (LOC) | Rust crate | Status | Notes |
 |---|---|---|---|
-| `l2cap.py` (3.1k) | `bumble-l2cap` | 🟡 | PDU + complete typed upstream signaling-frame catalog + FCS, synchronous Classic connection-oriented channels, and paired LE CoC runtimes. Classic covers dynamic PSM/CID allocation, Connection/Configure/Disconnection, MTU negotiation/refusal, and bidirectional basic-mode SDUs. LE covers single and enhanced one-to-five-channel setup, refusal correlation, MTU/MPS segmentation/reassembly, credit stalls/replenishment, atomic reconfiguration, accepted channels, bidirectional transfer, and disconnect cleanup. HCI/host fragment and reassemble complete L2CAP PDUs across ACL buffer boundaries. Deferred: enhanced retransmission mode and asynchronous manager conveniences. |
+| `l2cap.py` (3.1k) | `bumble-l2cap` | 🟡 | PDU + complete typed upstream signaling-frame catalog + FCS, synchronous Classic connection-oriented channels, and paired LE CoC runtimes. Classic covers dynamic PSM/CID allocation, Connection/Configure/Disconnection, MTU negotiation/refusal, and bidirectional basic-mode SDUs; the standalone ERTM engine covers I/S fields, SAR, windows, busy state, acknowledgments, loss recovery, and logical timers. LE covers single and enhanced one-to-five-channel setup, refusal correlation, MTU/MPS segmentation/reassembly, credit stalls/replenishment, atomic reconfiguration, accepted channels, bidirectional transfer, and disconnect cleanup. HCI/host fragment and reassemble complete L2CAP PDUs across ACL buffer boundaries. Deferred: ERTM configuration binding into live Classic channels and asynchronous manager conveniences. |
 
 ### ATT / GATT
 | Upstream (LOC) | Rust crate | Status | Notes |
@@ -1395,6 +1396,33 @@ stopping at the codec boundary:
   every reconfiguration refusal class.
 
 Remaining L2CAP protocol depth is enhanced retransmission mode (ERTM).
+
+## Slice 62 — what's here
+
+ERTM now has a standalone deterministic protocol engine suitable for live
+Classic-channel binding:
+
+- `EnhancedControlField` losslessly parses and serializes the two-byte
+  Information and Supervisory forms, including 6-bit TxSeq/ReqSeq values, SAR,
+  RR/REJ/RNR/SREJ functions, and independent Poll/Final bits. Oracle vectors
+  pin Bumble's I-frame and REJ bytes; Poll uses the Bluetooth bit-4 position,
+  correcting Bumble's currently asymmetric serializer/parser.
+- `ErtmEngine` segments SDUs at peer MPS, prepends the declared length to Start
+  frames, reassembles and validates local-MTU-bound SDUs, wraps sequence numbers
+  modulo 64, and limits unacknowledged frames to the negotiated transmit window.
+- RR acknowledgments advance the window, RNR pauses all new and retransmitted
+  traffic, RR resumes it, REJ retransmits the outstanding window, and SREJ
+  retransmits one requested sequence without duplicate delivery.
+- Retransmission uses caller-driven logical ticks rather than a hidden runtime
+  clock. Each frame has a bounded retry count; exceeding it permanently fails
+  the engine. Invalid acknowledgments and malformed SAR transitions are typed
+  errors.
+- Tests cross the sequence wrap with 70 multi-frame SDUs, recover from a lost
+  first frame, prove busy/ready stalling, exercise repeated timeout recovery,
+  enforce the retry ceiling, and reject malformed control flow.
+
+The next slice binds this engine to Classic L2CAP configuration options and live
+channel traffic.
 
 ## Acceptance
 
