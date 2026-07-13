@@ -198,6 +198,12 @@ impl RawHciSocket {
         }
         Ok(Self { fd })
     }
+
+    fn try_clone(&self) -> io::Result<Self> {
+        Ok(Self {
+            fd: self.fd.try_clone()?,
+        })
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -276,5 +282,16 @@ impl SystemHciSocketTransport {
             let _ = spec;
             Err(Error::Unsupported("raw HCI sockets require Linux".into()))
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    pub fn try_split(self) -> Result<(Self, Self)> {
+        let source = Self::from_io(self.io.try_clone()?, self.adapter_index);
+        Ok((source, self))
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    pub fn try_split(self) -> Result<(Self, Self)> {
+        Err(Error::Unsupported("raw HCI sockets require Linux".into()))
     }
 }

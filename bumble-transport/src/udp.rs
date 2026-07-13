@@ -39,6 +39,11 @@ impl UdpTransport {
     pub fn get_socket(&self) -> &UdpSocket {
         &self.socket
     }
+
+    pub fn try_split(self) -> Result<(Self, Self)> {
+        let source = Self::from_socket(self.socket.try_clone()?);
+        Ok((source, self))
+    }
 }
 
 impl PacketSource for UdpTransport {

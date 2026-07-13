@@ -228,6 +228,7 @@ size, to convey remaining surface.
 | `apps/show.py` | `bumble-show` (`bumble-transport`) | ✅ | Runnable H4/BTSnoop capture decoder with upstream `--format` and repeatable Android/Zephyr `--vendor` options, typed HCI parsing, direction/timestamp output, and explicit truncated-record reporting. Rust vendor codecs are statically linked rather than dynamically registered. |
 | `apps/controller_info.py` | `bumble-controller-info` (`bumble-transport`) | ✅ | Runnable external-controller inspection with reset, optional primed latency probes, symbolic local version/address/name, LE features, all 338 upstream Supported Commands labels, Classic + LE buffers, data/advertising limits, minimum connection intervals, named standard/vendor codecs and transports, typed voice fields, and V2-to-V1 LE buffer fallback. Unsupported commands are skipped and interleaved asynchronous packets are preserved. |
 | `apps/controller_loopback.py` | `bumble-controller-loopback` (`bumble-transport`) | ✅ | Runnable local-controller loopback benchmark with the full packet-size/count, ACL/SCO, throughput/RTT, interval, and transport CLI. It validates advertised loopback support, controller buffer limits, the written/read-back mode, waits for the matching connection type, sends bounded in-flight data, validates ordered echoed counters/handles, reassembles ACL/L2CAP packets, and reports RX/TX or RTT statistics. |
+| `apps/hci_bridge.py` | `bumble-hci-bridge` (`bumble-transport`) | 🟡 | Runnable full-duplex host/controller bridge with upstream direct-opcode and OGF:OCF success short circuits. Independent blocking read/write halves cover file, raw HCI socket, serial, TCP, UDP, USB, VHCI, PTY, and Unix transports without shared-lock deadlocks; WebSocket and Android gRPC split endpoints remain. |
 | `apps/scan.py` | `bumble-scan` (`bumble-transport`) | ✅ | Runnable external HCI scanner with upstream RSSI/passive/interval/window/PHY/duplicate/raw/IRK/key-store/device-config options, extended scanning with legacy fallback, typed legacy + extended report decoding, exact active/passive scan-response accumulation, labeled AD rendering, RSSI bars, and real RPA identity resolution. |
 | `apps/usb_probe.py` | `bumble-usb-probe` (`bumble-transport`) | ✅ | Runnable libusb device inventory with upstream `--verbose`, `--hci-only`, manufacturer, and product filters; device/interface-level Bluetooth HCI classification; stable index, VID/PID, duplicate, and serial transport names; string-descriptor error tolerance; and verbose configuration/interface/endpoint details including isochronous packet sizes. |
 | `apps/ble_rpa_tool.py` | `bumble-rpa-tool` (`bumble-smp`) | ✅ | Runnable `gen-irk`, `gen-rpa`, and `verify-rpa` commands backed by the OS RNG and the real SMP `ah` primitive. Flexible Python-style hex input, address validation, colored verification results, and malformed/extra argument errors are covered. |
@@ -2543,6 +2544,25 @@ cycle:
   settings reproduce upstream persistent/default-path and in-memory behavior.
   Scripted-controller tests cover public-address selection, configured-address
   fallback, deletion, memory fallback, and invalid configuration.
+
+## Slice 118 — what's here
+
+The HCI bridge is now runnable over independently owned system-transport
+halves:
+
+- `open_split_transport` duplicates file descriptors, sockets, serial ports,
+  libusb handles, and equivalent handles for file, raw HCI socket, serial, TCP,
+  UDP, USB, VHCI, PTY, and Unix endpoints. A blocked reader therefore never
+  holds the writer behind a shared mutex.
+- `bumble-hci-bridge` opens host and controller transports, forwards both
+  directions on dedicated workers, flushes packet sinks, and returns on EOF or
+  transport failure.
+- The optional short-circuit list accepts direct hexadecimal opcodes and the
+  upstream `OGF:OCF` form. Selected commands receive a typed successful Command
+  Complete event locally while all other HCI packets reach the controller.
+  Parser, forwarding, short-circuit, and live split-TCP tests cover the path.
+- WebSocket and Android emulator/netsim gRPC transports still need safe split
+  endpoint ownership before this application reaches full transport parity.
 
 ## Acceptance
 

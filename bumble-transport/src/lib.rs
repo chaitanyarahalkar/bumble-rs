@@ -44,7 +44,10 @@ pub use common::{
     Error, H4Transport, PacketFramer, PacketLayout, PacketSink, PacketSource, Result,
     MAX_HCI_PACKET_SIZE,
 };
-pub use dispatch::{open_transport, ExternalTransport, OpenedTransport, TransportSpec};
+pub use dispatch::{
+    open_split_transport, open_transport, ExternalTransport, OpenedTransport, SplitOpenedTransport,
+    TransportSpec,
+};
 pub use file::FileTransport;
 pub use hci_socket::{
     HciSocketAddress, HciSocketIo, HciSocketSpec, HciSocketTransport, RawHciSocket,

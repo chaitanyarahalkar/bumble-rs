@@ -58,6 +58,15 @@ impl VhciTransport<File> {
         let file = OpenOptions::new().read(true).write(true).open(path)?;
         Self::from_io(file, HCI_BREDR)
     }
+
+    pub fn try_split(self) -> Result<(Self, Self)> {
+        let source = Self {
+            inner: H4Transport::new(self.inner.get_ref().try_clone()?),
+            hci_index: self.hci_index,
+            controller_type: self.controller_type,
+        };
+        Ok((source, self))
+    }
 }
 
 impl<T: Read> PacketSource for VhciTransport<T> {

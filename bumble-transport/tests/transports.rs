@@ -116,6 +116,28 @@ fn tcp_client_and_server_exchange_packets() {
 }
 
 #[test]
+fn split_tcp_transport_exchanges_packets_in_both_directions() {
+    let server = TcpServer::bind("127.0.0.1:0").unwrap();
+    let address = server.local_addr().unwrap();
+    let client = TcpTransport::connect(address).unwrap();
+    let accepted = server.accept().unwrap();
+    let (mut client_source, mut client_sink) = client.try_split().unwrap();
+    let (mut server_source, mut server_sink) = accepted.try_split().unwrap();
+    let expected = packets();
+
+    client_sink.write_packet(&expected[0]).unwrap();
+    assert_eq!(
+        server_source.read_packet().unwrap(),
+        Some(expected[0].clone())
+    );
+    server_sink.write_packet(&expected[1]).unwrap();
+    assert_eq!(
+        client_source.read_packet().unwrap(),
+        Some(expected[1].clone())
+    );
+}
+
+#[test]
 fn udp_transport_parses_coalesced_datagrams_and_replies() {
     let first_socket = UdpSocket::bind("127.0.0.1:0").unwrap();
     let second_socket = UdpSocket::bind("127.0.0.1:0").unwrap();

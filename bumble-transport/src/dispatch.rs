@@ -180,6 +180,75 @@ pub struct OpenedTransport {
     pub metadata: BTreeMap<String, String>,
 }
 
+/// Independently owned read and write halves of an opened transport.
+///
+/// This is required by full-duplex applications such as an HCI bridge, where
+/// one thread may block waiting for inbound packets while another emits an
+/// unrelated packet on the same endpoint.
+pub struct SplitOpenedTransport {
+    pub source: Box<dyn PacketSource + Send>,
+    pub sink: Box<dyn PacketSink + Send>,
+    pub metadata: BTreeMap<String, String>,
+}
+
+impl OpenedTransport {
+    pub fn try_split(self) -> Result<SplitOpenedTransport> {
+        let (source, sink): (Box<dyn PacketSource + Send>, Box<dyn PacketSink + Send>) =
+            match self.transport {
+                ExternalTransport::File(transport) => {
+                    let (source, sink) = transport.try_split()?;
+                    (Box::new(source), Box::new(sink))
+                }
+                ExternalTransport::HciSocket(transport) => {
+                    let (source, sink) = transport.try_split()?;
+                    (Box::new(source), Box::new(sink))
+                }
+                ExternalTransport::Serial(transport) => {
+                    let (source, sink) = transport.try_split()?;
+                    (Box::new(source), Box::new(sink))
+                }
+                ExternalTransport::Tcp(transport) => {
+                    let (source, sink) = transport.try_split()?;
+                    (Box::new(source), Box::new(sink))
+                }
+                ExternalTransport::Udp(transport) => {
+                    let (source, sink) = transport.try_split()?;
+                    (Box::new(source), Box::new(sink))
+                }
+                ExternalTransport::Usb(transport) => {
+                    let (source, sink) = transport.try_split()?;
+                    (Box::new(source), Box::new(sink))
+                }
+                ExternalTransport::Vhci(transport) => {
+                    let (source, sink) = transport.try_split()?;
+                    (Box::new(source), Box::new(sink))
+                }
+                #[cfg(unix)]
+                ExternalTransport::Pty(transport) => {
+                    let (source, sink) = transport.try_split()?;
+                    (Box::new(source), Box::new(sink))
+                }
+                #[cfg(unix)]
+                ExternalTransport::Unix(transport) => {
+                    let (source, sink) = transport.try_split()?;
+                    (Box::new(source), Box::new(sink))
+                }
+                ExternalTransport::AndroidEmulator(_)
+                | ExternalTransport::AndroidNetsim(_)
+                | ExternalTransport::WebSocket(_) => {
+                    return Err(Error::Unsupported(
+                        "independent read/write halves for this scheme".into(),
+                    ));
+                }
+            };
+        Ok(SplitOpenedTransport {
+            source,
+            sink,
+            metadata: self.metadata,
+        })
+    }
+}
+
 impl PacketSource for OpenedTransport {
     fn read_packet(&mut self) -> Result<Option<HciPacket>> {
         self.transport.read_packet()
@@ -282,4 +351,10 @@ pub fn open_transport(name: &str) -> Result<OpenedTransport> {
         transport,
         metadata,
     })
+}
+
+/// Open a transport and duplicate its system handle into independent packet
+/// source and sink halves.
+pub fn open_split_transport(name: &str) -> Result<SplitOpenedTransport> {
+    open_transport(name)?.try_split()
 }

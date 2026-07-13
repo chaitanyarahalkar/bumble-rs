@@ -43,6 +43,11 @@ impl PtyTransport {
     pub fn replica_mut(&mut self) -> &mut TTYPort {
         &mut self.replica
     }
+
+    pub fn try_split(self) -> Result<(H4Transport<Box<dyn SerialPort>>, Self)> {
+        let source = H4Transport::new(self.inner.get_ref().try_clone()?);
+        Ok((source, self))
+    }
 }
 
 impl PacketSource for PtyTransport {

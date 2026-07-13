@@ -31,6 +31,11 @@ impl TcpTransport {
         self.inner.get_ref().shutdown(Shutdown::Both)?;
         Ok(())
     }
+
+    pub fn try_split(self) -> Result<(Self, Self)> {
+        let source = Self::from_stream(self.inner.get_ref().try_clone()?)?;
+        Ok((source, self))
+    }
 }
 
 impl PacketSource for TcpTransport {

@@ -91,6 +91,14 @@ impl SerialTransport {
     pub fn port_mut(&mut self) -> &mut dyn SerialPort {
         self.inner.get_mut().as_mut()
     }
+
+    pub fn try_split(self) -> Result<(Self, Self)> {
+        let source = Self {
+            inner: H4Transport::new(self.inner.get_ref().try_clone()?),
+            config: self.config.clone(),
+        };
+        Ok((source, self))
+    }
 }
 
 impl PacketSource for SerialTransport {

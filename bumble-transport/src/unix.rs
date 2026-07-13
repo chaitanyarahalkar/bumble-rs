@@ -18,6 +18,11 @@ impl UnixTransport {
             inner: H4Transport::new(stream),
         }
     }
+
+    pub fn try_split(self) -> Result<(Self, Self)> {
+        let source = Self::from_stream(self.inner.get_ref().try_clone()?);
+        Ok((source, self))
+    }
 }
 
 impl PacketSource for UnixTransport {

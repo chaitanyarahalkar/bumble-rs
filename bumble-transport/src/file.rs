@@ -10,4 +10,11 @@ impl FileTransport {
         let file = OpenOptions::new().read(true).write(true).open(path)?;
         Ok(Self::new(file))
     }
+
+    /// Duplicate the underlying descriptor into independently owned packet
+    /// source and sink halves.
+    pub fn try_split(self) -> Result<(Self, Self)> {
+        let source = Self::new(self.get_ref().try_clone()?);
+        Ok((source, self))
+    }
 }

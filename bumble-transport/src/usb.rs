@@ -6,6 +6,7 @@ use bumble_hci::{
 use core::fmt;
 use rusb::{Device, DeviceHandle, Direction, GlobalContext, Recipient, RequestType, TransferType};
 use std::collections::VecDeque;
+use std::sync::Arc;
 use std::time::Duration;
 
 const USB_DEVICE_CLASS_DEVICE: u8 = 0x00;
@@ -405,8 +406,9 @@ fn transfer_error(error: UsbTransferError) -> Error {
     std::io::Error::new(kind, error).into()
 }
 
+#[derive(Clone)]
 pub struct RusbUsbIo {
-    handle: DeviceHandle<GlobalContext>,
+    handle: Arc<DeviceHandle<GlobalContext>>,
 }
 
 impl UsbIo for RusbUsbIo {
@@ -496,13 +498,27 @@ impl SystemUsbTransport {
             handle.set_alternate_setting(layout.interface, layout.alternate)?;
         }
         Ok(Self::from_backend(
-            RusbUsbIo { handle },
+            RusbUsbIo {
+                handle: Arc::new(handle),
+            },
             layout,
             descriptor.vendor_id(),
             descriptor.product_id(),
             device.bus_number(),
             device.address(),
         ))
+    }
+
+    pub fn try_split(self) -> Result<(Self, Self)> {
+        let source = Self::from_backend(
+            self.backend.clone(),
+            self.layout,
+            self.vendor_id,
+            self.product_id,
+            self.bus,
+            self.address,
+        );
+        Ok((source, self))
     }
 }
 
