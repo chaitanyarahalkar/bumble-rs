@@ -227,6 +227,7 @@ size, to convey remaining surface.
 | `bridge.py` (0.1k) | `bumble-transport::HciBridge` | ✅ | Separate host/controller sources and sinks, directional single-packet pumping, typed replacement filters, responses short-circuited to the sender, post-filter directional tracing, EOF reporting, and transport-error propagation. |
 | `apps/show.py` | `bumble-show` (`bumble-transport`) | ✅ | Runnable H4/BTSnoop capture decoder with upstream `--format` and repeatable Android/Zephyr `--vendor` options, typed HCI parsing, direction/timestamp output, and explicit truncated-record reporting. Rust vendor codecs are statically linked rather than dynamically registered. |
 | `apps/controller_info.py` | `bumble-controller-info` (`bumble-transport`) | 🟡 | Runnable external-controller inspection with reset, optional primed latency probes, local version/address/name, Classic + LE feature and buffer queries, data/advertising limits, minimum connection intervals, codec/voice queries, and V2-to-V1 LE buffer fallback. Unsupported commands are skipped and interleaved asynchronous packets are preserved. Deferred: symbolic supported-command, feature, codec, version, and voice-field names instead of numeric/bitmap rendering. |
+| `apps/usb_probe.py` | `bumble-usb-probe` (`bumble-transport`) | ✅ | Runnable libusb device inventory with upstream `--verbose`, `--hci-only`, manufacturer, and product filters; device/interface-level Bluetooth HCI classification; stable index, VID/PID, duplicate, and serial transport names; string-descriptor error tolerance; and verbose configuration/interface/endpoint details including isochronous packet sizes. |
 | `apps/ble_rpa_tool.py` | `bumble-rpa-tool` (`bumble-smp`) | ✅ | Runnable `gen-irk`, `gen-rpa`, and `verify-rpa` commands backed by the OS RNG and the real SMP `ah` primitive. Flexible Python-style hex input, address validation, colored verification results, and malformed/extra argument errors are covered. |
 | `apps/unbond.py` | `bumble-unbond` (`bumble`) | 🟡 | File-backed list/delete mode is runnable with namespace selection, upstream-style colored key rendering, atomic persistence, and `!!! pairing not found` behavior. Controller-backed device-config discovery remains deferred until the external-transport host bootstrap is available without introducing a crate cycle. |
 | `pandora/`, remaining apps | — | ⬜ | Conformance harnesses and the remaining command-line applications; still unported. |
@@ -2436,6 +2437,23 @@ External controllers can now be inspected with a runnable information tool:
   query it advertises instead of successful empty stubs. Tests serialize and
   reparse every new controller response, covering the real HCI boundary rather
   than only in-memory enum matching.
+
+## Slice 112 — what's here
+
+USB controller discovery now has a runnable inspection application:
+
+- `bumble-usb-probe` enumerates libusb devices without opening an HCI transport,
+  recognizes Bluetooth HCI class tuples at either the device or interface
+  level, and prints every supported Bumble USB selector for each device.
+- Upstream filtering and selector semantics are preserved: HCI-only,
+  manufacturer/product filters, ordinal HCI indices, VID/PID duplicate suffixes,
+  and unique serial selectors. Inaccessible string descriptors are omitted
+  without hiding the device.
+- Verbose mode renders configurations, alternate interface settings, endpoint
+  transfer direction/type, and isochronous maximum packet sizes. Pure fixtures
+  cover classification, rendering, argument errors, and duplicate selector
+  disambiguation; real local enumeration also exits cleanly when no USB devices
+  are visible.
 
 ## Acceptance
 
