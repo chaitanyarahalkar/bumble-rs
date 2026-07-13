@@ -8,6 +8,8 @@ use bumble_gatt::{
 use core::fmt;
 
 pub mod aics;
+pub mod ams;
+pub mod ancs;
 pub mod ascs;
 pub mod asha;
 pub mod bap;
