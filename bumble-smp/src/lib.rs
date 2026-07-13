@@ -32,11 +32,13 @@
 //! [`security_request_action`] adds CT2-aware stored-bond evaluation for
 //! Security Request reconnects. [`AddressResolver`] and the RPA helpers add
 //! host-side privacy resolution. [`PairingManager`] owns concurrent LE sessions
-//! by connection handle. Deferred: live SMP-over-BR/EDR CTKD orchestration.
+//! by connection handle, including encrypted SMP-over-BR/EDR CTKD. Deferred:
+//! live Keypress Notification progress during Passkey entry.
 
 use bumble::Address;
 use core::fmt;
 
+pub mod classic;
 pub mod distribution;
 pub mod manager;
 pub mod pairing;
@@ -45,10 +47,14 @@ pub mod sc_session;
 pub mod security;
 pub mod session;
 
+pub use classic::{ClassicCtkdOutcome, ClassicCtkdSession, ClassicCtkdState};
 pub use distribution::{
     KeyDistributionConfig, KeyDistributionSession, KeyDistributionState, LocalKeyMaterial,
 };
-pub use manager::{ManagedPairingState, PairingConnection, PairingDelegateFactory, PairingManager};
+pub use manager::{
+    ManagedPairingState, PairingConnection, PairingDelegateFactory, PairingManager,
+    PairingTransport,
+};
 pub use pairing::{
     derive_link_key, derive_ltk, select_pairing_method, select_pairing_method_with_oob,
     AcceptAllDelegate, AuthReq, IdentityAddressType, IoCapability, KeyDistribution, OobConfig,
@@ -68,6 +74,8 @@ pub use session::{
 
 /// The L2CAP channel id for the LE Security Manager Protocol.
 pub const SMP_CID: u16 = 0x0006;
+/// The fixed L2CAP channel id for SMP over BR/EDR.
+pub const SMP_BR_CID: u16 = 0x0007;
 
 /// SMP command codes (Vol 3, Part H - 3.3).
 pub mod codes {

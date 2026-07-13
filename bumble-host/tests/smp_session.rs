@@ -337,20 +337,20 @@ fn pairing_manager_owns_live_session_encryption_distribution_and_bonding() {
     let responder_address = address("C4:F2:17:1A:1D:BB");
     let mut managers = [new_manager(), new_manager()];
     managers[0]
-        .register_connection(PairingConnection {
+        .register_connection(PairingConnection::le(
             handle,
-            role: PairingRole::Initiator,
-            local_address: initiator_address.clone(),
-            peer_address: responder_address.clone(),
-        })
+            PairingRole::Initiator,
+            initiator_address.clone(),
+            responder_address.clone(),
+        ))
         .unwrap();
     managers[1]
-        .register_connection(PairingConnection {
+        .register_connection(PairingConnection::le(
             handle,
-            role: PairingRole::Responder,
-            local_address: responder_address,
-            peer_address: initiator_address,
-        })
+            PairingRole::Responder,
+            responder_address,
+            initiator_address,
+        ))
         .unwrap();
     managers[0].pair(handle).unwrap();
     drive_managers(&mut link, &mut devices, &mut managers);

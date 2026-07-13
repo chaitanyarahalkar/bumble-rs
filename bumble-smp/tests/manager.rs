@@ -1,8 +1,8 @@
 use bumble::keys::{KeyStore, MemoryKeyStore};
 use bumble::{Address, AddressType};
 use bumble_smp::{
-    security_request, AcceptAllDelegate, AuthReq, ManagedPairingState, PairingConfig,
-    PairingConnection, PairingManager, PairingRole, ScPairingState,
+    security_request, AcceptAllDelegate, AuthReq, ClassicCtkdState, ManagedPairingState,
+    PairingConfig, PairingConnection, PairingManager, PairingRole, ScPairingState,
 };
 
 fn address(value: &str) -> Address {
@@ -48,20 +48,20 @@ fn manager_runs_two_concurrent_sc_sessions_and_persists_each_bond() {
         let central_address = address(central_text);
         let peripheral_address = address(peripheral_text);
         central
-            .register_connection(PairingConnection {
+            .register_connection(PairingConnection::le(
                 handle,
-                role: PairingRole::Initiator,
-                local_address: central_address.clone(),
-                peer_address: peripheral_address.clone(),
-            })
+                PairingRole::Initiator,
+                central_address.clone(),
+                peripheral_address.clone(),
+            ))
             .unwrap();
         peripheral
-            .register_connection(PairingConnection {
+            .register_connection(PairingConnection::le(
                 handle,
-                role: PairingRole::Responder,
-                local_address: peripheral_address,
-                peer_address: central_address,
-            })
+                PairingRole::Responder,
+                peripheral_address,
+                central_address,
+            ))
             .unwrap();
         central.pair(handle).unwrap();
     }
@@ -110,20 +110,20 @@ fn manager_runs_two_concurrent_sc_sessions_and_persists_each_bond() {
 fn manager_routes_security_requests_rejects_invalid_lifecycle_and_cleans_disconnect() {
     let mut central = manager();
     central
-        .register_connection(PairingConnection {
-            handle: 7,
-            role: PairingRole::Initiator,
-            local_address: address("C4:F2:17:1A:1D:AA"),
-            peer_address: address("C4:F2:17:1A:1D:BB"),
-        })
+        .register_connection(PairingConnection::le(
+            7,
+            PairingRole::Initiator,
+            address("C4:F2:17:1A:1D:AA"),
+            address("C4:F2:17:1A:1D:BB"),
+        ))
         .unwrap();
     assert!(central
-        .register_connection(PairingConnection {
-            handle: 7,
-            role: PairingRole::Initiator,
-            local_address: address("C4:F2:17:1A:1D:AA"),
-            peer_address: address("C4:F2:17:1A:1D:BB"),
-        })
+        .register_connection(PairingConnection::le(
+            7,
+            PairingRole::Initiator,
+            address("C4:F2:17:1A:1D:AA"),
+            address("C4:F2:17:1A:1D:BB"),
+        ))
         .is_err());
     let requested = AuthReq::from_booleans(true, true, true, false, true);
     central.receive(7, security_request(requested)).unwrap();
@@ -136,4 +136,46 @@ fn manager_routes_security_requests_rejects_invalid_lifecycle_and_cleans_disconn
     assert_eq!(central.session_count(), 0);
     assert!(central.poll_outbound().is_none());
     assert!(!central.disconnect(7));
+}
+
+#[test]
+fn manager_selects_classic_ctkd_for_encrypted_br_edr_connections() {
+    let mut initiator = manager();
+    let mut responder = manager();
+    let a = address("11:11:11:11:11:11");
+    let b = address("22:22:22:22:22:22");
+    let link_key = [0xD4; 16];
+    initiator
+        .register_connection(PairingConnection::br_edr(
+            9,
+            PairingRole::Initiator,
+            a.clone(),
+            b.clone(),
+            link_key,
+            true,
+            true,
+        ))
+        .unwrap();
+    responder
+        .register_connection(PairingConnection::br_edr(
+            9,
+            PairingRole::Responder,
+            b,
+            a,
+            link_key,
+            true,
+            true,
+        ))
+        .unwrap();
+    initiator.pair(9).unwrap();
+    relay(&mut initiator, &mut responder);
+    assert_eq!(
+        initiator.state(9),
+        Some(ManagedPairingState::ClassicCtkd(ClassicCtkdState::Complete))
+    );
+    assert_eq!(initiator.encryption_key(9), responder.encryption_key(9));
+    assert_eq!(
+        initiator.pairing_keys(9).unwrap().link_key.unwrap().value,
+        vec![0xD4; 16]
+    );
 }

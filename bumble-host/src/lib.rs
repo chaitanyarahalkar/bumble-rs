@@ -147,6 +147,11 @@ impl Device {
             .is_some_and(|handle| self.encrypted_handles.contains(&handle))
     }
 
+    pub fn is_classic_encrypted(&self) -> bool {
+        self.classic_connection_handle
+            .is_some_and(|handle| self.encrypted_handles.contains(&handle))
+    }
+
     /// Enable LE encryption with a pairing-derived STK/LTK. The peer receives
     /// the corresponding LL encryption request through the virtual link.
     pub fn enable_encryption(&mut self, link: &mut LocalLink, key: [u8; 16]) -> bool {
@@ -213,6 +218,20 @@ impl Device {
 
     pub fn classic_connection_handle(&self) -> Option<u16> {
         self.classic_connection_handle
+    }
+
+    pub fn set_classic_encryption(&mut self, link: &mut LocalLink, enabled: bool) -> bool {
+        let Some(connection_handle) = self.classic_connection_handle else {
+            return false;
+        };
+        self.send_hci_command(
+            link,
+            Command::SetConnectionEncryption {
+                connection_handle,
+                encryption_enable: u8::from(enabled),
+            },
+        );
+        true
     }
 
     pub fn synchronous_connections(&self) -> &[SynchronousConnectionInfo] {
@@ -332,7 +351,7 @@ impl Device {
         self.send_l2cap_on_handle(link, handle, cid, payload)
     }
 
-    fn send_l2cap_on_handle(
+    pub fn send_l2cap_on_handle(
         &mut self,
         link: &mut LocalLink,
         handle: u16,

@@ -23,6 +23,8 @@ pub enum ClassicPdu {
     FeaturesReq,
     /// Features response (`LmpFeaturesRes`).
     FeaturesRes { features: [u8; 8] },
+    /// Enable or disable encryption on an established Classic ACL.
+    EncryptionModeReq { enable: bool },
     /// Request an SCO/eSCO logical link over an established Classic ACL.
     SynchronousConnectionReq { link_type: u8, air_mode: u8 },
     /// Accept a pending SCO/eSCO logical link.

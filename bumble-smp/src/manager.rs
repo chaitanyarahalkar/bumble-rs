@@ -7,8 +7,9 @@ use bumble::Address;
 use bumble_crypto::{random_128, EccKey};
 
 use crate::{
-    AuthReq, Error, LegacyPairingSession, PairingConfig, PairingDelegate, PairingFailureReason,
-    PairingRole, PairingState, Result, ScPairingSession, ScPairingState, SmpPdu,
+    AuthReq, ClassicCtkdSession, ClassicCtkdState, Error, LegacyPairingSession, PairingConfig,
+    PairingDelegate, PairingFailureReason, PairingRole, PairingState, Result, ScPairingSession,
+    ScPairingState, SmpPdu,
 };
 
 pub type PairingDelegateFactory =
@@ -20,17 +21,71 @@ pub struct PairingConnection {
     pub role: PairingRole,
     pub local_address: Address,
     pub peer_address: Address,
+    pub transport: PairingTransport,
+    pub link_key: Option<[u8; 16]>,
+    pub authenticated: bool,
+    pub encrypted: bool,
+}
+
+impl PairingConnection {
+    pub fn le(
+        handle: u16,
+        role: PairingRole,
+        local_address: Address,
+        peer_address: Address,
+    ) -> Self {
+        Self {
+            handle,
+            role,
+            local_address,
+            peer_address,
+            transport: PairingTransport::Le,
+            link_key: None,
+            authenticated: false,
+            encrypted: false,
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn br_edr(
+        handle: u16,
+        role: PairingRole,
+        local_address: Address,
+        peer_address: Address,
+        link_key: [u8; 16],
+        authenticated: bool,
+        encrypted: bool,
+    ) -> Self {
+        Self {
+            handle,
+            role,
+            local_address,
+            peer_address,
+            transport: PairingTransport::BrEdr,
+            link_key: Some(link_key),
+            authenticated,
+            encrypted,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PairingTransport {
+    Le,
+    BrEdr,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ManagedPairingState {
     Legacy(PairingState),
     SecureConnections(ScPairingState),
+    ClassicCtkd(ClassicCtkdState),
 }
 
 enum ManagedSession {
     Legacy(Box<LegacyPairingSession>),
     SecureConnections(Box<ScPairingSession>),
+    ClassicCtkd(Box<ClassicCtkdSession>),
 }
 
 impl ManagedSession {
@@ -38,6 +93,7 @@ impl ManagedSession {
         match self {
             Self::Legacy(session) => session.process(pdu),
             Self::SecureConnections(session) => session.process(pdu),
+            Self::ClassicCtkd(session) => session.process(pdu),
         }
     }
 
@@ -45,6 +101,7 @@ impl ManagedSession {
         match self {
             Self::Legacy(session) => session.start(),
             Self::SecureConnections(session) => session.start(),
+            Self::ClassicCtkd(session) => session.start(),
         }
     }
 
@@ -52,6 +109,9 @@ impl ManagedSession {
         match self {
             Self::Legacy(session) => session.mark_encrypted(),
             Self::SecureConnections(session) => session.mark_encrypted(),
+            Self::ClassicCtkd(_) => Err(Error::InvalidPacket(
+                "Classic CTKD starts only on an already encrypted ACL".into(),
+            )),
         }
     }
 
@@ -59,6 +119,7 @@ impl ManagedSession {
         match self {
             Self::Legacy(session) => session.drain_outbound(),
             Self::SecureConnections(session) => session.drain_outbound(),
+            Self::ClassicCtkd(session) => session.drain_outbound(),
         }
     }
 
@@ -68,6 +129,7 @@ impl ManagedSession {
             Self::SecureConnections(session) => {
                 ManagedPairingState::SecureConnections(session.state())
             }
+            Self::ClassicCtkd(session) => ManagedPairingState::ClassicCtkd(session.state()),
         }
     }
 
@@ -75,6 +137,7 @@ impl ManagedSession {
         match self {
             Self::Legacy(session) => session.failure(),
             Self::SecureConnections(session) => session.failure(),
+            Self::ClassicCtkd(session) => session.failure(),
         }
     }
 
@@ -82,6 +145,7 @@ impl ManagedSession {
         match self {
             Self::Legacy(session) => session.pairing_keys(),
             Self::SecureConnections(session) => session.pairing_keys(),
+            Self::ClassicCtkd(session) => session.pairing_keys(),
         }
     }
 
@@ -89,6 +153,7 @@ impl ManagedSession {
         match self {
             Self::Legacy(session) => session.stk(),
             Self::SecureConnections(session) => session.ltk(),
+            Self::ClassicCtkd(session) => session.outcome().map(|outcome| outcome.ltk),
         }
     }
 
@@ -96,6 +161,7 @@ impl ManagedSession {
         match self {
             Self::Legacy(session) => session.store_bond(store),
             Self::SecureConnections(session) => session.store_bond(store),
+            Self::ClassicCtkd(session) => session.store_bond(store),
         }
     }
 }
@@ -264,6 +330,21 @@ impl PairingManager {
                 connection.local_address.clone(),
             ),
         };
+        if connection.transport == PairingTransport::BrEdr {
+            return Ok(ManagedSession::ClassicCtkd(Box::new(
+                ClassicCtkdSession::new(
+                    connection.role,
+                    self.config.clone(),
+                    initiator_address,
+                    responder_address,
+                    connection.link_key.ok_or_else(|| {
+                        Error::InvalidPacket("Classic CTKD connection has no Link Key".into())
+                    })?,
+                    connection.authenticated,
+                    connection.encrypted,
+                )?,
+            )));
+        }
         let delegate = (self.delegate_factory)(connection.handle, connection.role);
         if self.config.secure_connections {
             Ok(ManagedSession::SecureConnections(Box::new(

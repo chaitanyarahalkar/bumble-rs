@@ -87,7 +87,8 @@ crate whose behavior is verified against the upstream Python.
 | 70. IRK address resolution and controller privacy offload | `bumble-smp`, `bumble-controller`, `bumble-host` | ✅ identity→RPA reconnect green |
 | 71. CSRK authenticated ATT signed writes and persistent counters | `bumble-att`, `bumble-gatt`, `bumble-host` | ✅ CMAC/replay/restart green |
 | 72. Multi-connection LE pairing manager | `bumble-smp`, `bumble-host` | ✅ concurrent + live manager green |
-| 73+. Remaining modules… | — | planned |
+| 73. Encrypted SMP-over-BR/EDR CTKD orchestration | `bumble-smp`, `bumble-controller`, `bumble-host` | ✅ h6/h7 + CID 0x0007 green |
+| 74+. Remaining modules… | — | planned |
 
 The LE lifecycle is now complete end-to-end through library APIs: **connect →
 discover → read/write → notify → disconnect** between two virtual devices — and
@@ -162,7 +163,7 @@ size, to convey remaining surface.
 | Upstream (LOC) | Rust crate | Status | Notes |
 |---|---|---|---|
 | `crypto/` | `bumble-crypto` | ✅ | All SMP **symmetric** security functions — `e`, AES-CMAC, `c1`, `s1`, `f4`/`f5`/`f6`, `g2`, `h6`/`h7`, `ah` — spec/RFC-4493 vector-verified, plus **P-256 `EccKey`** (slice 19: keygen, `from_private_key_bytes`, public-key coordinates, ECDH) oracle-pinned to upstream. Deferred: none of the crypto primitives. |
-| `smp.py` (2.0k), `pairing.py` (0.3k) | `bumble-smp` | 🟡 | PDU codec (incl. all **LE Secure Connections** PDUs), live Legacy and SC sessions covering every association model through host/controller encryption, responder-first encrypted key distribution, SC LTK handling, peer/local signing keys with persistent counters, negotiated h6/h7 CTKD, memory/JSON bond persistence, Security Request evaluation/reconnect, host-side RPA resolution, and a concurrent handle-keyed LE manager that owns session creation/lifecycle. Also includes the complete method matrix, auth/key-distribution policy, and SC + Legacy OOB contexts/AD interchange. Deferred: live SMP-over-BR/EDR CTKD orchestration. |
+| `smp.py` (2.0k), `pairing.py` (0.3k) | `bumble-smp` | 🟡 | PDU codec (incl. all **LE Secure Connections** PDUs), live Legacy and SC sessions covering every association model through host/controller encryption, responder-first encrypted key distribution, SC LTK handling, peer/local signing keys with persistent counters, negotiated h6/h7 CTKD, memory/JSON bond persistence, Security Request evaluation/reconnect, host-side RPA resolution, and a concurrent handle-keyed manager for LE plus encrypted SMP-over-BR/EDR CTKD. Also includes the complete method matrix, auth/key-distribution policy, and SC + Legacy OOB contexts/AD interchange. Deferred: live keypress-notification UI progress. |
 
 ### Transports & drivers
 | Upstream | Rust crate | Status | Notes |
@@ -1669,8 +1670,32 @@ The LE SMP pieces now run behind a connection-aware manager:
   controller encryption with the manager's LTK, finishes distribution, and
   persists the resulting bond.
 
-The remaining SMP-specific behavior is live SMP-over-BR/EDR CTKD
-orchestration; the LE manager and its full pairing/bond lifecycle are present.
+## Slice 73 — what's here
+
+Cross-transport derivation now runs on a real Classic ACL:
+
+- HCI Set Connection Encryption is functional for BR/EDR: the initiator emits
+  a Classic LMP encryption-mode request and both hosts receive Encryption
+  Change. The host tracks Classic encryption separately from LE.
+- Classic ACL handles now carry fragmented/reassembled L2CAP through the same
+  bounded host queue, enabling SMP fixed CID `0x0007` rather than an isolated
+  state-machine transcript.
+- `ClassicCtkdSession` requires an encrypted ACL and existing Link Key,
+  exchanges only Pairing Request/Response, negotiates CT2/key size/distribution,
+  and derives the common LE LTK with h6 or h7. It never runs LE confirm/random,
+  public-key/DHKey-check, or legacy ENC_INFO/MASTER_ID phases.
+- Identity and signing keys retain responder-first ordering; completed bonds
+  contain the derived LTK, original Link Key, IRKs/CSRKs, authentication state,
+  and counters.
+- `PairingManager` selects this session for registered BR/EDR connections while
+  retaining the same handle correlation, bond persistence, and lifecycle API.
+- The live test establishes Classic ACL, enables encryption on both controllers,
+  runs CTKD over CID `0x0007`, and verifies identical outcomes and retained Link
+  Key material.
+
+The remaining SMP behavior gap is live Keypress Notification progress during
+Passkey entry; the pairing, distribution, persistence, reconnect, privacy,
+signing, manager, and cross-transport paths are present.
 
 ## Acceptance
 

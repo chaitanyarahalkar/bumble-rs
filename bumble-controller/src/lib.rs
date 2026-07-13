@@ -473,6 +473,10 @@ impl Controller {
             Command::LeAcceptCisRequest { connection_handle } => {
                 self.handle_accept_cis_request(connection_handle)
             }
+            Command::SetConnectionEncryption {
+                connection_handle,
+                encryption_enable,
+            } => self.handle_set_classic_encryption(connection_handle, encryption_enable),
             Command::CreateConnection { bd_addr, .. } => self.handle_create_connection(bd_addr),
             Command::AcceptConnectionRequest { bd_addr, .. } => {
                 self.handle_accept_connection_request(bd_addr)
@@ -858,6 +862,41 @@ impl Controller {
         self.queue_classic(self_addr, peer_addr, lmp::ClassicPdu::FeaturesReq);
     }
 
+    fn handle_set_classic_encryption(&mut self, connection_handle: u16, encryption_enable: u8) {
+        let Some(connection) = self
+            .classic_connections
+            .iter()
+            .find(|connection| connection.handle == connection_handle)
+        else {
+            return self.command_status(
+                HCI_SET_CONNECTION_ENCRYPTION_COMMAND,
+                UNKNOWN_CONNECTION_IDENTIFIER_ERROR,
+            );
+        };
+        if encryption_enable > 1 {
+            return self.command_status(
+                HCI_SET_CONNECTION_ENCRYPTION_COMMAND,
+                INVALID_COMMAND_PARAMETERS,
+            );
+        }
+        let self_address = connection.self_address.clone();
+        let peer_address = connection.peer_address.clone();
+        self.command_status(HCI_SET_CONNECTION_ENCRYPTION_COMMAND, HCI_SUCCESS);
+        self.host_queue
+            .push(HciPacket::Event(Event::EncryptionChange {
+                status: HCI_SUCCESS,
+                connection_handle,
+                encryption_enabled: encryption_enable,
+            }));
+        self.queue_classic(
+            self_address,
+            peer_address,
+            lmp::ClassicPdu::EncryptionModeReq {
+                enable: encryption_enable != 0,
+            },
+        );
+    }
+
     /// Start an SCO/eSCO logical link over an established Classic ACL.
     fn handle_setup_synchronous_connection(
         &mut self,
@@ -1079,6 +1118,20 @@ impl Controller {
                             lmp_features: features,
                         },
                     ));
+                }
+            }
+            lmp::ClassicPdu::EncryptionModeReq { enable } => {
+                if let Some(connection) = self
+                    .classic_connections
+                    .iter()
+                    .find(|connection| connection.peer_address == *sender_address)
+                {
+                    self.host_queue
+                        .push(HciPacket::Event(Event::EncryptionChange {
+                            status: HCI_SUCCESS,
+                            connection_handle: connection.handle,
+                            encryption_enabled: u8::from(enable),
+                        }));
                 }
             }
             lmp::ClassicPdu::SynchronousConnectionReq {
@@ -1602,6 +1655,13 @@ impl Controller {
         self.connections.iter().find(|c| c.handle == handle)
     }
 
+    fn connection_by_handle_any(&self, handle: u16) -> Option<&Connection> {
+        self.connections
+            .iter()
+            .chain(self.classic_connections.iter())
+            .find(|connection| connection.handle == handle)
+    }
+
     fn ack(&mut self, command_opcode: u16, status: u8) {
         self.complete(command_opcode, ReturnParameters::Status { status });
     }
@@ -1838,7 +1898,7 @@ impl LocalLink {
     pub fn send_acl_packet(&mut self, from: usize, packet: AclDataPacket) -> bool {
         let connection_handle = packet.connection_handle;
         // Resolve the sender's connection endpoints.
-        let Some(conn) = self.controllers[from].connection_by_handle(connection_handle) else {
+        let Some(conn) = self.controllers[from].connection_by_handle_any(connection_handle) else {
             return false;
         };
         let source_address = conn.self_address.clone();
@@ -1849,8 +1909,9 @@ impl LocalLink {
             if i == from {
                 return None;
             }
-            ctrl.connections()
+            ctrl.connections
                 .iter()
+                .chain(ctrl.classic_connections.iter())
                 .find(|c| c.self_address == peer_address && c.peer_address == source_address)
                 .map(|c| (i, c.handle))
         });
