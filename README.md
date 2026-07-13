@@ -227,6 +227,7 @@ size, to convey remaining surface.
 | `bridge.py` (0.1k) | `bumble-transport::HciBridge` | ✅ | Separate host/controller sources and sinks, directional single-packet pumping, typed replacement filters, responses short-circuited to the sender, post-filter directional tracing, EOF reporting, and transport-error propagation. |
 | `apps/show.py` | `bumble-show` (`bumble-transport`) | ✅ | Runnable H4/BTSnoop capture decoder with upstream `--format` and repeatable Android/Zephyr `--vendor` options, typed HCI parsing, direction/timestamp output, and explicit truncated-record reporting. Rust vendor codecs are statically linked rather than dynamically registered. |
 | `apps/controller_info.py` | `bumble-controller-info` (`bumble-transport`) | 🟡 | Runnable external-controller inspection with reset, optional primed latency probes, local version/address/name, Classic + LE feature and buffer queries, data/advertising limits, minimum connection intervals, codec/voice queries, and V2-to-V1 LE buffer fallback. Unsupported commands are skipped and interleaved asynchronous packets are preserved. Deferred: symbolic supported-command, feature, codec, version, and voice-field names instead of numeric/bitmap rendering. |
+| `apps/scan.py` | `bumble-scan` (`bumble-transport`) | 🟡 | Runnable external HCI scanner with upstream RSSI/passive/interval/window/PHY/duplicate/raw/IRK/key-store/device-config options, extended scanning with legacy fallback, typed legacy + extended report decoding, AD structure rendering, RSSI bars, and real RPA identity resolution. Deferred: coalescing scan responses and multi-fragment extended advertisements into one processed advertisement, plus upstream's polished per-AD-type labels. |
 | `apps/usb_probe.py` | `bumble-usb-probe` (`bumble-transport`) | ✅ | Runnable libusb device inventory with upstream `--verbose`, `--hci-only`, manufacturer, and product filters; device/interface-level Bluetooth HCI classification; stable index, VID/PID, duplicate, and serial transport names; string-descriptor error tolerance; and verbose configuration/interface/endpoint details including isochronous packet sizes. |
 | `apps/ble_rpa_tool.py` | `bumble-rpa-tool` (`bumble-smp`) | ✅ | Runnable `gen-irk`, `gen-rpa`, and `verify-rpa` commands backed by the OS RNG and the real SMP `ah` primitive. Flexible Python-style hex input, address validation, colored verification results, and malformed/extra argument errors are covered. |
 | `apps/unbond.py` | `bumble-unbond` (`bumble`) | 🟡 | File-backed list/delete mode is runnable with namespace selection, upstream-style colored key rendering, atomic persistence, and `!!! pairing not found` behavior. Controller-backed device-config discovery remains deferred until the external-transport host bootstrap is available without introducing a crate cycle. |
@@ -2454,6 +2455,25 @@ USB controller discovery now has a runnable inspection application:
   cover classification, rendering, argument errors, and duplicate selector
   disambiguation; real local enumeration also exits cleanly when no USB devices
   are visible.
+
+## Slice 113 — what's here
+
+LE scanning now runs against any external HCI transport:
+
+- `bumble-scan` resets and configures the controller, installs Classic and LE
+  event masks plus the configured random address, tries multi-PHY extended
+  scanning, and falls back to legacy 1M scanning when extended commands are not
+  supported. A coded-only request fails explicitly rather than silently changing
+  PHY.
+- The upstream CLI surface is present: RSSI threshold, active/passive mode,
+  interval/window validation, PHY selection, controller duplicate filtering,
+  raw-event output, repeatable IRKs, JSON key-store loading, device-config
+  address selection, and transport dispatch.
+- Legacy and extended advertising reports are decoded through the typed HCI
+  events and rendered with address type/qualifiers, connectability, PHYs, RSSI
+  bars, and typed advertising-data values. Deterministically generated RPAs are
+  resolved to identity addresses in tests; a scripted transport verifies the
+  complete command sequence and streaming event path through clean EOF.
 
 ## Acceptance
 
