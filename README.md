@@ -62,7 +62,8 @@ crate whose behavior is verified against the upstream Python.
 | 45. AVRCP controller/target runtime over live AVCTP/L2CAP | `bumble-avrcp` | ✅ command, notification, pass-through green |
 | 46. AVRCP controller/target SDP records and discovery | `bumble-avrcp` | ✅ SDP client/server green |
 | 47. HIDP host/device protocol and paired Classic L2CAP channels | `bumble-hid` | ✅ control + interrupt green |
-| 48+. Remaining modules… | — | planned |
+| 48. Common bitstreams and MPEG-4 LATM AAC-to-ADTS codec | `bumble-codecs` | ✅ upstream fixture green |
+| 49+. Remaining modules… | — | planned |
 
 The LE lifecycle is now complete end-to-end through library APIs: **connect →
 discover → read/write → notify → disconnect** between two virtual devices — and
@@ -158,7 +159,7 @@ size, to convey remaining surface.
 | `avc.py` (0.5k) | `bumble-avc` | 🟡 | Slice 39 ports open subunit/opcode/command/response/operation identifiers; generic command and response frames; single and double-extended subunit IDs; 24-bit-company vendor-dependent frames; and panel pass-through press/release operations with bounded operation data. Upstream AVRCP vectors are byte-pinned and malformed frames return errors. Deferred: additional typed AV/C opcode subclasses beyond the two used by AVRCP. |
 | `avctp.py` (0.3k) | `bumble-avctp` | 🟡 | Slice 40 ports transaction labels, single/start/continue/end packets, command/response and IPID flags, 16-bit PIDs, safe fragmented-message assembly, MTU-aware outbound fragmentation, and a live Classic L2CAP binding. Registered PIDs receive commands; unknown PIDs automatically produce IPID responses. Deferred: handler callbacks and browsing-channel policy are provided by the higher AVRCP runtime. |
 | `avrcp` (2.9k) | `bumble-avrcp` | ✅ | Slices 41–46 port the complete typed wire catalog, bounded controller/target runtime, delegate behavior, interim→changed notifications, pass-through keys, both fragmentation layers over live Classic L2CAP, and controller/target SDP records + discovery. The browsing PSM is advertised exactly when supported; upstream itself does not implement a separate browsing-channel runtime. Async iterators are represented by explicit `RuntimeEvent` values. |
-| `codecs` (0.5k) | — | ⬜ | Remaining common audio/media support. |
+| `codecs.py` (0.5k) | `bumble-codecs` | ✅ | Complete bit reader/writer plus MPEG-4 LATM `AudioMuxElement`, `StreamMuxConfig`, `AudioSpecificConfig`, GA config, AAC-LC constructor, arbitrary-length payload framing, and ADTS conversion. Upstream's long LATM fixture produces the exact ADTS oracle; unaligned bit chunks and 255/510-byte length boundaries round-trip safely. |
 
 ### Profiles & apps
 | Upstream | Rust crate | Status | Notes |
@@ -1088,6 +1089,25 @@ Upstream `hid.py` is now complete in `bumble-hid`:
 The port now advances through the remaining partial core layers and unstarted
 profile families rather than stopping at the Classic media stack.
 
+## Slice 48 — what's here
+
+Upstream `codecs.py` is now complete in `bumble-codecs`:
+
+- Bounded `BitReader` and `BitWriter` handle aligned and unaligned reads,
+  byte blocks, skipping, zero-width operations, and up to 32-bit fields without
+  the Python implementation's large-integer cache dependency.
+- The MPEG-4 LATM hierarchy ports GA-specific config, audio-specific config,
+  stream-mux config, audio-mux elements, extended object/frequency parsing,
+  payload-length escape bytes, optional other-data skipping, and byte alignment.
+- A simple AAC-LC constructor supports every standard sampling-frequency index
+  and arbitrary channel configuration. LATM payloads at the 255-byte escape
+  boundary and beyond round-trip exactly.
+- Upstream's long captured RTP/LATM payload parses and converts to the exact
+  seven-byte-header ADTS oracle, with frame-size overflow rejected explicitly.
+
+The next work targets the remaining partial foundational protocols before the
+large GATT profile catalog.
+
 ## Acceptance
 
 The port's contract is the upstream Python test suite, ported 1:1:
@@ -1227,6 +1247,9 @@ bumble-rs/
 │   ├── src/l2cap.rs           # paired control/interrupt Classic transport
 │   ├── tests/protocol.rs      # exact messages, callbacks, malformed inputs
 │   └── tests/l2cap.rs         # live host/device report flows
+├── bumble-codecs/             # slice-48 common media bitstreams/codecs
+│   ├── src/lib.rs             # bit I/O + MPEG-4 LATM AAC and ADTS conversion
+│   └── tests/codecs.rs        # upstream fixture + length-boundary round trips
 └── docs/superpowers/          # design specs + implementation plans
 ```
 
