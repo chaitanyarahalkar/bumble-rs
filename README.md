@@ -231,6 +231,7 @@ size, to convey remaining surface.
 | `apps/controllers.py` | `bumble-controllers` (`bumble-transport`) | ✅ | Runnable two-controller software radio over arbitrary split external HCI transports. A serialized shared-link pump routes host commands, ACL/SCO/ISO payloads, advertising and connections, LE control/PAST, Classic LMP, and all resulting host events without aliasing controller state. |
 | `apps/hci_bridge.py` | `bumble-hci-bridge` (`bumble-transport`) | ✅ | Runnable full-duplex host/controller bridge with upstream direct-opcode and OGF:OCF success short circuits. Independent read/write halves cover every external transport: file, raw HCI socket, serial, TCP, UDP, USB, VHCI, PTY, Unix, WebSocket, Android emulator, and Android netsim. |
 | `apps/gatt_dump.py` | `bumble-gatt-dump` (`bumble-transport`) | ✅ | Runnable external-controller GATT dump in initiator or advertising/listener mode, with address-or-active-name resolution, device-config local address selection, complete service/characteristic/descriptor and all-attribute discovery, per-attribute reads, bounded transport/procedure errors, and real `--encrypt` LE Secure Connections pairing. |
+| `apps/device_info.py` | `bumble-device-info` (`bumble-transport`) | ✅ | Runnable external-controller device inspection in initiator or advertising/listener mode, with address-or-active-name resolution, optional real LE encryption, complete service/characteristic discovery, and typed GAP, Device Information, Battery, TMAP, PACS, and VCS reads. Profile-specific protocol errors are reported without suppressing later sections. |
 | `apps/pair.py` | `bumble-pair` (`bumble-transport`) | ✅ | Runnable LE, Classic, and simultaneous dual-mode listener paths over external controllers with the complete upstream option surface. LE supports direct address/name connection or configurable advertising, Legacy/SC pairing, and OOB data. Classic supports inquiry/name resolution, incoming/outgoing ACL setup, PIN and Secure Simple Pairing delegates, stored link-key reuse, controller encryption, and best-effort SMP-over-BR/EDR CTKD for P-256 link keys. Both paths provide bond policy, JSON key persistence/printing, and linger behavior. |
 | `apps/scan.py` | `bumble-scan` (`bumble-transport`) | ✅ | Runnable external HCI scanner with upstream RSSI/passive/interval/window/PHY/duplicate/raw/IRK/key-store/device-config options, extended scanning with legacy fallback, typed legacy + extended report decoding, exact active/passive scan-response accumulation, labeled AD rendering, RSSI bars, and real RPA identity resolution. |
 | `apps/usb_probe.py` | `bumble-usb-probe` (`bumble-transport`) | ✅ | Runnable libusb device inventory with upstream `--verbose`, `--hci-only`, manufacturer, and product filters; device/interface-level Bluetooth HCI classification; stable index, VID/PID, duplicate, and serial transport names; string-descriptor error tolerance; and verbose configuration/interface/endpoint details including isochronous packet sizes. |
@@ -2716,6 +2717,22 @@ host path rather than stopping at the CLI boundary:
   the Classic-only bond record; unsupported peers retain that Classic bond. A
   two-controller test drives both wrapper sessions through the live L2CAP/ACL
   path and verifies matching keys and persistence on both peers.
+
+## Slice 127 — what's here
+
+The typed device-information application now runs over a real external
+controller:
+
+- `bumble-device-info` preserves the upstream device-config, optional
+  encryption, transport, and address-or-name CLI. It supports both active-name
+  resolution plus outgoing LE connections and advertising/listener mode.
+- The application discovers and renders the complete remote service and
+  characteristic hierarchy, then uses the existing typed proxies to read GAP,
+  Device Information, Battery, TMAP, PACS, and VCS values.
+- Protocol errors remain scoped to their profile section so one inaccessible or
+  malformed service does not hide later information. An encrypted in-memory
+  server test exercises all six profile sections, including dynamic Battery and
+  VCS values, while an unencrypted test pins the error-continuation behavior.
 
 ## Acceptance
 
