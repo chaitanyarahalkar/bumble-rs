@@ -382,6 +382,57 @@ impl Default for PairingConfig {
     }
 }
 
+impl PairingConfig {
+    pub fn validate(&self) -> Result<()> {
+        self.capabilities.validate()?;
+        if let Some(oob) = &self.oob {
+            if self.secure_connections && oob.our_context.is_none() {
+                return Err(Error::InvalidPacket(
+                    "SC OOB pairing requires a local OOB context".into(),
+                ));
+            }
+            if !self.secure_connections && oob.legacy_context.is_none() {
+                return Err(Error::InvalidPacket(
+                    "Legacy OOB pairing requires a TK context".into(),
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Synchronous counterpart of Bumble's async pairing delegate. Stateful test
+/// or UI adapters can implement this trait and drive the sans-I/O session.
+pub trait PairingDelegate {
+    fn accept(&mut self) -> bool {
+        true
+    }
+
+    fn confirm(&mut self, _auto: bool) -> bool {
+        true
+    }
+
+    fn compare_numbers(&mut self, _number: u32, _digits: u8) -> bool {
+        true
+    }
+
+    fn get_number(&mut self) -> Option<u32> {
+        Some(0)
+    }
+
+    fn display_number(&mut self, _number: u32, _digits: u8) {}
+
+    fn generate_passkey(&mut self) -> u32 {
+        let value = random_128();
+        u32::from_le_bytes(value[..4].try_into().expect("four random bytes")) % 1_000_000
+    }
+}
+
+#[derive(Default)]
+pub struct AcceptAllDelegate;
+
+impl PairingDelegate for AcceptAllDelegate {}
+
 pub fn derive_ltk(link_key: &[u8; 16], ct2: bool) -> [u8; 16] {
     const SALT: [u8; 16] = *b"\0\0\0\0\0\0\0\0\0\0\0\0tmp2";
     let ilk = if ct2 {

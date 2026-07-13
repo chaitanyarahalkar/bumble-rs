@@ -24,7 +24,7 @@
 //! integration of the LE signaling manager and multiple simultaneous
 //! connections per device.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use bumble::Address;
 use bumble_att::AttPdu;
@@ -66,6 +66,7 @@ pub struct Device {
     acl_data_packet_length: usize,
     acl_assemblers: BTreeMap<u16, AclDataPacketAssembler>,
     acl_packet_queue: DataPacketQueue<AclDataPacket>,
+    encrypted_handles: BTreeSet<u16>,
 }
 
 impl Device {
@@ -84,6 +85,7 @@ impl Device {
             acl_data_packet_length: 27,
             acl_assemblers: BTreeMap::new(),
             acl_packet_queue: DataPacketQueue::new(64).expect("nonzero ACL queue capacity"),
+            encrypted_handles: BTreeSet::new(),
         }
     }
 
@@ -103,6 +105,7 @@ impl Device {
             acl_data_packet_length: 27,
             acl_assemblers: BTreeMap::new(),
             acl_packet_queue: DataPacketQueue::new(64).expect("nonzero ACL queue capacity"),
+            encrypted_handles: BTreeSet::new(),
         }
     }
 
@@ -118,6 +121,29 @@ impl Device {
     /// `true` while a connection is established.
     pub fn is_connected(&self) -> bool {
         self.connection_handle.is_some()
+    }
+
+    pub fn is_encrypted(&self) -> bool {
+        self.connection_handle
+            .is_some_and(|handle| self.encrypted_handles.contains(&handle))
+    }
+
+    /// Enable LE encryption with a pairing-derived STK/LTK. The peer receives
+    /// the corresponding LL encryption request through the virtual link.
+    pub fn enable_encryption(&mut self, link: &mut LocalLink, key: [u8; 16]) -> bool {
+        let Some(connection_handle) = self.connection_handle else {
+            return false;
+        };
+        self.send_hci_command(
+            link,
+            Command::LeEnableEncryption {
+                connection_handle,
+                random_number: [0; 8],
+                encrypted_diversifier: 0,
+                long_term_key: key,
+            },
+        );
+        true
     }
 
     pub fn classic_connection_handle(&self) -> Option<u16> {
@@ -306,6 +332,7 @@ impl Device {
                 HciPacket::Event(Event::DisconnectionComplete {
                     connection_handle, ..
                 }) => {
+                    self.encrypted_handles.remove(&connection_handle);
                     self.acl_assemblers.remove(&connection_handle);
                     self.acl_packet_queue.flush(connection_handle);
                     if self.connection_handle == Some(connection_handle) {
@@ -354,6 +381,17 @@ impl Device {
                             .on_packets_completed(usize::from(count), handle);
                     }
                     self.flush_acl_queue(link);
+                }
+                HciPacket::Event(Event::EncryptionChange {
+                    status,
+                    connection_handle,
+                    encryption_enabled,
+                }) => {
+                    if status == 0 && encryption_enabled != 0 {
+                        self.encrypted_handles.insert(connection_handle);
+                    } else {
+                        self.encrypted_handles.remove(&connection_handle);
+                    }
                 }
                 HciPacket::AclData(acl) => self.on_acl(link, acl),
                 HciPacket::SyncData(packet) => self.synchronous_inbox.push(packet),
@@ -428,6 +466,9 @@ fn is_request(pdu: &AttPdu) -> bool {
 /// request exactly once.
 pub fn pump(link: &mut LocalLink, devices: &mut [Device]) {
     for _ in 0..64 {
+        // Commands such as LE Enable Encryption and remote-feature exchange
+        // enqueue link-layer control PDUs rather than host events directly.
+        link.pump_ll();
         let mut active = false;
         for device in devices.iter_mut() {
             if device.poll(link) {

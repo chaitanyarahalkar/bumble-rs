@@ -23,19 +23,25 @@
 //!
 //! [`pairing`] adds the full I/O capability decision matrix, authentication and
 //! key-distribution policy, SC/Legacy OOB contexts and AD interchange, pairing
-//! configuration, and CTKD key derivation. Deferred: the live pairing state
-//! machine, user-delegate actions, key exchange, and bonding storage.
+//! configuration, and CTKD key derivation. [`LegacyPairingSession`] adds a live
+//! delegate-driven Legacy JustWorks/Passkey/OOB feature-confirm-random engine.
+//! Deferred: Secure Connections session orchestration, encrypted key
+//! distribution, and bonding storage.
 
 use bumble::Address;
 use core::fmt;
 
 pub mod pairing;
+pub mod session;
 
 pub use pairing::{
-    derive_link_key, derive_ltk, select_pairing_method, select_pairing_method_with_oob, AuthReq,
-    IdentityAddressType, IoCapability, KeyDistribution, OobConfig, OobContext, OobData,
-    OobLegacyContext, OobSharedData, PairingCapabilities, PairingConfig, PairingMethod,
-    PairingMethodSelection,
+    derive_link_key, derive_ltk, select_pairing_method, select_pairing_method_with_oob,
+    AcceptAllDelegate, AuthReq, IdentityAddressType, IoCapability, KeyDistribution, OobConfig,
+    OobContext, OobData, OobLegacyContext, OobSharedData, PairingCapabilities, PairingConfig,
+    PairingDelegate, PairingMethod, PairingMethodSelection,
+};
+pub use session::{
+    LegacyPairingOutcome, LegacyPairingSession, PairingFailureReason, PairingRole, PairingState,
 };
 
 /// The L2CAP channel id for the LE Security Manager Protocol.

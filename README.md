@@ -79,7 +79,8 @@ crate whose behavior is verified against the upstream Python.
 | 62. Enhanced Retransmission Mode control fields and data engine | `bumble-l2cap` | ✅ loss/busy/window/timer paths green |
 | 63. Live Classic L2CAP ERTM negotiation and transport | `bumble-l2cap` | ✅ upstream MTU matrix + FCS green |
 | 64. SMP pairing policy, OOB data, and CTKD foundation | `bumble-smp` | ✅ method matrix + upstream vectors green |
-| 65+. Remaining modules… | — | planned |
+| 65. Live Legacy SMP session and host encryption transition | `bumble-smp`, `bumble-host` | ✅ JustWorks/passkey/OOB + failure paths green |
+| 66+. Remaining modules… | — | planned |
 
 The LE lifecycle is now complete end-to-end through library APIs: **connect →
 discover → read/write → notify → disconnect** between two virtual devices — and
@@ -133,7 +134,7 @@ size, to convey remaining surface.
 | `controller.py` (2.8k) | `bumble-controller` | 🟡 | **Full command surface**: every command upstream's `controller.py` handles (93, via the generated [`command_surface`](bumble-controller/src/command_surface.rs) table) gets a reply of the matching HCI shape — Command Complete + SUCCESS for config/set commands, Command Status for operations completing via a later event, and the spec-correct "Unknown HCI Command" for anything upstream also doesn't handle. **Functionally simulated**: LE advertising/scanning, connection establishment, ACL routing with PB/BC preservation and Number Of Completed Packets flow events, disconnection, the read commands (`Read_BD_ADDR`/`Read_Local_Name`/`LE_Read_Buffer_Size`/`LE_Read_Local_Supported_Features`/`LE_Rand`), per-connection `LE_Set_Data_Length`/`LE_Set_PHY` (with follow-up meta events), and — via LL control-PDU exchange over the link — **encryption start**, **remote-features**, and **CIS establishment**. Also **classic (BR/EDR)** connection/name/features and SCO/eSCO request/accept/reject/disconnect with synchronous-data routing. Other read commands are acknowledged SUCCESS **without a synthesized payload** (a documented stub, not a full read). Deferred: LTK verification, ISO data-path streaming, remote-version exchange, extended/periodic advertising, and classic auth/encryption/role-switch sub-flows. |
 | `link.py` (0.15k) | `bumble-controller` | 🟡 | In-process **synchronous** `LocalLink` with LL-control, simplified LMP, ACL, and SCO/eSCO routing. Deferred: serialized over-the-air PDUs and async scheduling. |
 | `ll.py` (0.2k) | `bumble-controller` | 🟡 | Advertising/connection PDUs modeled as in-process structs, not serialized LL PDUs. Control PDUs (`EncReq`, `FeatureReq`/`PeripheralFeatureReq`/`FeatureRsp`, `TerminateInd`) are exchanged between controllers via `LocalLink::pump_ll` to drive the encryption-start, remote-features, and CIS-establishment (`CisReq`/`CisRsp`/`CisInd`) flows. |
-| `host.py` (2.1k) | `bumble-host` | 🟡 | `Device` glue (ATT↔L2CAP↔ACL sequencing + pairing transport), controller-buffer-sized outbound ACL fragmentation, per-connection inbound reassembly, and a global/per-handle `DataPacketQueue` driven by Number Of Completed Packets, plus Classic ACL and synchronous APIs. Deferred: direct LE signaling-manager integration and the broader host feature set. |
+| `host.py` (2.1k) | `bumble-host` | 🟡 | `Device` glue (ATT↔L2CAP↔ACL sequencing + pairing transport), controller-buffer-sized outbound ACL fragmentation, per-connection inbound reassembly, a global/per-handle `DataPacketQueue` driven by Number Of Completed Packets, LE encryption state and STK/LTK enablement, plus Classic ACL and synchronous APIs. The host pump now advances LL control exchanges as well as HCI/ACL traffic. Deferred: direct LE signaling-manager integration and the broader host feature set. |
 | `device.py` (7.0k) | `bumble-host` | 🟡 | Minimal `Device`/`pump`; the high-level device API (advertising/scanning/connection orchestration, GATT client, listeners) is not ported. |
 | `lmp.py` (0.4k) | `bumble-controller::lmp` | 🟡 | Classic Link Manager Protocol PDUs modeled as in-process structs (`HostConnectionReq`/`Accepted`, `NameReq`/`NameRes`, `FeaturesReq`/`FeaturesRes`, synchronous request/accept/reject, `Detach`) driving the classic connection/name/features/SCO-eSCO flows via `LocalLink::pump_classic`. The role-switch / authentication / encryption LMP sub-dance is simplified away. |
 
@@ -154,7 +155,7 @@ size, to convey remaining surface.
 | Upstream (LOC) | Rust crate | Status | Notes |
 |---|---|---|---|
 | `crypto/` | `bumble-crypto` | ✅ | All SMP **symmetric** security functions — `e`, AES-CMAC, `c1`, `s1`, `f4`/`f5`/`f6`, `g2`, `h6`/`h7`, `ah` — spec/RFC-4493 vector-verified, plus **P-256 `EccKey`** (slice 19: keygen, `from_private_key_bytes`, public-key coordinates, ECDH) oracle-pinned to upstream. Deferred: none of the crypto primitives. |
-| `smp.py` (2.0k), `pairing.py` (0.3k) | `bumble-smp` | 🟡 | PDU codec (incl. all **LE Secure Connections** PDUs — public key, DHKey check, keypress, key-distribution), LE Legacy and SC JustWorks two-party derivations, the complete legacy/SC I/O-capability method matrix, auth/key-distribution policy, SC + Legacy OOB contexts and Advertising Data interchange, and h6/h7 CTKD in both directions. Deferred: the live unified pairing state machine, delegate-driven Numeric Comparison/passkey/OOB actions, encrypted key distribution, and bonding persistence. |
+| `smp.py` (2.0k), `pairing.py` (0.3k) | `bumble-smp` | 🟡 | PDU codec (incl. all **LE Secure Connections** PDUs — public key, DHKey check, keypress, key-distribution), a live Legacy session for feature negotiation plus JustWorks/Passkey/OOB confirm/random exchange, host/controller STK encryption transition, SC JustWorks two-party derivation, the complete legacy/SC I/O-capability method matrix, auth/key-distribution policy, SC + Legacy OOB contexts and Advertising Data interchange, and h6/h7 CTKD. Deferred: live SC orchestration, encrypted key distribution, and bonding persistence. |
 
 ### Transports & drivers
 | Upstream | Rust crate | Status | Notes |
@@ -1476,6 +1477,34 @@ ported from `pairing.py` and `smp.py`:
 
 The next SMP slice uses this foundation to replace the manually scripted host
 tests with a live, delegate-driven session state machine.
+
+## Slice 65 — what's here
+
+LE Legacy pairing is now a reusable state machine rather than a test-authored
+transcript:
+
+- `LegacyPairingSession` drives Pairing Request/Response, negotiated bonding,
+  7–16-byte encryption key size, initiator/responder key-distribution masks,
+  Pairing Confirm, Pairing Random, peer-confirm verification, and STK
+  derivation. The negotiated key size zeros the STK's most-significant tail.
+- A synchronous `PairingDelegate` mirrors Bumble's user decisions. JustWorks
+  requests automatic confirmation; Passkey selects the correct display/input
+  endpoint and validates the six-digit range; Legacy OOB consumes the shared
+  TK without prompting.
+- Responder rejection, user confirmation failure, missing/invalid passkeys,
+  missing OOB TK, confirm mismatch, undersized encryption keys, malformed
+  features, and out-of-order commands emit the matching Pairing Failed reason
+  and terminate both peers.
+- `Device::enable_encryption` sends the derived STK through the real
+  `LE_Enable_Encryption` command. `Device` tracks Encryption Change per handle,
+  clears it on disconnect, and the host pump now advances queued LL control
+  PDUs so both controllers and both hosts observe the transition.
+- Tests cover matching independently derived STKs for JustWorks, Passkey, and
+  OOB; negotiated key truncation/distribution; delegate display calls; rejection
+  and wrong-passkey propagation; invalid ordering; and the full SMP-over-L2CAP-
+  over-fragmented-ACL-to-LL-encryption path.
+
+The next slice brings the same live orchestration to Secure Connections.
 
 ## Acceptance
 
