@@ -70,7 +70,8 @@ crate whose behavior is verified against the upstream Python.
 | 53. Bearer-aware dynamic GATT value accessors | `bumble-gatt` | ✅ read/write/error callbacks green |
 | 54. Typed GATT characteristic and proxy adapters | `bumble-gatt` | ✅ upstream adapter vectors green |
 | 55. Complete Python 3.14 packed-value compatibility | `bumble-gatt` | ✅ native/half/complex oracle green |
-| 56+. Remaining modules… | — | planned |
+| 56. Complete L2CAP signaling control-frame catalog | `bumble-l2cap` | ✅ all upstream dataclasses typed |
+| 57+. Remaining modules… | — | planned |
 
 The LE lifecycle is now complete end-to-end through library APIs: **connect →
 discover → read/write → notify → disconnect** between two virtual devices — and
@@ -131,7 +132,7 @@ size, to convey remaining surface.
 ### L2CAP
 | Upstream (LOC) | Rust crate | Status | Notes |
 |---|---|---|---|
-| `l2cap.py` (3.1k) | `bumble-l2cap` | 🟡 | PDU + signaling frames + FCS, plus a synchronous Classic connection-oriented `ChannelManager`: valid dynamic PSM/CID allocation, Connection/Configure/Disconnection signaling, MTU option negotiation, PSM refusal, bidirectional basic-mode SDUs, and deterministic server accept. Deferred: ACL fragmentation/reassembly, enhanced retransmission mode, LE credit-based channel runtime, and remaining signaling commands. |
+| `l2cap.py` (3.1k) | `bumble-l2cap` | 🟡 | PDU + complete typed upstream signaling-frame catalog + FCS, plus a synchronous Classic connection-oriented `ChannelManager`: valid dynamic PSM/CID allocation, Connection/Configure/Disconnection signaling, MTU option negotiation, PSM refusal, bidirectional basic-mode SDUs, and deterministic server accept. Deferred: ACL fragmentation/reassembly, enhanced retransmission mode, and LE credit-based channel runtime. |
 
 ### ATT / GATT
 | Upstream (LOC) | Rust crate | Status | Notes |
@@ -1260,6 +1261,24 @@ upstream:
 
 With `gatt_adapters.py` complete, work leaves the GATT model and returns to the
 larger protocol/runtime gaps.
+
+## Slice 56 — what's here
+
+The L2CAP signaling codec now covers every control-frame dataclass registered by
+upstream `l2cap.py`:
+
+- Command Reject, Echo request/response, Information request/response,
+  Connection Parameter Update request/response, LE Credit Based Connection
+  request/response, and LE Flow Control Credit join the existing Classic and
+  enhanced credit-based forms.
+- Open numeric fields and variable reject/information/echo data remain lossless;
+  every fixed field uses the specification's little-endian width.
+- The ten newly typed forms have exact wire vectors and typed round trips.
+  Truncated fixed payloads fail cleanly, while enhanced credit-based CID lists
+  reject odd byte counts rather than dropping a trailing byte.
+
+The codec catalog is complete; the next L2CAP work is runtime behavior, starting
+with LE credit-based channel credit accounting and SDU segmentation/reassembly.
 
 ## Acceptance
 

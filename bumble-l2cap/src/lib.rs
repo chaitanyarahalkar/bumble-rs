@@ -10,12 +10,11 @@
 //!
 //! Implemented: the basic L2CAP PDU with optional FCS, PSM (de)serialization,
 //! the Classic connection/configuration/disconnection signaling frames, the
-//! four enhanced credit-based signaling frames, and a synchronous Classic
-//! channel manager with a [`ControlFrame::Generic`] fallback for other codes.
+//! every upstream signaling control frame, and a synchronous Classic channel
+//! manager with a [`ControlFrame::Generic`] fallback for extension codes.
 //!
-//! Deferred to later slices: the remaining signaling command set,
-//! enhanced-retransmission control fields, LE credit-based channel runtime,
-//! and ACL fragmentation-and-reassembly logic.
+//! Deferred to later slices: enhanced-retransmission control fields, LE
+//! credit-based channel runtime, and ACL fragmentation-and-reassembly logic.
 
 use core::fmt;
 
@@ -184,6 +183,11 @@ impl L2capPdu {
 /// decoded fields; [`ControlFrame::Generic`] preserves any other signaling code.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ControlFrame {
+    CommandReject {
+        identifier: u8,
+        reason: u16,
+        data: Vec<u8>,
+    },
     ConnectionRequest {
         identifier: u8,
         psm: u32,
@@ -218,6 +222,56 @@ pub enum ControlFrame {
         identifier: u8,
         destination_cid: u16,
         source_cid: u16,
+    },
+    EchoRequest {
+        identifier: u8,
+        data: Vec<u8>,
+    },
+    EchoResponse {
+        identifier: u8,
+        data: Vec<u8>,
+    },
+    InformationRequest {
+        identifier: u8,
+        info_type: u16,
+    },
+    InformationResponse {
+        identifier: u8,
+        info_type: u16,
+        result: u16,
+        data: Vec<u8>,
+    },
+    ConnectionParameterUpdateRequest {
+        identifier: u8,
+        interval_min: u16,
+        interval_max: u16,
+        latency: u16,
+        timeout: u16,
+    },
+    ConnectionParameterUpdateResponse {
+        identifier: u8,
+        result: u16,
+    },
+    LeCreditBasedConnectionRequest {
+        identifier: u8,
+        le_psm: u16,
+        source_cid: u16,
+        mtu: u16,
+        mps: u16,
+        initial_credits: u16,
+    },
+    LeCreditBasedConnectionResponse {
+        identifier: u8,
+        destination_cid: u16,
+        mtu: u16,
+        mps: u16,
+        initial_credits: u16,
+        result: u16,
+    },
+    LeFlowControlCredit {
+        identifier: u8,
+        cid: u16,
+        credits: u16,
     },
     CreditBasedConnectionRequest {
         identifier: u8,
@@ -257,21 +311,45 @@ fn push_u16(p: &mut Vec<u8>, v: u16) {
     p.extend_from_slice(&v.to_le_bytes());
 }
 
-fn read_cid_list(data: &[u8]) -> Vec<u16> {
-    data.chunks_exact(2)
+fn read_cid_list(data: &[u8]) -> Result<Vec<u16>> {
+    if !data.len().is_multiple_of(2) {
+        return Err(Error::InvalidPacket(
+            "CID list has an odd byte length".into(),
+        ));
+    }
+    Ok(data
+        .chunks_exact(2)
         .map(|c| u16::from_le_bytes([c[0], c[1]]))
-        .collect()
+        .collect())
 }
 
 impl ControlFrame {
     pub fn code(&self) -> u8 {
         match self {
+            ControlFrame::CommandReject { .. } => codes::COMMAND_REJECT,
             ControlFrame::ConnectionRequest { .. } => codes::CONNECTION_REQUEST,
             ControlFrame::ConnectionResponse { .. } => codes::CONNECTION_RESPONSE,
             ControlFrame::ConfigureRequest { .. } => codes::CONFIGURE_REQUEST,
             ControlFrame::ConfigureResponse { .. } => codes::CONFIGURE_RESPONSE,
             ControlFrame::DisconnectionRequest { .. } => codes::DISCONNECTION_REQUEST,
             ControlFrame::DisconnectionResponse { .. } => codes::DISCONNECTION_RESPONSE,
+            ControlFrame::EchoRequest { .. } => codes::ECHO_REQUEST,
+            ControlFrame::EchoResponse { .. } => codes::ECHO_RESPONSE,
+            ControlFrame::InformationRequest { .. } => codes::INFORMATION_REQUEST,
+            ControlFrame::InformationResponse { .. } => codes::INFORMATION_RESPONSE,
+            ControlFrame::ConnectionParameterUpdateRequest { .. } => {
+                codes::CONNECTION_PARAMETER_UPDATE_REQUEST
+            }
+            ControlFrame::ConnectionParameterUpdateResponse { .. } => {
+                codes::CONNECTION_PARAMETER_UPDATE_RESPONSE
+            }
+            ControlFrame::LeCreditBasedConnectionRequest { .. } => {
+                codes::LE_CREDIT_BASED_CONNECTION_REQUEST
+            }
+            ControlFrame::LeCreditBasedConnectionResponse { .. } => {
+                codes::LE_CREDIT_BASED_CONNECTION_RESPONSE
+            }
+            ControlFrame::LeFlowControlCredit { .. } => codes::LE_FLOW_CONTROL_CREDIT,
             ControlFrame::CreditBasedConnectionRequest { .. } => {
                 codes::CREDIT_BASED_CONNECTION_REQUEST
             }
@@ -290,12 +368,22 @@ impl ControlFrame {
 
     pub fn identifier(&self) -> u8 {
         match self {
-            ControlFrame::ConnectionRequest { identifier, .. }
+            ControlFrame::CommandReject { identifier, .. }
+            | ControlFrame::ConnectionRequest { identifier, .. }
             | ControlFrame::ConnectionResponse { identifier, .. }
             | ControlFrame::ConfigureRequest { identifier, .. }
             | ControlFrame::ConfigureResponse { identifier, .. }
             | ControlFrame::DisconnectionRequest { identifier, .. }
             | ControlFrame::DisconnectionResponse { identifier, .. }
+            | ControlFrame::EchoRequest { identifier, .. }
+            | ControlFrame::EchoResponse { identifier, .. }
+            | ControlFrame::InformationRequest { identifier, .. }
+            | ControlFrame::InformationResponse { identifier, .. }
+            | ControlFrame::ConnectionParameterUpdateRequest { identifier, .. }
+            | ControlFrame::ConnectionParameterUpdateResponse { identifier, .. }
+            | ControlFrame::LeCreditBasedConnectionRequest { identifier, .. }
+            | ControlFrame::LeCreditBasedConnectionResponse { identifier, .. }
+            | ControlFrame::LeFlowControlCredit { identifier, .. }
             | ControlFrame::CreditBasedConnectionRequest { identifier, .. }
             | ControlFrame::CreditBasedConnectionResponse { identifier, .. }
             | ControlFrame::CreditBasedReconfigureRequest { identifier, .. }
@@ -308,6 +396,10 @@ impl ControlFrame {
     pub fn payload(&self) -> Vec<u8> {
         let mut p = Vec::new();
         match self {
+            ControlFrame::CommandReject { reason, data, .. } => {
+                push_u16(&mut p, *reason);
+                p.extend_from_slice(data);
+            }
             ControlFrame::ConnectionRequest {
                 psm, source_cid, ..
             } => {
@@ -360,6 +452,69 @@ impl ControlFrame {
             } => {
                 push_u16(&mut p, *destination_cid);
                 push_u16(&mut p, *source_cid);
+            }
+            ControlFrame::EchoRequest { data, .. } | ControlFrame::EchoResponse { data, .. } => {
+                p.extend_from_slice(data);
+            }
+            ControlFrame::InformationRequest { info_type, .. } => {
+                push_u16(&mut p, *info_type);
+            }
+            ControlFrame::InformationResponse {
+                info_type,
+                result,
+                data,
+                ..
+            } => {
+                push_u16(&mut p, *info_type);
+                push_u16(&mut p, *result);
+                p.extend_from_slice(data);
+            }
+            ControlFrame::ConnectionParameterUpdateRequest {
+                interval_min,
+                interval_max,
+                latency,
+                timeout,
+                ..
+            } => {
+                push_u16(&mut p, *interval_min);
+                push_u16(&mut p, *interval_max);
+                push_u16(&mut p, *latency);
+                push_u16(&mut p, *timeout);
+            }
+            ControlFrame::ConnectionParameterUpdateResponse { result, .. } => {
+                push_u16(&mut p, *result);
+            }
+            ControlFrame::LeCreditBasedConnectionRequest {
+                le_psm,
+                source_cid,
+                mtu,
+                mps,
+                initial_credits,
+                ..
+            } => {
+                push_u16(&mut p, *le_psm);
+                push_u16(&mut p, *source_cid);
+                push_u16(&mut p, *mtu);
+                push_u16(&mut p, *mps);
+                push_u16(&mut p, *initial_credits);
+            }
+            ControlFrame::LeCreditBasedConnectionResponse {
+                destination_cid,
+                mtu,
+                mps,
+                initial_credits,
+                result,
+                ..
+            } => {
+                push_u16(&mut p, *destination_cid);
+                push_u16(&mut p, *mtu);
+                push_u16(&mut p, *mps);
+                push_u16(&mut p, *initial_credits);
+                push_u16(&mut p, *result);
+            }
+            ControlFrame::LeFlowControlCredit { cid, credits, .. } => {
+                push_u16(&mut p, *cid);
+                push_u16(&mut p, *credits);
             }
             ControlFrame::CreditBasedConnectionRequest {
                 spsm,
@@ -438,6 +593,14 @@ impl ControlFrame {
         let payload = &pdu[4..end];
 
         Ok(match code {
+            codes::COMMAND_REJECT => {
+                need(payload, 2)?;
+                ControlFrame::CommandReject {
+                    identifier,
+                    reason: le16(payload, 0),
+                    data: payload[2..].to_vec(),
+                }
+            }
             codes::CONNECTION_REQUEST => {
                 let (offset, psm) = parse_psm(payload, 0)?;
                 if offset + 2 > payload.len() {
@@ -495,6 +658,77 @@ impl ControlFrame {
                     source_cid: le16(payload, 2),
                 }
             }
+            codes::ECHO_REQUEST => ControlFrame::EchoRequest {
+                identifier,
+                data: payload.to_vec(),
+            },
+            codes::ECHO_RESPONSE => ControlFrame::EchoResponse {
+                identifier,
+                data: payload.to_vec(),
+            },
+            codes::INFORMATION_REQUEST => {
+                need(payload, 2)?;
+                ControlFrame::InformationRequest {
+                    identifier,
+                    info_type: le16(payload, 0),
+                }
+            }
+            codes::INFORMATION_RESPONSE => {
+                need(payload, 4)?;
+                ControlFrame::InformationResponse {
+                    identifier,
+                    info_type: le16(payload, 0),
+                    result: le16(payload, 2),
+                    data: payload[4..].to_vec(),
+                }
+            }
+            codes::CONNECTION_PARAMETER_UPDATE_REQUEST => {
+                need(payload, 8)?;
+                ControlFrame::ConnectionParameterUpdateRequest {
+                    identifier,
+                    interval_min: le16(payload, 0),
+                    interval_max: le16(payload, 2),
+                    latency: le16(payload, 4),
+                    timeout: le16(payload, 6),
+                }
+            }
+            codes::CONNECTION_PARAMETER_UPDATE_RESPONSE => {
+                need(payload, 2)?;
+                ControlFrame::ConnectionParameterUpdateResponse {
+                    identifier,
+                    result: le16(payload, 0),
+                }
+            }
+            codes::LE_CREDIT_BASED_CONNECTION_REQUEST => {
+                need(payload, 10)?;
+                ControlFrame::LeCreditBasedConnectionRequest {
+                    identifier,
+                    le_psm: le16(payload, 0),
+                    source_cid: le16(payload, 2),
+                    mtu: le16(payload, 4),
+                    mps: le16(payload, 6),
+                    initial_credits: le16(payload, 8),
+                }
+            }
+            codes::LE_CREDIT_BASED_CONNECTION_RESPONSE => {
+                need(payload, 10)?;
+                ControlFrame::LeCreditBasedConnectionResponse {
+                    identifier,
+                    destination_cid: le16(payload, 0),
+                    mtu: le16(payload, 2),
+                    mps: le16(payload, 4),
+                    initial_credits: le16(payload, 6),
+                    result: le16(payload, 8),
+                }
+            }
+            codes::LE_FLOW_CONTROL_CREDIT => {
+                need(payload, 4)?;
+                ControlFrame::LeFlowControlCredit {
+                    identifier,
+                    cid: le16(payload, 0),
+                    credits: le16(payload, 2),
+                }
+            }
             codes::CREDIT_BASED_CONNECTION_REQUEST => {
                 need(payload, 8)?;
                 ControlFrame::CreditBasedConnectionRequest {
@@ -503,7 +737,7 @@ impl ControlFrame {
                     mtu: le16(payload, 2),
                     mps: le16(payload, 4),
                     initial_credits: le16(payload, 6),
-                    source_cid: read_cid_list(&payload[8..]),
+                    source_cid: read_cid_list(&payload[8..])?,
                 }
             }
             codes::CREDIT_BASED_CONNECTION_RESPONSE => {
@@ -514,7 +748,7 @@ impl ControlFrame {
                     mps: le16(payload, 2),
                     initial_credits: le16(payload, 4),
                     result: le16(payload, 6),
-                    destination_cid: read_cid_list(&payload[8..]),
+                    destination_cid: read_cid_list(&payload[8..])?,
                 }
             }
             codes::CREDIT_BASED_RECONFIGURE_REQUEST => {
@@ -523,7 +757,7 @@ impl ControlFrame {
                     identifier,
                     mtu: le16(payload, 0),
                     mps: le16(payload, 2),
-                    destination_cid: read_cid_list(&payload[4..]),
+                    destination_cid: read_cid_list(&payload[4..])?,
                 }
             }
             codes::CREDIT_BASED_RECONFIGURE_RESPONSE => {
