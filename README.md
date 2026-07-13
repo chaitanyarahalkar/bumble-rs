@@ -104,7 +104,8 @@ crate whose behavior is verified against the upstream Python.
 | 87. Volume Control, Volume Offset Control, and Audio Input Control | `bumble-profiles` / `bumble-gatt` | ✅ encrypted control matrices + included-service discovery green |
 | 88. Media Control and Generic Media Control | `bumble-profiles` | ✅ full model/proxy catalog + live notification handshake green |
 | 89. LE Audio metadata, BAP codec foundations, and PACS | `bumble-profiles` / `bumble-hci` | ✅ LTV/PAC codecs + live capability discovery green |
-| 90+. Remaining modules… | — | planned |
+| 90. Telephony/Media, Gaming Audio, and Public Broadcast profiles | `bumble-profiles` | ✅ role/features + announcement vectors/live reads green |
+| 91+. Remaining modules… | — | planned |
 
 The LE lifecycle is now complete end-to-end through library APIs: **connect →
 discover → read/write → notify → disconnect** between two virtual devices — and
@@ -206,7 +207,7 @@ size, to convey remaining surface.
 ### Profiles & apps
 | Upstream | Rust crate | Status | Notes |
 |---|---|---|---|
-| `profiles/*` — GAP, Battery, Device Info, Heart Rate, ASHA, LE Audio (BAP/PACS/ASCS/…), HAP, CSIP, … (23 modules) | `bumble-profiles` | 🟡 | Thirteen modules are live: foundational GAP/GATT/Battery/Device Information/Heart Rate, ASHA/CSIP, VCS/VOCS/AICS, MCP/GMCS, common LE Audio metadata, and PACS. BAP now has its shared assigned-number, codec-capability/configuration LTV, channel-count, and unicast-advertising foundation but not yet its complete announcement/session runtime. Deferred: the remaining 10 modules, with BAP already started. |
+| `profiles/*` — GAP, Battery, Device Info, Heart Rate, ASHA, LE Audio (BAP/PACS/ASCS/…), HAP, CSIP, … (23 modules) | `bumble-profiles` | 🟡 | Sixteen modules are live: foundational GAP/GATT/Battery/Device Information/Heart Rate, ASHA/CSIP, VCS/VOCS/AICS, MCP/GMCS, common LE Audio metadata, PACS, TMAP, GMAP, and PBP. BAP now has its shared assigned-number, codec-capability/configuration LTV, channel-count, and unicast-advertising foundation but not yet its complete announcement/session runtime. Deferred: the remaining 7 modules, with BAP already started. |
 | `bridge.py`, `pandora/`, apps | — | ⬜ | Test harnesses / apps — out of scope. |
 
 ### Roughly where that leaves things
@@ -2058,6 +2059,20 @@ The LE Audio data foundation and Published Audio Capabilities Service are live:
   source PAC/location characteristics. The typed proxy discovers and reads all
   variants, while the available-context notification CCCD is verified live.
 
+## Slice 90 — what's here
+
+The compact LE Audio role and public-broadcast profiles are live:
+
+- TMAP publishes the complete 16-bit Telephony and Media Audio role mask and a
+  typed proxy discovers and reads it over a live GATT database.
+- GMAP conditionally publishes the four gaming-feature characteristics from the
+  configured role mask. Gateway, terminal, broadcast sender, and broadcast
+  receiver feature bits preserve the upstream assigned-number layout, and the
+  proxy represents omitted role characteristics explicitly.
+- PBP encodes and decodes public-broadcast feature flags plus LE Audio metadata,
+  emits UUID 0x1856 service-data advertising, preserves unknown feature bits,
+  and rejects truncated or length-inconsistent announcements.
+
 ## Acceptance
 
 The port's contract is the upstream Python test suite, ported 1:1:
@@ -2222,13 +2237,14 @@ bumble-rs/
 │   ├── tests/intel.rs         # exact wire, parser, lookup, full cold-start flow
 │   ├── tests/rtk.rs           # epatch failures, matrix, wrap, full download flow
 │   └── tests/selection.rs     # forced/unknown/automatic driver selection
-├── bumble-profiles/           # slices 85-89 standard GATT profile services
-│   ├── src/{gap,gatt_service,battery_service,device_information_service,heart_rate_service,asha,csip,vcs,vocs,aics,mcp,le_audio,bap,pacs}.rs
+├── bumble-profiles/           # slices 85-90 standard GATT profile services
+│   ├── src/{gap,gatt_service,battery_service,device_information_service,heart_rate_service,asha,csip,vcs,vocs,aics,mcp,le_audio,bap,pacs,tmap,gmap,pbp}.rs
 │   ├── tests/foundational_services.rs # live typed proxy/control/hash coverage
 │   ├── tests/hearing_profiles.rs # ASHA state + CSIS vectors/encrypted reads
 │   ├── tests/volume_controls.rs # encrypted VCS/VOCS/AICS control matrices
 │   ├── tests/media_control.rs # typed MCS events + GMCS control handshake
-│   └── tests/le_audio_pacs.rs # metadata/LTV/PAC vectors + live PACS reads
+│   ├── tests/le_audio_pacs.rs # metadata/LTV/PAC vectors + live PACS reads
+│   └── tests/role_profiles.rs # TMAP/GMAP live reads + PBP announcement vectors
 └── docs/superpowers/          # design specs + implementation plans
 ```
 
