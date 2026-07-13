@@ -756,6 +756,64 @@ impl GattServer {
         self.attributes.iter_mut().find(|a| a.handle == handle)
     }
 
+    /// Handles whose attribute type is `uuid`, in database order.
+    pub fn handles_by_uuid(&self, uuid: &Uuid) -> Vec<u16> {
+        self.attributes
+            .iter()
+            .filter(|attribute| &attribute.type_uuid == uuid)
+            .map(|attribute| attribute.handle)
+            .collect()
+    }
+
+    /// Replace an attribute's static value without changing its permissions.
+    pub fn set_attribute_value(
+        &mut self,
+        handle: u16,
+        value: Vec<u8>,
+    ) -> Result<(), DatabaseError> {
+        let attribute = self
+            .find_mut(handle)
+            .ok_or(DatabaseError::UnknownAttribute(handle))?;
+        attribute.value = value;
+        Ok(())
+    }
+
+    /// GATT Database Hash input and AES-CMAC from Core Vol 3, Part G, 7.3.1.
+    pub fn database_hash(&self) -> [u8; 16] {
+        const WITH_VALUE: &[u16] = &[
+            GATT_PRIMARY_SERVICE_UUID,
+            GATT_SECONDARY_SERVICE_UUID,
+            GATT_INCLUDE_UUID,
+            GATT_CHARACTERISTIC_UUID,
+            0x2900, // Characteristic Extended Properties
+        ];
+        const WITHOUT_VALUE: &[u16] = &[
+            0x2901, // Characteristic User Description
+            GATT_CLIENT_CHARACTERISTIC_CONFIGURATION_UUID,
+            0x2903, // Server Characteristic Configuration
+            0x2904, // Characteristic Presentation Format
+            0x2905, // Characteristic Aggregate Format
+        ];
+
+        let mut input = Vec::new();
+        for attribute in &self.attributes {
+            let type_bytes = attribute.type_uuid.to_bytes(false);
+            let Ok(type_bytes_16) = <[u8; 2]>::try_from(type_bytes.as_slice()) else {
+                continue;
+            };
+            let short_uuid = u16::from_le_bytes(type_bytes_16);
+            if WITH_VALUE.contains(&short_uuid) {
+                input.extend_from_slice(&attribute.handle.to_le_bytes());
+                input.extend_from_slice(&type_bytes);
+                input.extend_from_slice(&attribute.value);
+            } else if WITHOUT_VALUE.contains(&short_uuid) {
+                input.extend_from_slice(&attribute.handle.to_le_bytes());
+                input.extend_from_slice(&type_bytes);
+            }
+        }
+        bumble_crypto::aes_cmac(&input, &[0; 16])
+    }
+
     /// Replace an attribute's static value with synchronous read/write
     /// callbacks. The callbacks remain shared when the server is cloned.
     pub fn set_dynamic_value(

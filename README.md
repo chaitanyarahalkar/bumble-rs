@@ -99,7 +99,8 @@ crate whose behavior is verified against the upstream Python.
 | 82. Android netsim host/controller packet-stream transport | `bumble-transport` | ✅ startup/INI/lease + live gRPC green |
 | 83. Intel USB controller firmware driver | `bumble-drivers` | ✅ TLV/SFI/DDC + scripted cold start green |
 | 84. Realtek USB controller firmware driver and driver selection | `bumble-drivers` | ✅ epatch/probe/download + selector green |
-| 85+. Remaining modules… | — | planned |
+| 85. Foundational GAP/GATT/Battery/Device Info/Heart Rate profiles | `bumble-profiles` | ✅ live service/proxy + database hash green |
+| 86+. Remaining modules… | — | planned |
 
 The LE lifecycle is now complete end-to-end through library APIs: **connect →
 discover → read/write → notify → disconnect** between two virtual devices — and
@@ -201,7 +202,7 @@ size, to convey remaining surface.
 ### Profiles & apps
 | Upstream | Rust crate | Status | Notes |
 |---|---|---|---|
-| `profiles/*` — GAP, Battery, Device Info, Heart Rate, ASHA, LE Audio (BAP/PACS/ASCS/…), HAP, CSIP, … (24 modules) | — | ⬜ | None implemented. The GATT layer can express them, but no profile is built on it. |
+| `profiles/*` — GAP, Battery, Device Info, Heart Rate, ASHA, LE Audio (BAP/PACS/ASCS/…), HAP, CSIP, … (24 modules) | `bumble-profiles` | 🟡 | Foundational GAP, Generic Attribute, Battery, Device Information, and Heart Rate services are live with discovery proxies, dynamic callbacks, typed values, CCCDs, control-point errors, and the upstream database-hash vector. Deferred: the remaining media, hearing, LE Audio, telephony, and notification profiles. |
 | `bridge.py`, `pandora/`, apps | — | ⬜ | Test harnesses / apps — out of scope. |
 
 ### Roughly where that leaves things
@@ -1960,6 +1961,28 @@ Realtek firmware initialization and the shared driver selector complete
   class selection), refuses unknown forced names, and otherwise probes Realtek
   before Intel in upstream order.
 
+## Slice 85 — what's here
+
+The first five `bumble.profiles` modules now compose directly with the live
+GATT server/client:
+
+- Generic Access publishes the UTF-8 device name (with the upstream 248-byte
+  limit) and packed `Appearance`; its proxy decodes both typed values.
+- Battery Level is a dynamic per-bearer callback with READ/NOTIFY properties,
+  an automatic CCCD, and a typed one-byte proxy.
+- Device Information conditionally builds all six UTF-8 revision/identity
+  fields, the regulatory byte list, and the 24-bit-OUI/40-bit-manufacturer
+  System ID with checked packing and a typed proxy.
+- Heart Rate covers open body-sensor locations, every 8/16-bit measurement flag
+  combination, sensor contact, energy, RR intervals in 1/1024-second units,
+  dynamic measurement reads, notification CCCD, and the reset-energy control
+  point with application error `0x80` for unsupported commands.
+- Generic Attribute exposes Service Changed, client/server feature, and Database
+  Hash characteristics under the upstream enablement rules. `GattServer` now
+  serializes the exact hash-eligible declaration/descriptor set and computes
+  zero-key AES-CMAC; the upstream `F1CA2D48ECF58BAC8A8830BBB9FBA990`
+  database vector passes through live discovery and readback.
+
 ## Acceptance
 
 The port's contract is the upstream Python test suite, ported 1:1:
@@ -2124,6 +2147,9 @@ bumble-rs/
 │   ├── tests/intel.rs         # exact wire, parser, lookup, full cold-start flow
 │   ├── tests/rtk.rs           # epatch failures, matrix, wrap, full download flow
 │   └── tests/selection.rs     # forced/unknown/automatic driver selection
+├── bumble-profiles/           # slice-85 standard GATT profile services
+│   ├── src/{gap,gatt_service,battery_service,device_information_service,heart_rate_service}.rs
+│   └── tests/foundational_services.rs # live typed proxy/control/hash coverage
 └── docs/superpowers/          # design specs + implementation plans
 ```
 

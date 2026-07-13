@@ -23,6 +23,7 @@ members = [
     "bumble-codecs",
     "bumble-transport",
     "bumble-drivers",
+    "bumble-profiles",
 ]
 resolver = "2"
 
