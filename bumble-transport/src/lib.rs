@@ -56,8 +56,8 @@ pub use hci_socket::{
     SystemHciSocketTransport, HCI_CHANNEL_USER,
 };
 pub use host::{
-    ExternalAttTransport, ExternalControllerInfo, ExternalHost, ExternalHostActivity,
-    ExternalHostState, LePairingSession,
+    ClassicCtkdPairingSession, ClassicPairingSession, ExternalAttTransport, ExternalControllerInfo,
+    ExternalHost, ExternalHostActivity, ExternalHostState, LePairingSession,
 };
 #[cfg(unix)]
 pub use pty::PtyTransport;

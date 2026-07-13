@@ -433,6 +433,16 @@ pub trait PairingDelegate {
         Some(0)
     }
 
+    /// Obtain a legacy Classic PIN string. The default keeps existing numeric
+    /// delegates source-compatible while Classic-aware applications may
+    /// override it to accept the full 1–16 byte PIN space.
+    fn get_string(&mut self, max_length: usize) -> Option<String> {
+        self.get_number().map(|number| {
+            let value = number.to_string();
+            value[..value.len().min(max_length)].to_owned()
+        })
+    }
+
     fn display_number(&mut self, _number: u32, _digits: u8) {}
 
     fn generate_passkey(&mut self) -> u32 {

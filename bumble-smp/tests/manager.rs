@@ -129,7 +129,17 @@ fn manager_routes_security_requests_rejects_invalid_lifecycle_and_cleans_disconn
     central.receive(7, security_request(requested)).unwrap();
     assert_eq!(central.poll_security_request(), Some((7, requested)));
     assert!(central.mark_encrypted(7).is_err());
+    central
+        .set_connection_role(7, PairingRole::Responder)
+        .unwrap();
+    assert!(central.pair(7).is_err());
+    central
+        .set_connection_role(7, PairingRole::Initiator)
+        .unwrap();
     central.pair(7).unwrap();
+    assert!(central
+        .set_connection_role(7, PairingRole::Responder)
+        .is_err());
     assert!(central.pair(7).is_err());
     assert!(central.disconnect(7));
     assert_eq!(central.connection_count(), 0);

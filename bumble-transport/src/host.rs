@@ -1,5 +1,5 @@
 use crate::{CommandResponse, Error, PacketSink, Result, SplitOpenedTransport};
-use bumble::keys::{KeyStore, PairingKeys};
+use bumble::keys::{Key, KeyStore, PairingKeys};
 use bumble::Address;
 use bumble_att::AttPdu;
 use bumble_controller::ROLE_CENTRAL;
@@ -9,11 +9,11 @@ use bumble_hci::{
     AclDataPacket, Command, Event, HciPacket, IsoDataPacket, ReturnParameters,
     SynchronousDataPacket,
 };
-use bumble_host::{Device, HostTransport};
+use bumble_host::{ClassicPairingEvent, Device, HostTransport};
 use bumble_smp::{
-    security_request, AcceptAllDelegate, AuthReq, ManagedPairingState, PairingConfig,
-    PairingConnection, PairingDelegateFactory, PairingManager, PairingRole, PairingState,
-    ScPairingState, SmpPdu, SMP_CID,
+    security_request, AcceptAllDelegate, AuthReq, ClassicCtkdState, IoCapability,
+    ManagedPairingState, PairingConfig, PairingConnection, PairingDelegate, PairingDelegateFactory,
+    PairingManager, PairingRole, PairingState, ScPairingState, SmpPdu, SMP_BR_CID, SMP_CID,
 };
 use std::collections::VecDeque;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, TryRecvError};
@@ -58,6 +58,7 @@ pub struct LePairingSession {
     manager: PairingManager,
     connection_handle: u16,
     role: PairingRole,
+    controller_central: bool,
     auth_req: AuthReq,
     started: bool,
     encryption_started: bool,
@@ -102,6 +103,7 @@ impl LePairingSession {
             manager,
             connection_handle,
             role,
+            controller_central: connection.role == ROLE_CENTRAL,
             auth_req,
             started: false,
             encryption_started: false,
@@ -187,6 +189,41 @@ impl LePairingSession {
         Ok(())
     }
 
+    /// Ask the peer to initiate pairing by sending an SMP Security Request,
+    /// regardless of the local controller role.
+    pub fn request_peer(
+        &mut self,
+        link: &mut bumble_host::LocalLink,
+        device: &mut Device,
+    ) -> Result<()> {
+        if self.started {
+            return Err(Error::Remote("pairing session already started".into()));
+        }
+        if !device.is_connected_on_handle(self.connection_handle) {
+            return Err(Error::Remote(format!(
+                "LE connection {:#06x} is not active",
+                self.connection_handle
+            )));
+        }
+        self.manager
+            .set_connection_role(self.connection_handle, PairingRole::Responder)
+            .map_err(|error| Error::Remote(error.to_string()))?;
+        self.role = PairingRole::Responder;
+        if !device.send_l2cap_on_handle(
+            link,
+            self.connection_handle,
+            SMP_CID,
+            &security_request(self.auth_req).to_bytes(),
+        ) {
+            return Err(Error::Remote(format!(
+                "failed to send SMP Security Request on handle {:#06x}",
+                self.connection_handle
+            )));
+        }
+        self.started = true;
+        Ok(())
+    }
+
     /// Advance pairing without blocking. Returns the completed keys once key
     /// distribution has finished.
     pub fn drive_once(
@@ -241,7 +278,7 @@ impl LePairingSession {
         }
 
         if self.waiting_for_encryption() {
-            if self.role == PairingRole::Initiator && !self.encryption_started {
+            if self.controller_central && !self.encryption_started {
                 let key = self
                     .manager
                     .encryption_key(self.connection_handle)
@@ -381,6 +418,632 @@ impl LePairingSession {
                     ScPairingState::Failed
                 ))
         )
+    }
+}
+
+/// Controller-driven Classic PIN/SSP authentication for one ACL connection.
+///
+/// Unlike LE SMP, the controller performs the cryptography. The host supplies
+/// policy and user interaction, reuses stored Link Keys when possible, and
+/// persists newly notified Link Keys.
+pub struct ClassicPairingSession {
+    connection_handle: u16,
+    peer_address: Address,
+    config: PairingConfig,
+    delegate: Box<dyn PairingDelegate>,
+    keys: Option<PairingKeys>,
+    peer_io_capability: Option<u8>,
+    started: bool,
+    authenticated: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ClassicConfirmationMethod {
+    Confirm,
+    AutoConfirm,
+    Compare,
+    DisplayAutoConfirm,
+    Reject,
+}
+
+impl ClassicPairingSession {
+    pub fn new(
+        device: &Device,
+        connection_handle: u16,
+        config: PairingConfig,
+        delegate: Box<dyn PairingDelegate>,
+        stored_keys: Option<PairingKeys>,
+    ) -> Result<Self> {
+        let connection = device
+            .classic_connection(connection_handle)
+            .ok_or_else(|| {
+                Error::Remote(format!(
+                    "unknown Classic connection handle {connection_handle:#06x}"
+                ))
+            })?;
+        Ok(Self {
+            connection_handle,
+            peer_address: connection.peer_address.clone(),
+            config,
+            delegate,
+            keys: stored_keys,
+            peer_io_capability: None,
+            started: false,
+            authenticated: false,
+        })
+    }
+
+    pub fn accept_all(
+        device: &Device,
+        connection_handle: u16,
+        config: PairingConfig,
+        stored_keys: Option<PairingKeys>,
+    ) -> Result<Self> {
+        Self::new(
+            device,
+            connection_handle,
+            config,
+            Box::new(AcceptAllDelegate),
+            stored_keys,
+        )
+    }
+
+    pub fn connection_handle(&self) -> u16 {
+        self.connection_handle
+    }
+
+    pub fn peer_address(&self) -> &Address {
+        &self.peer_address
+    }
+
+    pub fn begin(&mut self, link: &mut bumble_host::LocalLink, device: &mut Device) -> Result<()> {
+        self.validate_start(device)?;
+        if !device.authenticate_classic_on_handle(link, self.connection_handle) {
+            return Err(Error::Remote(format!(
+                "failed to request authentication on Classic handle {:#06x}",
+                self.connection_handle
+            )));
+        }
+        self.started = true;
+        Ok(())
+    }
+
+    pub fn listen(&mut self, device: &Device) -> Result<()> {
+        self.validate_start(device)?;
+        self.started = true;
+        Ok(())
+    }
+
+    /// Ask the peer to initiate pairing by sending SMP Security Request on
+    /// the BR/EDR fixed channel while continuing to service controller SSP.
+    pub fn request_peer(
+        &mut self,
+        link: &mut bumble_host::LocalLink,
+        device: &mut Device,
+    ) -> Result<()> {
+        self.validate_start(device)?;
+        let auth_req = AuthReq::from_booleans(
+            self.config.bonding,
+            self.config.secure_connections,
+            self.config.mitm,
+            false,
+            self.config.ct2,
+        );
+        if !device.send_l2cap_on_handle(
+            link,
+            self.connection_handle,
+            SMP_BR_CID,
+            &security_request(auth_req).to_bytes(),
+        ) {
+            return Err(Error::Remote(format!(
+                "failed to send SMP/BR Security Request on handle {:#06x}",
+                self.connection_handle
+            )));
+        }
+        self.started = true;
+        Ok(())
+    }
+
+    pub fn drive_once(
+        &mut self,
+        link: &mut bumble_host::LocalLink,
+        device: &mut Device,
+    ) -> Result<Option<PairingKeys>> {
+        if !self.started {
+            return Err(Error::Remote(
+                "Classic pairing session has not been started".into(),
+            ));
+        }
+        if device.classic_connection(self.connection_handle).is_none() {
+            return Err(Error::Remote(format!(
+                "Classic connection {:#06x} ended during pairing",
+                self.connection_handle
+            )));
+        }
+        device.poll(link);
+        for event in
+            device.take_classic_pairing_events_for(self.connection_handle, &self.peer_address)
+        {
+            self.process_event(link, device, event)?;
+        }
+        let has_bond = self
+            .keys
+            .as_ref()
+            .is_some_and(|keys| keys.link_key.is_some());
+        if self.authenticated && (!self.config.bonding || has_bond) {
+            return Ok(Some(self.keys.clone().unwrap_or_default()));
+        }
+        Ok(None)
+    }
+
+    pub fn pair(
+        &mut self,
+        host: &mut ExternalHost,
+        device: &mut Device,
+        timeout: Duration,
+    ) -> Result<PairingKeys> {
+        self.begin(host, device)?;
+        self.run_to_completion(host, device, timeout)
+    }
+
+    pub fn run_to_completion(
+        &mut self,
+        host: &mut ExternalHost,
+        device: &mut Device,
+        timeout: Duration,
+    ) -> Result<PairingKeys> {
+        if !self.started {
+            return Err(Error::Remote(
+                "Classic pairing session has not been started".into(),
+            ));
+        }
+        let deadline = Instant::now() + timeout;
+        loop {
+            if let Some(keys) = self.drive_once(host, device)? {
+                return Ok(keys);
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(Error::Remote(format!(
+                    "timed out pairing Classic connection {:#06x}",
+                    self.connection_handle
+                )));
+            }
+            match host.wait_for_activity(remaining)? {
+                ExternalHostActivity::Packet => {}
+                ExternalHostActivity::Timeout => {
+                    return Err(Error::Remote(format!(
+                        "timed out pairing Classic connection {:#06x}",
+                        self.connection_handle
+                    )))
+                }
+                ExternalHostActivity::Ended => {
+                    return Err(Error::Remote(format!(
+                        "transport ended while pairing Classic connection {:#06x}",
+                        self.connection_handle
+                    )))
+                }
+            }
+        }
+    }
+
+    pub fn store_bond(&self, store: &mut dyn KeyStore) -> Result<bool> {
+        let Some(keys) = self.keys.clone().filter(|keys| keys.link_key.is_some()) else {
+            return Ok(false);
+        };
+        store
+            .update(&self.peer_address.to_string(false), keys)
+            .map_err(|error| Error::Remote(error.to_string()))?;
+        Ok(true)
+    }
+
+    fn validate_start(&self, device: &Device) -> Result<()> {
+        if self.started {
+            return Err(Error::Remote(
+                "Classic pairing session already started".into(),
+            ));
+        }
+        if device.classic_connection(self.connection_handle).is_none() {
+            return Err(Error::Remote(format!(
+                "Classic connection {:#06x} is not active",
+                self.connection_handle
+            )));
+        }
+        Ok(())
+    }
+
+    fn process_event(
+        &mut self,
+        link: &mut bumble_host::LocalLink,
+        device: &Device,
+        event: ClassicPairingEvent,
+    ) -> Result<()> {
+        let controller_id = device.controller_id();
+        match event {
+            ClassicPairingEvent::AuthenticationComplete { status: 0, .. } => {
+                self.authenticated = true;
+            }
+            ClassicPairingEvent::AuthenticationComplete { status, .. } => {
+                return Err(Error::Remote(format!(
+                    "Classic authentication failed with HCI status {status:#04x}"
+                )));
+            }
+            ClassicPairingEvent::PinCodeRequest { .. } => {
+                let pin = (self.classic_io_capability() == IoCapability::KeyboardOnly as u8)
+                    .then(|| self.delegate.get_string(16))
+                    .flatten();
+                if let Some(pin) = pin.filter(|pin| (1..=16).contains(&pin.len())) {
+                    let mut pin_code = [0; 16];
+                    pin_code[..pin.len()].copy_from_slice(pin.as_bytes());
+                    link.handle_command(
+                        controller_id,
+                        Command::PinCodeRequestReply {
+                            bd_addr: self.peer_address.clone(),
+                            pin_code_length: pin.len() as u8,
+                            pin_code,
+                        },
+                    );
+                } else {
+                    link.handle_command(
+                        controller_id,
+                        Command::PinCodeRequestNegativeReply {
+                            bd_addr: self.peer_address.clone(),
+                        },
+                    );
+                }
+            }
+            ClassicPairingEvent::LinkKeyRequest { .. } => {
+                let link_key = self
+                    .keys
+                    .as_ref()
+                    .and_then(|keys| keys.link_key.as_ref())
+                    .and_then(|key| key.value.as_slice().try_into().ok());
+                match link_key {
+                    Some(link_key) => link.handle_command(
+                        controller_id,
+                        Command::LinkKeyRequestReply {
+                            bd_addr: self.peer_address.clone(),
+                            link_key,
+                        },
+                    ),
+                    None => link.handle_command(
+                        controller_id,
+                        Command::LinkKeyRequestNegativeReply {
+                            bd_addr: self.peer_address.clone(),
+                        },
+                    ),
+                }
+            }
+            ClassicPairingEvent::LinkKeyNotification {
+                link_key, key_type, ..
+            } => {
+                let authenticated = matches!(key_type, 0x05 | 0x08);
+                let mut keys = self.keys.take().unwrap_or_default();
+                keys.link_key = Some(Key {
+                    value: link_key.to_vec(),
+                    authenticated,
+                    ..Key::default()
+                });
+                keys.link_key_type = Some(key_type);
+                self.keys = Some(keys);
+            }
+            ClassicPairingEvent::IoCapabilityRequest { .. } => link.handle_command(
+                controller_id,
+                Command::IoCapabilityRequestReply {
+                    bd_addr: self.peer_address.clone(),
+                    io_capability: self.classic_io_capability(),
+                    oob_data_present: 0,
+                    authentication_requirements: self.authentication_requirements(),
+                },
+            ),
+            ClassicPairingEvent::IoCapabilityResponse { io_capability, .. } => {
+                self.peer_io_capability = Some(io_capability);
+            }
+            ClassicPairingEvent::UserConfirmationRequest { numeric_value, .. } => {
+                let confirmed = self.confirm_numeric(numeric_value);
+                link.handle_command(
+                    controller_id,
+                    if confirmed {
+                        Command::UserConfirmationRequestReply {
+                            bd_addr: self.peer_address.clone(),
+                        }
+                    } else {
+                        Command::UserConfirmationRequestNegativeReply {
+                            bd_addr: self.peer_address.clone(),
+                        }
+                    },
+                );
+            }
+            ClassicPairingEvent::UserPasskeyRequest { .. } => {
+                let number = self
+                    .delegate
+                    .get_number()
+                    .filter(|number| *number <= 999_999);
+                link.handle_command(
+                    controller_id,
+                    match number {
+                        Some(numeric_value) => Command::UserPasskeyRequestReply {
+                            bd_addr: self.peer_address.clone(),
+                            numeric_value,
+                        },
+                        None => Command::UserPasskeyRequestNegativeReply {
+                            bd_addr: self.peer_address.clone(),
+                        },
+                    },
+                );
+            }
+            ClassicPairingEvent::RemoteOobDataRequest { .. } => link.handle_command(
+                controller_id,
+                Command::RemoteOobDataRequestNegativeReply {
+                    bd_addr: self.peer_address.clone(),
+                },
+            ),
+            ClassicPairingEvent::SimplePairingComplete { status: 0, .. } => {}
+            ClassicPairingEvent::SimplePairingComplete { status, .. } => {
+                return Err(Error::Remote(format!(
+                    "Classic Secure Simple Pairing failed with HCI status {status:#04x}"
+                )));
+            }
+            ClassicPairingEvent::UserPasskeyNotification { passkey, .. } => {
+                self.delegate.display_number(passkey, 6);
+            }
+        }
+        Ok(())
+    }
+
+    fn classic_io_capability(&self) -> u8 {
+        match self.config.capabilities.io_capability {
+            IoCapability::KeyboardDisplay => IoCapability::DisplayYesNo as u8,
+            capability => capability as u8,
+        }
+    }
+
+    fn authentication_requirements(&self) -> u8 {
+        let bonding = if self.config.bonding { 0x04 } else { 0x00 };
+        bonding | u8::from(self.config.mitm)
+    }
+
+    fn confirm_numeric(&mut self, number: u32) -> bool {
+        let local = self.classic_io_capability();
+        let peer = self
+            .peer_io_capability
+            .unwrap_or(IoCapability::NoInputNoOutput as u8);
+        match classic_confirmation_method(peer, local) {
+            ClassicConfirmationMethod::Confirm => self.delegate.confirm(false),
+            ClassicConfirmationMethod::AutoConfirm => self.delegate.confirm(true),
+            ClassicConfirmationMethod::Compare => self.delegate.compare_numbers(number, 6),
+            ClassicConfirmationMethod::DisplayAutoConfirm => {
+                self.delegate.display_number(number, 6);
+                self.delegate.confirm(true)
+            }
+            ClassicConfirmationMethod::Reject => false,
+        }
+    }
+}
+
+fn classic_confirmation_method(peer: u8, local: u8) -> ClassicConfirmationMethod {
+    match (peer, local) {
+        (0x00 | 0x01, 0x00) => ClassicConfirmationMethod::DisplayAutoConfirm,
+        (0x00 | 0x01, 0x01) => ClassicConfirmationMethod::Compare,
+        (0x00 | 0x01, 0x03) | (0x02, 0x03) | (0x03, 0x02 | 0x03) => {
+            ClassicConfirmationMethod::AutoConfirm
+        }
+        (0x03, 0x00 | 0x01) => ClassicConfirmationMethod::Confirm,
+        _ => ClassicConfirmationMethod::Reject,
+    }
+}
+
+/// SMP-over-BR/EDR Cross-Transport Key Derivation for an authenticated,
+/// encrypted Classic ACL.
+pub struct ClassicCtkdPairingSession {
+    manager: PairingManager,
+    connection_handle: u16,
+    role: PairingRole,
+    started: bool,
+}
+
+impl ClassicCtkdPairingSession {
+    pub fn new(
+        device: &Device,
+        connection_handle: u16,
+        local_address: Address,
+        config: PairingConfig,
+        link_key: [u8; 16],
+        authenticated: bool,
+    ) -> Result<Self> {
+        let role = if device
+            .classic_connection(connection_handle)
+            .ok_or_else(|| {
+                Error::Remote(format!(
+                    "unknown Classic connection handle {connection_handle:#06x}"
+                ))
+            })?
+            .role
+            == ROLE_CENTRAL
+        {
+            PairingRole::Initiator
+        } else {
+            PairingRole::Responder
+        };
+        Self::new_with_role(
+            device,
+            connection_handle,
+            local_address,
+            config,
+            link_key,
+            authenticated,
+            role,
+        )
+    }
+
+    /// Create a responder session when the peer was explicitly requested to
+    /// initiate CTKD, even if the local controller owns the Classic central role.
+    pub fn new_responder(
+        device: &Device,
+        connection_handle: u16,
+        local_address: Address,
+        config: PairingConfig,
+        link_key: [u8; 16],
+        authenticated: bool,
+    ) -> Result<Self> {
+        Self::new_with_role(
+            device,
+            connection_handle,
+            local_address,
+            config,
+            link_key,
+            authenticated,
+            PairingRole::Responder,
+        )
+    }
+
+    fn new_with_role(
+        device: &Device,
+        connection_handle: u16,
+        local_address: Address,
+        config: PairingConfig,
+        link_key: [u8; 16],
+        authenticated: bool,
+        role: PairingRole,
+    ) -> Result<Self> {
+        let connection = device
+            .classic_connection(connection_handle)
+            .ok_or_else(|| {
+                Error::Remote(format!(
+                    "unknown Classic connection handle {connection_handle:#06x}"
+                ))
+            })?;
+        if !device.is_classic_encrypted_on_handle(connection_handle) {
+            return Err(Error::Remote(format!(
+                "Classic connection {connection_handle:#06x} must be encrypted before CTKD"
+            )));
+        }
+        let mut manager = PairingManager::new(config, Box::new(|_, _| Box::new(AcceptAllDelegate)));
+        manager
+            .register_connection(PairingConnection::br_edr(
+                connection_handle,
+                role,
+                local_address,
+                connection.peer_address.clone(),
+                link_key,
+                authenticated,
+                true,
+            ))
+            .map_err(|error| Error::Remote(error.to_string()))?;
+        Ok(Self {
+            manager,
+            connection_handle,
+            role,
+            started: false,
+        })
+    }
+
+    pub fn begin(&mut self) -> Result<()> {
+        if self.started {
+            return Err(Error::Remote("Classic CTKD session already started".into()));
+        }
+        if self.role == PairingRole::Initiator {
+            self.manager
+                .pair(self.connection_handle)
+                .map_err(|error| Error::Remote(error.to_string()))?;
+        }
+        self.started = true;
+        Ok(())
+    }
+
+    pub fn drive_once(
+        &mut self,
+        link: &mut bumble_host::LocalLink,
+        device: &mut Device,
+    ) -> Result<Option<PairingKeys>> {
+        if !self.started {
+            return Err(Error::Remote("Classic CTKD session has not started".into()));
+        }
+        if device.classic_connection(self.connection_handle).is_none() {
+            return Err(Error::Remote(format!(
+                "Classic connection {:#06x} ended during CTKD",
+                self.connection_handle
+            )));
+        }
+        self.flush_outbound(link, device)?;
+        device.poll(link);
+        for payload in device.take_l2cap_on_handle(self.connection_handle, SMP_BR_CID) {
+            let pdu =
+                SmpPdu::from_bytes(&payload).map_err(|error| Error::Remote(error.to_string()))?;
+            self.manager
+                .receive(self.connection_handle, pdu)
+                .map_err(|error| Error::Remote(error.to_string()))?;
+        }
+        self.flush_outbound(link, device)?;
+        match self.manager.state(self.connection_handle) {
+            Some(ManagedPairingState::ClassicCtkd(ClassicCtkdState::Complete)) => self
+                .manager
+                .pairing_keys(self.connection_handle)
+                .map(Some)
+                .ok_or_else(|| Error::Remote("Classic CTKD completed without keys".into())),
+            Some(ManagedPairingState::ClassicCtkd(ClassicCtkdState::Failed)) => {
+                Err(Error::Remote(format!(
+                    "Classic CTKD failed: {:?}",
+                    self.manager.failure(self.connection_handle)
+                )))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    pub fn run_to_completion(
+        &mut self,
+        host: &mut ExternalHost,
+        device: &mut Device,
+        timeout: Duration,
+    ) -> Result<PairingKeys> {
+        self.begin()?;
+        let deadline = Instant::now() + timeout;
+        loop {
+            if let Some(keys) = self.drive_once(host, device)? {
+                return Ok(keys);
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(Error::Remote(format!(
+                    "timed out running CTKD on Classic connection {:#06x}",
+                    self.connection_handle
+                )));
+            }
+            match host.wait_for_activity(remaining)? {
+                ExternalHostActivity::Packet => {}
+                ExternalHostActivity::Timeout => {
+                    return Err(Error::Remote(format!(
+                        "timed out running CTKD on Classic connection {:#06x}",
+                        self.connection_handle
+                    )))
+                }
+                ExternalHostActivity::Ended => {
+                    return Err(Error::Remote("transport ended during Classic CTKD".into()))
+                }
+            }
+        }
+    }
+
+    pub fn store_bond(&self, store: &mut dyn KeyStore) -> Result<bool> {
+        self.manager
+            .store_bond(self.connection_handle, store)
+            .map_err(|error| Error::Remote(error.to_string()))
+    }
+
+    fn flush_outbound(
+        &mut self,
+        link: &mut bumble_host::LocalLink,
+        device: &mut Device,
+    ) -> Result<()> {
+        for (handle, pdu) in self.manager.drain_outbound() {
+            if !device.send_l2cap_on_handle(link, handle, SMP_BR_CID, &pdu.to_bytes()) {
+                return Err(Error::Remote(format!(
+                    "failed to send SMP/BR PDU on handle {handle:#06x}"
+                )));
+            }
+        }
+        Ok(())
     }
 }
 
@@ -1251,6 +1914,69 @@ mod tests {
     }
 
     #[test]
+    fn surfaces_classic_discovery_names_and_acl_requests() {
+        let first =
+            Address::parse("11:22:33:44:55:66/P", bumble::AddressType::PUBLIC_DEVICE).unwrap();
+        let second =
+            Address::parse("22:33:44:55:66:77/P", bumble::AddressType::PUBLIC_DEVICE).unwrap();
+        let mut remote_name = [0; 248];
+        remote_name[..6].copy_from_slice(b"Bumble");
+        let events = vec![
+            HciPacket::Event(Event::InquiryResult {
+                bd_addr: vec![first.clone()],
+                page_scan_repetition_mode: vec![2],
+                reserved_0: vec![0],
+                reserved_1: vec![0],
+                class_of_device: vec![0x200404],
+                clock_offset: vec![0],
+            }),
+            HciPacket::Event(Event::ExtendedInquiryResult {
+                num_responses: 1,
+                bd_addr: second.clone(),
+                page_scan_repetition_mode: 2,
+                reserved: 0,
+                class_of_device: 0x200404,
+                clock_offset: 0,
+                rssi: -42,
+                extended_inquiry_response: [0; 240],
+            }),
+            HciPacket::Event(Event::InquiryComplete { status: 0 }),
+            HciPacket::Event(Event::RemoteNameRequestComplete {
+                status: 0,
+                bd_addr: first.clone(),
+                remote_name,
+            }),
+            HciPacket::Event(Event::ConnectionRequest {
+                bd_addr: second.clone(),
+                class_of_device: 0x200404,
+                link_type: 1,
+            }),
+        ];
+        let mut host = ExternalHost::new(split(events, RecordingSink::default()));
+        let mut device = Device::new(0);
+        loop {
+            match host.wait_for_activity(Duration::from_secs(1)).unwrap() {
+                ExternalHostActivity::Packet => {
+                    device.poll(&mut host);
+                }
+                ExternalHostActivity::Ended => break,
+                ExternalHostActivity::Timeout => panic!("scripted Classic events timed out"),
+            }
+        }
+
+        assert_eq!(
+            device.take_classic_inquiry_results(),
+            vec![first.clone(), second.clone()]
+        );
+        assert_eq!(device.take_classic_inquiry_complete(), vec![0]);
+        assert_eq!(
+            device.take_classic_remote_names(),
+            vec![(0, first, "Bumble".into())]
+        );
+        assert_eq!(device.take_classic_connection_requests(), vec![second]);
+    }
+
+    #[test]
     fn external_att_transport_returns_response_and_retains_notification() {
         let address =
             Address::parse("C4:F2:17:1A:1D:BB", bumble::AddressType::RANDOM_DEVICE).unwrap();
@@ -1376,6 +2102,105 @@ mod tests {
     }
 
     #[test]
+    fn explicit_peer_requests_use_le_and_classic_security_channels() {
+        use bumble::AddressType;
+
+        let le_peer = Address::parse("C4:F2:17:1A:1D:BB", AddressType::RANDOM_DEVICE).unwrap();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let le_sink = RecordingSink::default();
+        let le_recorded = le_sink.clone();
+        let mut le_host = ExternalHost::new(SplitOpenedTransport {
+            source: Box::new(ChannelSource(receiver)),
+            sink: Box::new(le_sink),
+            metadata: BTreeMap::new(),
+        });
+        let mut le_device = Device::new(0);
+        sender
+            .send(HciPacket::Event(Event::LeMeta(
+                LeMetaEvent::ConnectionComplete {
+                    status: 0,
+                    connection_handle: 0x123,
+                    role: 0,
+                    peer_address_type: 1,
+                    peer_address: le_peer,
+                    connection_interval: 24,
+                    peripheral_latency: 0,
+                    supervision_timeout: 42,
+                    central_clock_accuracy: 0,
+                },
+            )))
+            .unwrap();
+        assert_eq!(
+            le_host.wait_for_activity(Duration::from_secs(1)).unwrap(),
+            ExternalHostActivity::Packet
+        );
+        le_device.poll(&mut le_host);
+        let local = Address::parse("C4:F2:17:1A:1D:AA", AddressType::RANDOM_DEVICE).unwrap();
+        let mut le_pairing =
+            LePairingSession::accept_all(&le_device, 0x123, local, PairingConfig::default())
+                .unwrap();
+        le_pairing
+            .request_peer(&mut le_host, &mut le_device)
+            .unwrap();
+        assert_eq!(le_pairing.role(), PairingRole::Responder);
+        assert!(le_recorded.0.lock().unwrap().iter().any(|packet| matches!(
+            packet,
+            HciPacket::AclData(packet)
+                if packet.data.get(2..4) == Some(&SMP_CID.to_le_bytes())
+                    && packet.data.get(4) == Some(&0x0B)
+        )));
+
+        let classic_peer =
+            Address::parse("11:22:33:44:55:66/P", AddressType::PUBLIC_DEVICE).unwrap();
+        let (classic_sender, classic_receiver) = std::sync::mpsc::channel();
+        let classic_sink = RecordingSink::default();
+        let classic_recorded = classic_sink.clone();
+        let mut classic_host = ExternalHost::new(SplitOpenedTransport {
+            source: Box::new(ChannelSource(classic_receiver)),
+            sink: Box::new(classic_sink),
+            metadata: BTreeMap::new(),
+        });
+        classic_sender
+            .send(HciPacket::Event(Event::ConnectionComplete {
+                status: 0,
+                connection_handle: 0x234,
+                bd_addr: classic_peer,
+                link_type: 1,
+                encryption_enabled: 0,
+            }))
+            .unwrap();
+        let mut classic_device = Device::new(0);
+        assert_eq!(
+            classic_host
+                .wait_for_activity(Duration::from_secs(1))
+                .unwrap(),
+            ExternalHostActivity::Packet
+        );
+        classic_device.poll(&mut classic_host);
+        let mut classic_pairing = ClassicPairingSession::accept_all(
+            &classic_device,
+            0x234,
+            PairingConfig::default(),
+            None,
+        )
+        .unwrap();
+        classic_pairing
+            .request_peer(&mut classic_host, &mut classic_device)
+            .unwrap();
+        assert!(classic_recorded
+            .0
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|packet| matches!(
+                packet,
+                HciPacket::AclData(packet)
+                    if packet.data.get(2..4) == Some(&SMP_BR_CID.to_le_bytes())
+                        && packet.data.get(4) == Some(&0x0B)
+            )));
+    }
+
+    #[test]
     fn le_pairing_session_drives_secure_connections_and_stores_bonds() {
         use bumble::keys::{KeyStore, MemoryKeyStore};
         use bumble::AddressType;
@@ -1476,5 +2301,250 @@ mod tests {
         assert!(sessions[1].store_bond(&mut stores[1]).unwrap());
         assert_eq!(stores[0].get_all().unwrap().len(), 1);
         assert_eq!(stores[1].get_all().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn classic_ctkd_pairing_session_drives_smp_br_and_stores_bonds() {
+        use bumble::keys::{KeyStore, MemoryKeyStore};
+        use bumble::AddressType;
+        use bumble_controller::{Controller, LocalLink as ControllerLink};
+        use bumble_host::pump;
+
+        let central_address =
+            Address::parse("11:11:11:11:11:11/P", AddressType::PUBLIC_DEVICE).unwrap();
+        let peripheral_address =
+            Address::parse("22:22:22:22:22:22/P", AddressType::PUBLIC_DEVICE).unwrap();
+        let mut link = ControllerLink::new();
+        let central = link.add_controller(Controller::new("central", central_address.clone()));
+        let peripheral =
+            link.add_controller(Controller::new("peripheral", peripheral_address.clone()));
+        let mut devices = [Device::new(central), Device::new(peripheral)];
+
+        devices[0].connect_classic(&mut link, peripheral_address.clone());
+        devices[0].poll(&mut link);
+        link.pump_classic();
+        devices[1].poll(&mut link);
+        assert_eq!(
+            devices[1].take_classic_connection_requests(),
+            vec![central_address.clone()]
+        );
+        devices[1].accept_classic(&mut link, central_address.clone());
+        devices[1].poll(&mut link);
+        link.pump_classic();
+        devices[0].poll(&mut link);
+        let handles = [
+            devices[0].classic_connection_handle().unwrap(),
+            devices[1].classic_connection_handle().unwrap(),
+        ];
+        assert!(devices[0].set_classic_encryption_on_handle(&mut link, handles[0], true));
+        devices[0].poll(&mut link);
+        link.pump_classic();
+        devices[1].poll(&mut link);
+        assert!(devices[0].is_classic_encrypted_on_handle(handles[0]));
+        assert!(devices[1].is_classic_encrypted_on_handle(handles[1]));
+
+        let config = || PairingConfig {
+            mitm: false,
+            ct2: true,
+            ..PairingConfig::default()
+        };
+        let link_key = [0xC7; 16];
+        let requested_responder = ClassicCtkdPairingSession::new_responder(
+            &devices[0],
+            handles[0],
+            central_address.clone(),
+            config(),
+            link_key,
+            false,
+        )
+        .unwrap();
+        assert_eq!(requested_responder.role, PairingRole::Responder);
+        let mut sessions = [
+            ClassicCtkdPairingSession::new(
+                &devices[0],
+                handles[0],
+                central_address,
+                config(),
+                link_key,
+                false,
+            )
+            .unwrap(),
+            ClassicCtkdPairingSession::new(
+                &devices[1],
+                handles[1],
+                peripheral_address,
+                config(),
+                link_key,
+                false,
+            )
+            .unwrap(),
+        ];
+        sessions[0].begin().unwrap();
+        sessions[1].begin().unwrap();
+
+        let mut completed: [Option<PairingKeys>; 2] = [None, None];
+        for _ in 0..100 {
+            for index in 0..2 {
+                if completed[index].is_none() {
+                    completed[index] = sessions[index]
+                        .drive_once(&mut link, &mut devices[index])
+                        .unwrap();
+                }
+            }
+            if completed.iter().all(Option::is_some) {
+                break;
+            }
+            pump(&mut link, &mut devices);
+        }
+
+        let central_keys = completed[0].as_ref().expect("central CTKD completed");
+        let peripheral_keys = completed[1].as_ref().expect("peripheral CTKD completed");
+        assert_eq!(central_keys.ltk, peripheral_keys.ltk);
+        assert_eq!(central_keys.link_key, peripheral_keys.link_key);
+        assert_eq!(central_keys.link_key.as_ref().unwrap().value, link_key);
+        let mut stores = [MemoryKeyStore::new(), MemoryKeyStore::new()];
+        assert!(sessions[0].store_bond(&mut stores[0]).unwrap());
+        assert!(sessions[1].store_bond(&mut stores[1]).unwrap());
+        assert_eq!(stores[0].get_all().unwrap().len(), 1);
+        assert_eq!(stores[1].get_all().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn classic_pairing_session_answers_ssp_and_persists_link_key() {
+        use bumble::keys::{KeyStore, MemoryKeyStore};
+        use bumble::AddressType;
+        use bumble_smp::{IoCapability, PairingCapabilities};
+
+        let peer = Address::parse("11:22:33:44:55:66/P", AddressType::PUBLIC_DEVICE).unwrap();
+        let handle = 0x234;
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let sink = RecordingSink::default();
+        let recorded = sink.clone();
+        let mut host = ExternalHost::new(SplitOpenedTransport {
+            source: Box::new(ChannelSource(receiver)),
+            sink: Box::new(sink),
+            metadata: BTreeMap::new(),
+        });
+        let mut device = Device::new(0);
+        sender
+            .send(HciPacket::Event(Event::ConnectionComplete {
+                status: 0,
+                connection_handle: handle,
+                bd_addr: peer.clone(),
+                link_type: 1,
+                encryption_enabled: 0,
+            }))
+            .unwrap();
+        assert_eq!(
+            host.wait_for_activity(Duration::from_secs(1)).unwrap(),
+            ExternalHostActivity::Packet
+        );
+        assert!(device.poll(&mut host));
+
+        for event in [
+            Event::IoCapabilityResponse {
+                bd_addr: peer.clone(),
+                io_capability: IoCapability::DisplayYesNo as u8,
+                oob_data_present: 0,
+                authentication_requirements: 0x05,
+            },
+            Event::IoCapabilityRequest {
+                bd_addr: peer.clone(),
+            },
+            Event::UserConfirmationRequest {
+                bd_addr: peer.clone(),
+                numeric_value: 123_456,
+            },
+            Event::LinkKeyRequest {
+                bd_addr: peer.clone(),
+            },
+            Event::LinkKeyNotification {
+                bd_addr: peer.clone(),
+                link_key: [0xA5; 16],
+                key_type: 0x08,
+            },
+            Event::SimplePairingComplete {
+                status: 0,
+                bd_addr: peer.clone(),
+            },
+            Event::AuthenticationComplete {
+                status: 0,
+                connection_handle: handle,
+            },
+        ] {
+            sender.send(HciPacket::Event(event)).unwrap();
+        }
+
+        let config = PairingConfig {
+            mitm: true,
+            bonding: true,
+            capabilities: PairingCapabilities {
+                io_capability: IoCapability::DisplayYesNo,
+                ..PairingCapabilities::default()
+            },
+            ..PairingConfig::default()
+        };
+        let mut session = ClassicPairingSession::accept_all(&device, handle, config, None).unwrap();
+        let keys = session
+            .pair(&mut host, &mut device, Duration::from_secs(1))
+            .unwrap();
+        assert_eq!(keys.link_key.as_ref().unwrap().value, vec![0xA5; 16]);
+        assert!(keys.link_key.as_ref().unwrap().authenticated);
+        assert_eq!(keys.link_key_type, Some(0x08));
+
+        let packets = recorded.0.lock().unwrap();
+        assert!(packets.iter().any(|packet| matches!(
+            packet,
+            HciPacket::Command(Command::AuthenticationRequested {
+                connection_handle
+            }) if *connection_handle == handle
+        )));
+        assert!(packets.iter().any(|packet| matches!(
+            packet,
+            HciPacket::Command(Command::IoCapabilityRequestReply {
+                bd_addr,
+                io_capability: 1,
+                authentication_requirements: 5,
+                ..
+            }) if bd_addr == &peer
+        )));
+        assert!(packets.iter().any(|packet| matches!(
+            packet,
+            HciPacket::Command(Command::UserConfirmationRequestReply { bd_addr })
+                if bd_addr == &peer
+        )));
+        assert!(packets.iter().any(|packet| matches!(
+            packet,
+            HciPacket::Command(Command::LinkKeyRequestNegativeReply { bd_addr })
+                if bd_addr == &peer
+        )));
+        drop(packets);
+        let mut store = MemoryKeyStore::new();
+        assert!(session.store_bond(&mut store).unwrap());
+        assert_eq!(store.get_all().unwrap()[0].0, peer.to_string(false));
+    }
+
+    #[test]
+    fn classic_confirmation_matrix_matches_upstream() {
+        use ClassicConfirmationMethod::{
+            AutoConfirm, Compare, Confirm, DisplayAutoConfirm, Reject,
+        };
+
+        let expected = [
+            [DisplayAutoConfirm, Compare, Reject, AutoConfirm],
+            [DisplayAutoConfirm, Compare, Reject, AutoConfirm],
+            [Reject, Reject, Reject, AutoConfirm],
+            [Confirm, Confirm, AutoConfirm, AutoConfirm],
+        ];
+        for (peer, row) in expected.into_iter().enumerate() {
+            for (local, method) in row.into_iter().enumerate() {
+                assert_eq!(
+                    classic_confirmation_method(peer as u8, local as u8),
+                    method,
+                    "peer={peer}, local={local}"
+                );
+            }
+        }
+        assert_eq!(classic_confirmation_method(0xFF, 0), Reject);
     }
 }

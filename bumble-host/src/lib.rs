@@ -188,6 +188,99 @@ pub struct ClassicConnectionInfo {
     pub peer_address: Address,
 }
 
+/// Host-facing events that participate in Classic PIN or Secure Simple
+/// Pairing authentication.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ClassicPairingEvent {
+    AuthenticationComplete {
+        status: u8,
+        connection_handle: u16,
+    },
+    PinCodeRequest {
+        peer_address: Address,
+    },
+    LinkKeyRequest {
+        peer_address: Address,
+    },
+    LinkKeyNotification {
+        peer_address: Address,
+        link_key: [u8; 16],
+        key_type: u8,
+    },
+    IoCapabilityRequest {
+        peer_address: Address,
+    },
+    IoCapabilityResponse {
+        peer_address: Address,
+        io_capability: u8,
+        authentication_requirements: u8,
+    },
+    UserConfirmationRequest {
+        peer_address: Address,
+        numeric_value: u32,
+    },
+    UserPasskeyRequest {
+        peer_address: Address,
+    },
+    RemoteOobDataRequest {
+        peer_address: Address,
+    },
+    SimplePairingComplete {
+        status: u8,
+        peer_address: Address,
+    },
+    UserPasskeyNotification {
+        peer_address: Address,
+        passkey: u32,
+    },
+}
+
+impl ClassicPairingEvent {
+    fn belongs_to(&self, connection_handle: u16, peer_address: &Address) -> bool {
+        match self {
+            Self::AuthenticationComplete {
+                connection_handle: event_handle,
+                ..
+            } => *event_handle == connection_handle,
+            Self::PinCodeRequest {
+                peer_address: event_peer,
+            }
+            | Self::LinkKeyRequest {
+                peer_address: event_peer,
+            }
+            | Self::LinkKeyNotification {
+                peer_address: event_peer,
+                ..
+            }
+            | Self::IoCapabilityRequest {
+                peer_address: event_peer,
+            }
+            | Self::IoCapabilityResponse {
+                peer_address: event_peer,
+                ..
+            }
+            | Self::UserConfirmationRequest {
+                peer_address: event_peer,
+                ..
+            }
+            | Self::UserPasskeyRequest {
+                peer_address: event_peer,
+            }
+            | Self::RemoteOobDataRequest {
+                peer_address: event_peer,
+            }
+            | Self::SimplePairingComplete {
+                peer_address: event_peer,
+                ..
+            }
+            | Self::UserPasskeyNotification {
+                peer_address: event_peer,
+                ..
+            } => event_peer == peer_address,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CisRequestInfo {
     pub acl_connection_handle: u16,
@@ -373,6 +466,11 @@ pub struct Device {
     classic_connection_handle: Option<u16>,
     classic_connection_role: Option<u8>,
     classic_connections: BTreeMap<u16, ClassicConnectionInfo>,
+    classic_connection_requests: Vec<Address>,
+    classic_inquiry_results: Vec<Address>,
+    classic_inquiry_complete: Vec<u8>,
+    classic_remote_names: Vec<(u8, Address, String)>,
+    classic_pairing_events: Vec<ClassicPairingEvent>,
     pending_classic_roles: Vec<(Address, u8)>,
     synchronous_connections: Vec<SynchronousConnectionInfo>,
     synchronous_requests: Vec<(Address, u8)>,
@@ -418,6 +516,11 @@ impl Device {
             classic_connection_handle: None,
             classic_connection_role: None,
             classic_connections: BTreeMap::new(),
+            classic_connection_requests: Vec::new(),
+            classic_inquiry_results: Vec::new(),
+            classic_inquiry_complete: Vec::new(),
+            classic_remote_names: Vec::new(),
+            classic_pairing_events: Vec::new(),
             pending_classic_roles: Vec::new(),
             synchronous_connections: Vec::new(),
             synchronous_requests: Vec::new(),
@@ -463,6 +566,11 @@ impl Device {
             classic_connection_handle: None,
             classic_connection_role: None,
             classic_connections: BTreeMap::new(),
+            classic_connection_requests: Vec::new(),
+            classic_inquiry_results: Vec::new(),
+            classic_inquiry_complete: Vec::new(),
+            classic_remote_names: Vec::new(),
+            classic_pairing_events: Vec::new(),
             pending_classic_roles: Vec::new(),
             synchronous_connections: Vec::new(),
             synchronous_requests: Vec::new(),
@@ -1226,6 +1334,53 @@ impl Device {
     /// The local role on the established Classic ACL (`0` Central, `1` Peripheral).
     pub fn classic_connection_role(&self) -> Option<u8> {
         self.classic_connection_role
+    }
+
+    pub fn take_classic_connection_requests(&mut self) -> Vec<Address> {
+        std::mem::take(&mut self.classic_connection_requests)
+    }
+
+    pub fn take_classic_inquiry_results(&mut self) -> Vec<Address> {
+        std::mem::take(&mut self.classic_inquiry_results)
+    }
+
+    pub fn take_classic_inquiry_complete(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.classic_inquiry_complete)
+    }
+
+    pub fn take_classic_remote_names(&mut self) -> Vec<(u8, Address, String)> {
+        std::mem::take(&mut self.classic_remote_names)
+    }
+
+    pub fn authenticate_classic_on_handle(
+        &mut self,
+        link: &mut LocalLink,
+        connection_handle: u16,
+    ) -> bool {
+        if !self.classic_connections.contains_key(&connection_handle) {
+            return false;
+        }
+        self.send_hci_command(link, Command::AuthenticationRequested { connection_handle });
+        true
+    }
+
+    /// Remove all pending Classic PIN/SSP authentication events.
+    pub fn take_classic_pairing_events(&mut self) -> Vec<ClassicPairingEvent> {
+        std::mem::take(&mut self.classic_pairing_events)
+    }
+
+    /// Remove Classic pairing events belonging to one ACL while preserving
+    /// concurrent sessions.
+    pub fn take_classic_pairing_events_for(
+        &mut self,
+        connection_handle: u16,
+        peer_address: &Address,
+    ) -> Vec<ClassicPairingEvent> {
+        let (matching, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut self.classic_pairing_events)
+            .into_iter()
+            .partition(|event| event.belongs_to(connection_handle, peer_address));
+        self.classic_pairing_events = rest;
+        matching
     }
 
     pub fn set_classic_encryption(&mut self, link: &mut LocalLink, enabled: bool) -> bool {
@@ -2130,6 +2285,10 @@ impl Device {
                 HciPacket::Event(Event::DisconnectionComplete {
                     connection_handle, ..
                 }) => {
+                    let disconnected_classic_peer = self
+                        .classic_connections
+                        .get(&connection_handle)
+                        .map(|connection| connection.peer_address.clone());
                     self.encrypted_handles.remove(&connection_handle);
                     self.established_cis_handles.remove(&connection_handle);
                     self.iso_sequence_numbers.remove(&connection_handle);
@@ -2150,6 +2309,10 @@ impl Device {
                         .retain(|(handle, _)| *handle != connection_handle);
                     self.long_term_key_requests
                         .retain(|request| request.connection_handle != connection_handle);
+                    if let Some(peer_address) = disconnected_classic_peer.as_ref() {
+                        self.classic_pairing_events
+                            .retain(|event| !event.belongs_to(connection_handle, peer_address));
+                    }
                     if self.connection_handle == Some(connection_handle) {
                         if let Some(next_handle) = self.le_connections.keys().next().copied() {
                             self.select_connection(next_handle);
@@ -2172,6 +2335,33 @@ impl Device {
                     }
                     self.synchronous_connections
                         .retain(|connection| connection.connection_handle != connection_handle);
+                }
+                HciPacket::Event(Event::InquiryComplete { status }) => {
+                    self.classic_inquiry_complete.push(status);
+                }
+                HciPacket::Event(
+                    Event::InquiryResult { bd_addr, .. }
+                    | Event::InquiryResultWithRssi { bd_addr, .. },
+                ) => {
+                    self.classic_inquiry_results.extend(bd_addr);
+                }
+                HciPacket::Event(Event::ExtendedInquiryResult { bd_addr, .. }) => {
+                    self.classic_inquiry_results.push(bd_addr);
+                }
+                HciPacket::Event(Event::RemoteNameRequestComplete {
+                    status,
+                    bd_addr,
+                    remote_name,
+                }) => {
+                    let length = remote_name
+                        .iter()
+                        .position(|byte| *byte == 0)
+                        .unwrap_or(remote_name.len());
+                    self.classic_remote_names.push((
+                        status,
+                        bd_addr,
+                        String::from_utf8_lossy(&remote_name[..length]).into_owned(),
+                    ));
                 }
                 HciPacket::Event(Event::ConnectionComplete {
                     status,
@@ -2229,8 +2419,13 @@ impl Device {
                     }
                 }
                 HciPacket::Event(Event::ConnectionRequest {
+                    bd_addr,
+                    link_type: 1,
+                    ..
+                }) => self.classic_connection_requests.push(bd_addr),
+                HciPacket::Event(Event::ConnectionRequest {
                     bd_addr, link_type, ..
-                }) if link_type != 1 => self.synchronous_requests.push((bd_addr, link_type)),
+                }) => self.synchronous_requests.push((bd_addr, link_type)),
                 HciPacket::Event(Event::SynchronousConnectionComplete {
                     status: 0,
                     connection_handle,
@@ -2245,6 +2440,86 @@ impl Device {
                         peer_address: bd_addr,
                         link_type,
                         air_mode,
+                    }),
+                HciPacket::Event(Event::AuthenticationComplete {
+                    status,
+                    connection_handle,
+                }) => {
+                    self.classic_pairing_events
+                        .push(ClassicPairingEvent::AuthenticationComplete {
+                            status,
+                            connection_handle,
+                        })
+                }
+                HciPacket::Event(Event::PinCodeRequest { bd_addr }) => self
+                    .classic_pairing_events
+                    .push(ClassicPairingEvent::PinCodeRequest {
+                        peer_address: bd_addr,
+                    }),
+                HciPacket::Event(Event::LinkKeyRequest { bd_addr }) => self
+                    .classic_pairing_events
+                    .push(ClassicPairingEvent::LinkKeyRequest {
+                        peer_address: bd_addr,
+                    }),
+                HciPacket::Event(Event::LinkKeyNotification {
+                    bd_addr,
+                    link_key,
+                    key_type,
+                }) => self
+                    .classic_pairing_events
+                    .push(ClassicPairingEvent::LinkKeyNotification {
+                        peer_address: bd_addr,
+                        link_key,
+                        key_type,
+                    }),
+                HciPacket::Event(Event::IoCapabilityRequest { bd_addr }) => self
+                    .classic_pairing_events
+                    .push(ClassicPairingEvent::IoCapabilityRequest {
+                        peer_address: bd_addr,
+                    }),
+                HciPacket::Event(Event::IoCapabilityResponse {
+                    bd_addr,
+                    io_capability,
+                    authentication_requirements,
+                    ..
+                }) => self
+                    .classic_pairing_events
+                    .push(ClassicPairingEvent::IoCapabilityResponse {
+                        peer_address: bd_addr,
+                        io_capability,
+                        authentication_requirements,
+                    }),
+                HciPacket::Event(Event::UserConfirmationRequest {
+                    bd_addr,
+                    numeric_value,
+                }) => {
+                    self.classic_pairing_events
+                        .push(ClassicPairingEvent::UserConfirmationRequest {
+                            peer_address: bd_addr,
+                            numeric_value,
+                        })
+                }
+                HciPacket::Event(Event::UserPasskeyRequest { bd_addr }) => self
+                    .classic_pairing_events
+                    .push(ClassicPairingEvent::UserPasskeyRequest {
+                        peer_address: bd_addr,
+                    }),
+                HciPacket::Event(Event::RemoteOobDataRequest { bd_addr }) => self
+                    .classic_pairing_events
+                    .push(ClassicPairingEvent::RemoteOobDataRequest {
+                        peer_address: bd_addr,
+                    }),
+                HciPacket::Event(Event::SimplePairingComplete { status, bd_addr }) => self
+                    .classic_pairing_events
+                    .push(ClassicPairingEvent::SimplePairingComplete {
+                        status,
+                        peer_address: bd_addr,
+                    }),
+                HciPacket::Event(Event::UserPasskeyNotification { bd_addr, passkey }) => self
+                    .classic_pairing_events
+                    .push(ClassicPairingEvent::UserPasskeyNotification {
+                        peer_address: bd_addr,
+                        passkey,
                     }),
                 HciPacket::Event(Event::NumberOfCompletedPackets {
                     connection_handles,

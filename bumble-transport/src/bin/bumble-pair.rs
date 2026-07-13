@@ -1,6 +1,7 @@
 use bumble::advertising_data::Type as AdvertisingDataType;
 use bumble::keys::{JsonKeyStore, KeyStore, PairingKeys};
 use bumble::{Address, AddressType, AdvertisingData, Uuid};
+use bumble_hci::metadata::supported_command_names;
 use bumble_hci::{Command, ReturnParameters};
 use bumble_host::Device;
 use bumble_smp::{
@@ -8,7 +9,8 @@ use bumble_smp::{
     PairingCapabilities, PairingConfig, PairingDelegate,
 };
 use bumble_transport::{
-    open_split_transport, CommandResponse, ExternalHost, ExternalHostActivity, LePairingSession,
+    open_split_transport, ClassicCtkdPairingSession, ClassicPairingSession, CommandResponse,
+    ExternalHost, ExternalHostActivity, LePairingSession,
 };
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -18,6 +20,7 @@ use std::time::{Duration, Instant};
 const DEFAULT_ADDRESS: &str = "F0:F1:F2:F3:F4:F5";
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
 const PAIRING_TIMEOUT: Duration = Duration::from_secs(120);
+const CTKD_TIMEOUT: Duration = Duration::from_secs(10);
 const PROCEDURE_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -25,6 +28,12 @@ enum Mode {
     Le,
     Classic,
     Dual,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ConnectionKind {
+    Le(u16),
+    Classic(u16),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -478,12 +487,11 @@ fn advertising_data(args: &Args, name: &str) -> Result<Vec<u8>, String> {
     Ok(data)
 }
 
-fn advertise_and_wait(
+fn start_le_advertising(
     host: &mut ExternalHost,
-    device: &mut Device,
     own_address_type: u8,
     data: Vec<u8>,
-) -> Result<u16, String> {
+) -> Result<(), String> {
     command(
         host,
         Command::LeSetAdvertisingParameters {
@@ -512,7 +520,257 @@ fn advertise_and_wait(
         },
         "enabling advertising",
     )?;
-    wait_for_connection(host, device, None)
+    Ok(())
+}
+
+fn wait_for_classic_connection(
+    host: &mut ExternalHost,
+    device: &mut Device,
+    peer: Option<&Address>,
+) -> Result<u16, String> {
+    let deadline = Instant::now() + PROCEDURE_TIMEOUT;
+    loop {
+        device.poll(host);
+        let handle = match peer {
+            Some(peer) => device.classic_connection_handle_for_peer(peer),
+            None => device.classic_connection_handle(),
+        };
+        if let Some(handle) = handle {
+            return Ok(handle);
+        }
+        for request in device.take_classic_connection_requests() {
+            if peer.is_none_or(|peer| *peer == request) {
+                device.accept_classic(host, request);
+            }
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err("timed out waiting for Classic connection".into());
+        }
+        match host
+            .wait_for_activity(remaining)
+            .map_err(|error| error.to_string())?
+        {
+            ExternalHostActivity::Packet => {}
+            ExternalHostActivity::Timeout => {
+                return Err("timed out waiting for Classic connection".into())
+            }
+            ExternalHostActivity::Ended => {
+                return Err("HCI transport ended while waiting for Classic connection".into())
+            }
+        }
+    }
+}
+
+fn enable_classic_encryption(
+    host: &mut ExternalHost,
+    device: &mut Device,
+    connection_handle: u16,
+) -> Result<(), String> {
+    if device.is_classic_encrypted_on_handle(connection_handle) {
+        return Ok(());
+    }
+    if !device.set_classic_encryption_on_handle(host, connection_handle, true) {
+        return Err(format!(
+            "failed to request encryption on Classic handle {connection_handle:#06x}"
+        ));
+    }
+    let deadline = Instant::now() + PROCEDURE_TIMEOUT;
+    loop {
+        device.poll(host);
+        if device.is_classic_encrypted_on_handle(connection_handle) {
+            return Ok(());
+        }
+        if device.classic_connection(connection_handle).is_none() {
+            return Err("Classic connection ended before encryption completed".into());
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err("timed out waiting for Classic encryption".into());
+        }
+        match host
+            .wait_for_activity(remaining)
+            .map_err(|error| error.to_string())?
+        {
+            ExternalHostActivity::Packet => {}
+            ExternalHostActivity::Timeout => {
+                return Err("timed out waiting for Classic encryption".into())
+            }
+            ExternalHostActivity::Ended => {
+                return Err("transport ended before Classic encryption completed".into())
+            }
+        }
+    }
+}
+
+fn run_classic_ctkd(
+    host: &mut ExternalHost,
+    device: &mut Device,
+    mut session: ClassicCtkdPairingSession,
+) -> Result<(ClassicCtkdPairingSession, PairingKeys), String> {
+    let keys = session
+        .run_to_completion(host, device, CTKD_TIMEOUT)
+        .map_err(|error| error.to_string())?;
+    Ok((session, keys))
+}
+
+fn start_classic_listening(host: &mut ExternalHost, name: &str) -> Result<(), String> {
+    let mut inquiry_response = [0; 240];
+    let mut name_data = Vec::new();
+    add_ad_structure(&mut name_data, 0x09, name.as_bytes())?;
+    if name_data.len() > inquiry_response.len() {
+        return Err("local name is too long for an inquiry response".into());
+    }
+    inquiry_response[..name_data.len()].copy_from_slice(&name_data);
+    command(
+        host,
+        Command::WriteExtendedInquiryResponse {
+            fec_required: 0,
+            extended_inquiry_response: inquiry_response,
+        },
+        "writing extended inquiry response",
+    )?;
+    command(
+        host,
+        Command::WriteScanEnable { scan_enable: 0x03 },
+        "enabling inquiry and page scans",
+    )?;
+    Ok(())
+}
+
+fn wait_for_incoming(
+    host: &mut ExternalHost,
+    device: &mut Device,
+    mode: Mode,
+) -> Result<ConnectionKind, String> {
+    let deadline = Instant::now() + PROCEDURE_TIMEOUT;
+    loop {
+        device.poll(host);
+        if mode != Mode::Classic {
+            if let Some(handle) = device.connection_handle() {
+                return Ok(ConnectionKind::Le(handle));
+            }
+        }
+        if mode != Mode::Le {
+            if let Some(handle) = device.classic_connection_handle() {
+                return Ok(ConnectionKind::Classic(handle));
+            }
+            for request in device.take_classic_connection_requests() {
+                device.accept_classic(host, request);
+            }
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err("timed out waiting for an incoming connection".into());
+        }
+        match host
+            .wait_for_activity(remaining)
+            .map_err(|error| error.to_string())?
+        {
+            ExternalHostActivity::Packet => {}
+            ExternalHostActivity::Timeout => {
+                return Err("timed out waiting for an incoming connection".into())
+            }
+            ExternalHostActivity::Ended => {
+                return Err("HCI transport ended while waiting for a connection".into())
+            }
+        }
+    }
+}
+
+fn resolve_classic_name(
+    host: &mut ExternalHost,
+    device: &mut Device,
+    wanted_name: &str,
+) -> Result<Address, String> {
+    device.take_classic_inquiry_results();
+    device.take_classic_inquiry_complete();
+    device.take_classic_remote_names();
+    command(
+        host,
+        Command::Inquiry {
+            lap: 0x9E8B33,
+            inquiry_length: 8,
+            num_responses: 0,
+        },
+        "starting Classic inquiry",
+    )?;
+    let deadline = Instant::now() + PROCEDURE_TIMEOUT;
+    let mut candidates = Vec::new();
+    let completed = loop {
+        device.poll(host);
+        for address in device.take_classic_inquiry_results() {
+            if !candidates.contains(&address) {
+                candidates.push(address);
+            }
+        }
+        if let Some(status) = device.take_classic_inquiry_complete().pop() {
+            if status != 0 {
+                return Err(format!(
+                    "Classic inquiry failed with HCI status {status:#04x}"
+                ));
+            }
+            break true;
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            break false;
+        }
+        match host
+            .wait_for_activity(remaining)
+            .map_err(|error| error.to_string())?
+        {
+            ExternalHostActivity::Packet => {}
+            ExternalHostActivity::Timeout | ExternalHostActivity::Ended => break false,
+        }
+    };
+    if !completed {
+        let _ = command(host, Command::InquiryCancel, "canceling Classic inquiry");
+    }
+
+    for address in candidates {
+        command(
+            host,
+            Command::RemoteNameRequest {
+                bd_addr: address.clone(),
+                page_scan_repetition_mode: 2,
+                reserved: 0,
+                clock_offset: 0,
+            },
+            "requesting Classic remote name",
+        )?;
+        loop {
+            device.poll(host);
+            if let Some((status, _, name)) = device
+                .take_classic_remote_names()
+                .into_iter()
+                .find(|(_, peer, _)| *peer == address)
+            {
+                if status == 0 && name == wanted_name {
+                    return Ok(address);
+                }
+                break;
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(format!(
+                    "timed out resolving Classic peer name {wanted_name:?}"
+                ));
+            }
+            match host
+                .wait_for_activity(remaining)
+                .map_err(|error| error.to_string())?
+            {
+                ExternalHostActivity::Packet => {}
+                ExternalHostActivity::Timeout | ExternalHostActivity::Ended => {
+                    return Err(format!(
+                        "timed out resolving Classic peer name {wanted_name:?}"
+                    ))
+                }
+            }
+        }
+    }
+    Err(format!("Classic peer name {wanted_name:?} was not found"))
 }
 
 fn decode_hex(value: &str) -> Result<Vec<u8>, String> {
@@ -596,12 +854,16 @@ struct CliDelegate {
 }
 
 impl CliDelegate {
-    fn prompt(&self, message: &str) -> String {
+    fn prompt_raw(&self, message: &str) -> String {
         print!("{message}");
         let _ = std::io::stdout().flush();
         let mut answer = String::new();
         std::io::stdin().read_line(&mut answer).ok();
-        answer.trim().to_ascii_lowercase()
+        answer.trim().to_owned()
+    }
+
+    fn prompt(&self, message: &str) -> String {
+        self.prompt_raw(message).to_ascii_lowercase()
     }
 
     fn yes_no(&self, message: &str) -> bool {
@@ -643,6 +905,19 @@ impl PairingDelegate for CliDelegate {
         }
     }
 
+    fn get_string(&mut self, max_length: usize) -> Option<String> {
+        loop {
+            let answer = self.prompt_raw(">>> Enter PIN (1-16 bytes): ");
+            if answer.is_empty() {
+                return None;
+            }
+            if answer.len() <= max_length {
+                return Some(answer);
+            }
+            println!("PIN must be at most {max_length} bytes");
+        }
+    }
+
     fn display_number(&mut self, number: u32, digits: u8) {
         println!("### PIN: {number:0width$}", width = usize::from(digits));
     }
@@ -668,38 +943,87 @@ fn print_store(store: &dyn KeyStore) -> Result<(), String> {
 }
 
 fn run(args: Args) -> Result<(), String> {
-    if args.mode != Mode::Le {
-        return Err("Classic and dual-mode pairing require the external SSP runtime".into());
-    }
     let config = load_device_config(&args.device_config)?;
     println!("<<< connecting to HCI...");
     let transport = open_split_transport(&args.transport).map_err(|error| error.to_string())?;
     let mut host = ExternalHost::new(transport);
     let mut device = Device::new(0);
-    host.initialize_device(&mut device, COMMAND_TIMEOUT)
+    let controller_info = host
+        .initialize_device(&mut device, COMMAND_TIMEOUT)
         .map_err(|error| error.to_string())?;
     println!("<<< connected");
 
-    let mut local_address = config.address;
-    let mut own_address_type = u8::from(!local_address.is_public());
-    if args.address_or_name.is_none() && args.advertising_address.as_deref() == Some("public") {
+    let supported = supported_command_names(&controller_info.supported_commands);
+    let classic_enabled = args.mode != Mode::Le;
+    let le_enabled = args.mode != Mode::Classic;
+    if classic_enabled {
+        if !supported.contains(&"HCI_WRITE_SIMPLE_PAIRING_MODE_COMMAND") {
+            return Err("controller does not support Classic Secure Simple Pairing".into());
+        }
+        command(
+            &mut host,
+            Command::WriteSimplePairingMode {
+                simple_pairing_mode: 1,
+            },
+            "enabling Secure Simple Pairing",
+        )?;
+        if args.secure_connections
+            && supported.contains(&"HCI_WRITE_SECURE_CONNECTIONS_HOST_SUPPORT_COMMAND")
+        {
+            command(
+                &mut host,
+                Command::WriteSecureConnectionsHostSupport {
+                    secure_connections_host_support: 1,
+                },
+                "enabling Classic Secure Connections host support",
+            )?;
+        }
+        let mut local_name = [0; 248];
+        let name = config.name.as_bytes();
+        let length = name.len().min(local_name.len());
+        local_name[..length].copy_from_slice(&name[..length]);
+        command(
+            &mut host,
+            Command::WriteLocalName { local_name },
+            "writing Classic local name",
+        )?;
+    }
+
+    let public_address = if classic_enabled
+        || (args.address_or_name.is_none() && args.advertising_address.as_deref() == Some("public"))
+    {
         let response = command(&mut host, Command::ReadBdAddr, "reading public address")?;
-        local_address = match response.return_parameters() {
+        Some(match response.return_parameters() {
             Some(ReturnParameters::ReadBdAddr { bd_addr, .. }) => bd_addr.clone(),
             other => return Err(format!("unexpected Read BD_ADDR response: {other:?}")),
-        };
-        own_address_type = 0;
-    } else if own_address_type != 0 {
+        })
+    } else {
+        None
+    };
+    let le_address = if args.address_or_name.is_none()
+        && args.advertising_address.as_deref() == Some("public")
+    {
+        public_address
+            .clone()
+            .ok_or_else(|| "controller public address was not read".to_string())?
+    } else {
+        config.address
+    };
+    let own_address_type = u8::from(!le_address.is_public());
+    if le_enabled && own_address_type != 0 {
         command(
             &mut host,
             Command::LeSetRandomAddress {
-                random_address: local_address.clone(),
+                random_address: le_address.clone(),
             },
             "setting random address",
         )?;
     }
 
-    let namespace = local_address.to_string(false);
+    let namespace = public_address
+        .as_ref()
+        .unwrap_or(&le_address)
+        .to_string(false);
     let mut store = args
         .keystore_file
         .as_ref()
@@ -716,79 +1040,231 @@ fn run(args: Args) -> Result<(), String> {
         }
     }
 
-    let (handle, outgoing) = if let Some(target) = args.address_or_name.as_deref() {
-        let peer = match Address::parse(target, AddressType::RANDOM_DEVICE) {
-            Ok(address) => address,
-            Err(_) => resolve_name(&mut host, &mut device, target, own_address_type)?,
-        };
-        println!("=== Connecting to {peer}...");
-        (
-            connect(&mut host, &mut device, peer, own_address_type)?,
-            true,
-        )
+    let (connection, outgoing) = if let Some(target) = args.address_or_name.as_deref() {
+        if args.mode == Mode::Le {
+            let peer = match Address::parse(target, AddressType::RANDOM_DEVICE) {
+                Ok(address) => address,
+                Err(_) => resolve_name(&mut host, &mut device, target, own_address_type)?,
+            };
+            println!("=== Connecting to {peer} over LE...");
+            (
+                ConnectionKind::Le(connect(&mut host, &mut device, peer, own_address_type)?),
+                true,
+            )
+        } else {
+            let peer = match Address::parse(target, AddressType::PUBLIC_DEVICE) {
+                Ok(address) => address,
+                Err(_) => resolve_classic_name(&mut host, &mut device, target)?,
+            };
+            println!("=== Connecting to {peer} over Classic...");
+            device.connect_classic(&mut host, peer.clone());
+            (
+                ConnectionKind::Classic(wait_for_classic_connection(
+                    &mut host,
+                    &mut device,
+                    Some(&peer),
+                )?),
+                true,
+            )
+        }
     } else {
-        println!("Ready for LE connections on {local_address}");
-        (
-            advertise_and_wait(
+        if le_enabled {
+            start_le_advertising(
                 &mut host,
-                &mut device,
                 own_address_type,
                 advertising_data(&args, &config.name)?,
-            )?,
-            false,
-        )
-    };
-    let peer = device
-        .le_connection(handle)
-        .map(|connection| connection.peer_address.clone())
-        .ok_or_else(|| "connection disappeared before pairing".to_string())?;
-    println!("<<< Connection: {peer}");
-    println!("*** Pairing starting");
-    let prompt = args.prompt;
-    let delegate_factory = Box::new(move |_, _| {
-        Box::new(CliDelegate {
-            prompt_for_acceptance: prompt,
-        }) as Box<dyn PairingDelegate>
-    });
-    let session_config = pairing_config(&args, &local_address)?;
-    let mut pairing = LePairingSession::new(
-        &device,
-        handle,
-        local_address,
-        session_config,
-        delegate_factory,
-    )
-    .map_err(|error| error.to_string())?;
-    let keys = if outgoing || args.request {
-        pairing
-            .pair(&mut host, &mut device, PAIRING_TIMEOUT)
-            .map_err(|error| error.to_string())?
-    } else {
-        pairing.listen(&device).map_err(|error| error.to_string())?;
-        pairing
-            .run_to_completion(&mut host, &mut device, PAIRING_TIMEOUT)
-            .map_err(|error| error.to_string())?
-    };
-    println!("*** Paired! (peer identity={peer})");
-    print_pairing_keys("*** ", &keys)?;
-    println!(
-        "@@@ Connection is {}encrypted",
-        if device.is_encrypted_on_handle(handle) {
-            ""
-        } else {
-            "not "
+            )?;
+            println!("Ready for LE connections on {le_address}");
         }
-    );
-    if args.bond {
-        if let Some(store) = store.as_mut() {
-            pairing
-                .store_bond(store)
-                .map_err(|error| error.to_string())?;
+        if classic_enabled {
+            start_classic_listening(&mut host, &config.name)?;
+            println!(
+                "Ready for Classic connections on {}",
+                public_address
+                    .as_ref()
+                    .expect("Classic mode reads the public address")
+            );
         }
-    }
+        (wait_for_incoming(&mut host, &mut device, args.mode)?, false)
+    };
+
+    let connected = match connection {
+        ConnectionKind::Le(handle) => {
+            let peer = device
+                .le_connection(handle)
+                .map(|connection| connection.peer_address.clone())
+                .ok_or_else(|| "LE connection disappeared before pairing".to_string())?;
+            println!("<<< LE Connection: {peer}");
+            println!("*** Pairing starting");
+            let prompt = args.prompt;
+            let delegate_factory = Box::new(move |_, _| {
+                Box::new(CliDelegate {
+                    prompt_for_acceptance: prompt,
+                }) as Box<dyn PairingDelegate>
+            });
+            let session_config = pairing_config(&args, &le_address)?;
+            let mut pairing = LePairingSession::new(
+                &device,
+                handle,
+                le_address,
+                session_config,
+                delegate_factory,
+            )
+            .map_err(|error| error.to_string())?;
+            let keys = if args.request {
+                pairing
+                    .request_peer(&mut host, &mut device)
+                    .map_err(|error| error.to_string())?;
+                pairing
+                    .run_to_completion(&mut host, &mut device, PAIRING_TIMEOUT)
+                    .map_err(|error| error.to_string())?
+            } else if outgoing {
+                pairing
+                    .pair(&mut host, &mut device, PAIRING_TIMEOUT)
+                    .map_err(|error| error.to_string())?
+            } else {
+                pairing.listen(&device).map_err(|error| error.to_string())?;
+                pairing
+                    .run_to_completion(&mut host, &mut device, PAIRING_TIMEOUT)
+                    .map_err(|error| error.to_string())?
+            };
+            println!("*** Paired! (peer identity={peer})");
+            print_pairing_keys("*** ", &keys)?;
+            println!("@@@ Connection is encrypted");
+            if args.bond {
+                if let Some(store) = store.as_mut() {
+                    pairing
+                        .store_bond(store)
+                        .map_err(|error| error.to_string())?;
+                }
+            }
+            ConnectionKind::Le(handle)
+        }
+        ConnectionKind::Classic(handle) => {
+            let peer = device
+                .classic_connection(handle)
+                .map(|connection| connection.peer_address.clone())
+                .ok_or_else(|| "Classic connection disappeared before pairing".to_string())?;
+            println!("<<< Classic Connection: {peer}");
+            println!("*** Pairing starting");
+            let stored_keys = store
+                .as_ref()
+                .map(|store| store.get(&peer.to_string(false)))
+                .transpose()
+                .map_err(|error| error.to_string())?
+                .flatten();
+            let local_address = public_address.as_ref().unwrap_or(&le_address).clone();
+            let session_config = pairing_config(&args, &local_address)?;
+            let mut pairing = ClassicPairingSession::new(
+                &device,
+                handle,
+                session_config.clone(),
+                Box::new(CliDelegate {
+                    prompt_for_acceptance: args.prompt,
+                }),
+                stored_keys,
+            )
+            .map_err(|error| error.to_string())?;
+            let keys = if args.request {
+                pairing
+                    .request_peer(&mut host, &mut device)
+                    .map_err(|error| error.to_string())?;
+                pairing
+                    .run_to_completion(&mut host, &mut device, PAIRING_TIMEOUT)
+                    .map_err(|error| error.to_string())?
+            } else if outgoing {
+                pairing
+                    .pair(&mut host, &mut device, PAIRING_TIMEOUT)
+                    .map_err(|error| error.to_string())?
+            } else {
+                pairing.listen(&device).map_err(|error| error.to_string())?;
+                pairing
+                    .run_to_completion(&mut host, &mut device, PAIRING_TIMEOUT)
+                    .map_err(|error| error.to_string())?
+            };
+            println!("*** Paired [Classic]! (peer identity={peer})");
+            print_pairing_keys("*** ", &keys)?;
+            let ctkd_completed = if args.ctkd
+                && args.secure_connections
+                && matches!(keys.link_key_type, Some(0x07 | 0x08))
+            {
+                println!("*** CTKD over BR/EDR starting");
+                let attempt = (|| {
+                    let link_key = keys.link_key.as_ref().ok_or_else(|| {
+                        "Classic pairing completed without a link key".to_string()
+                    })?;
+                    let link_key_value: [u8; 16] =
+                        link_key.value.as_slice().try_into().map_err(|_| {
+                            "Classic pairing returned a malformed link key".to_string()
+                        })?;
+                    enable_classic_encryption(&mut host, &mut device, handle)?;
+                    let session = if args.request {
+                        ClassicCtkdPairingSession::new_responder(
+                            &device,
+                            handle,
+                            local_address,
+                            session_config,
+                            link_key_value,
+                            link_key.authenticated,
+                        )
+                    } else {
+                        ClassicCtkdPairingSession::new(
+                            &device,
+                            handle,
+                            local_address,
+                            session_config,
+                            link_key_value,
+                            link_key.authenticated,
+                        )
+                    }
+                    .map_err(|error| error.to_string())?;
+                    run_classic_ctkd(&mut host, &mut device, session)
+                })();
+                match attempt {
+                    Ok((ctkd, ctkd_keys)) => {
+                        println!("*** CTKD complete");
+                        print_pairing_keys("*** ", &ctkd_keys)?;
+                        if args.bond {
+                            if let Some(store) = store.as_mut() {
+                                ctkd.store_bond(store).map_err(|error| error.to_string())?;
+                            }
+                        }
+                        true
+                    }
+                    Err(error) => {
+                        eprintln!("*** CTKD unavailable: {error}");
+                        false
+                    }
+                }
+            } else {
+                if args.ctkd {
+                    if !args.secure_connections {
+                        println!("*** CTKD skipped because Secure Connections is disabled");
+                    } else {
+                        println!(
+                            "*** CTKD skipped because the Classic link key is not P-256 Secure Connections"
+                        );
+                    }
+                }
+                false
+            };
+            if args.bond && !ctkd_completed {
+                if let Some(store) = store.as_mut() {
+                    pairing
+                        .store_bond(store)
+                        .map_err(|error| error.to_string())?;
+                }
+            }
+            ConnectionKind::Classic(handle)
+        }
+    };
 
     if args.linger {
-        while device.is_connected_on_handle(handle) {
+        let is_connected = |device: &Device| match connected {
+            ConnectionKind::Le(handle) => device.is_connected_on_handle(handle),
+            ConnectionKind::Classic(handle) => device.classic_connection(handle).is_some(),
+        };
+        while is_connected(&device) {
             device.poll(&mut host);
             match host
                 .wait_for_activity(Duration::from_secs(60))
@@ -799,7 +1275,15 @@ fn run(args: Args) -> Result<(), String> {
             }
         }
     } else {
-        device.disconnect(&mut host, 0x13);
+        match connected {
+            ConnectionKind::Le(handle) => {
+                device.select_connection(handle);
+                device.disconnect(&mut host, 0x13);
+            }
+            ConnectionKind::Classic(handle) => {
+                device.disconnect_handle(&mut host, handle, 0x13);
+            }
+        }
     }
     Ok(())
 }

@@ -198,6 +198,19 @@ impl PairingManager {
         Ok(())
     }
 
+    /// Override the protocol role before a pairing session starts. This is
+    /// used when a peer is explicitly asked to initiate pairing even though
+    /// the local controller owns the physical central role.
+    pub fn set_connection_role(&mut self, handle: u16, role: PairingRole) -> Result<()> {
+        if self.sessions.contains_key(&handle) {
+            return Err(Error::InvalidPacket(
+                "cannot change pairing role while a session is active".into(),
+            ));
+        }
+        self.connection_mut(handle)?.role = role;
+        Ok(())
+    }
+
     pub fn pair(&mut self, handle: u16) -> Result<()> {
         let connection = self.connection(handle)?.clone();
         if connection.role != PairingRole::Initiator {
@@ -317,6 +330,12 @@ impl PairingManager {
         self.connections
             .get(&handle)
             .ok_or_else(|| Error::InvalidPacket("unknown connection handle".into()))
+    }
+
+    fn connection_mut(&mut self, handle: u16) -> Result<&mut PairingConnection> {
+        self.connections.get_mut(&handle).ok_or_else(|| {
+            Error::InvalidPacket(format!("unknown connection handle 0x{handle:04X}"))
+        })
     }
 
     fn create_session(&mut self, connection: &PairingConnection) -> Result<ManagedSession> {
