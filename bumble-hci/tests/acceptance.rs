@@ -928,4 +928,11 @@ fn test_iso_data_packet() {
     let hp = HciPacket::from_bytes(&data).unwrap();
     assert_eq!(hp, HciPacket::IsoData(packet));
     assert_eq!(hp.to_bytes(), data);
+
+    let mut truncated = data.clone();
+    truncated.pop();
+    assert!(IsoDataPacket::from_bytes(&truncated).is_err());
+    let mut overlong = data;
+    overlong.push(0);
+    assert!(IsoDataPacket::from_bytes(&overlong).is_err());
 }

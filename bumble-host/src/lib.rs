@@ -22,9 +22,10 @@
 //! ATT traffic over the fixed ATT CID plus raw fixed/dynamic L2CAP channels,
 //! with controller-buffer-sized ACL fragmentation/reassembly. High-level
 //! legacy and extended advertising, scanning, and connection setup are also
-//! available. Deferred: direct integration of the LE signaling manager,
-//! periodic-advertising synchronization, and multiple simultaneous connections
-//! per device.
+//! available, along with CIG/CIS control and ISO SDU fragmentation/reassembly.
+//! Deferred: direct integration of the LE signaling manager, periodic-
+//! advertising synchronization, and multiple simultaneous connections per
+//! device.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -33,8 +34,9 @@ use bumble_att::AttPdu;
 use bumble_controller::LocalLink;
 use bumble_gatt::AttRequestHandler;
 use bumble_hci::{
-    fragment_l2cap_pdu, AclDataPacket, AclDataPacketAssembler, AdvertisingReport, Command, Event,
-    ExtendedAdvertisingReport, HciPacket, LeMetaEvent, SynchronousDataPacket,
+    fragment_l2cap_pdu, AclDataPacket, AclDataPacketAssembler, AdvertisingReport, CodingFormat,
+    Command, Event, ExtendedAdvertisingReport, HciPacket, IsoDataPacket, LeMetaEvent,
+    SynchronousDataPacket,
 };
 use bumble_l2cap::L2capPdu;
 
@@ -52,6 +54,72 @@ pub struct SynchronousConnectionInfo {
     pub peer_address: Address,
     pub link_type: u8,
     pub air_mode: u8,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CisRequestInfo {
+    pub acl_connection_handle: u16,
+    pub cis_connection_handle: u16,
+    pub cig_id: u8,
+    pub cis_id: u8,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IsoSdu {
+    pub connection_handle: u16,
+    pub packet_sequence_number: u16,
+    pub packet_status_flag: u8,
+    pub data: Vec<u8>,
+}
+
+#[derive(Debug, Default)]
+struct IsoSduAssembler {
+    pending: Option<IsoSdu>,
+    expected_length: usize,
+}
+
+impl IsoSduAssembler {
+    fn push(&mut self, packet: IsoDataPacket) -> Option<IsoSdu> {
+        match packet.pb_flag {
+            0b00 | 0b10 => {
+                let (Some(sequence), Some(length), Some(status)) = (
+                    packet.packet_sequence_number,
+                    packet.iso_sdu_length,
+                    packet.packet_status_flag,
+                ) else {
+                    self.pending = None;
+                    return None;
+                };
+                let sdu = IsoSdu {
+                    connection_handle: packet.connection_handle,
+                    packet_sequence_number: sequence,
+                    packet_status_flag: status,
+                    data: packet.iso_sdu_fragment,
+                };
+                if packet.pb_flag == 0b10 {
+                    self.pending = None;
+                    return (sdu.data.len() == usize::from(length)).then_some(sdu);
+                }
+                self.expected_length = usize::from(length);
+                self.pending = Some(sdu);
+                None
+            }
+            0b01 | 0b11 => {
+                let pending = self.pending.as_mut()?;
+                pending.data.extend_from_slice(&packet.iso_sdu_fragment);
+                if pending.data.len() > self.expected_length {
+                    self.pending = None;
+                    return None;
+                }
+                if packet.pb_flag == 0b11 {
+                    let complete = self.pending.take().expect("pending ISO SDU exists");
+                    return (complete.data.len() == self.expected_length).then_some(complete);
+                }
+                None
+            }
+            _ => None,
+        }
+    }
 }
 
 /// Parameters for one high-level extended-advertising set. Values map directly
@@ -116,6 +184,12 @@ pub struct Device {
     synchronous_connections: Vec<SynchronousConnectionInfo>,
     synchronous_requests: Vec<(Address, u8)>,
     synchronous_inbox: Vec<SynchronousDataPacket>,
+    cis_requests: Vec<CisRequestInfo>,
+    configured_cis_handles: Vec<u16>,
+    established_cis_handles: BTreeSet<u16>,
+    iso_sequence_numbers: BTreeMap<u16, u16>,
+    iso_assemblers: BTreeMap<u16, IsoSduAssembler>,
+    iso_inbox: Vec<IsoSdu>,
     inbox: Vec<AttPdu>,
     /// Received payloads on non-ATT L2CAP channels, as `(cid, payload)`.
     l2cap_inbox: Vec<(u16, Vec<u8>)>,
@@ -141,6 +215,12 @@ impl Device {
             synchronous_connections: Vec::new(),
             synchronous_requests: Vec::new(),
             synchronous_inbox: Vec::new(),
+            cis_requests: Vec::new(),
+            configured_cis_handles: Vec::new(),
+            established_cis_handles: BTreeSet::new(),
+            iso_sequence_numbers: BTreeMap::new(),
+            iso_assemblers: BTreeMap::new(),
+            iso_inbox: Vec::new(),
             inbox: Vec::new(),
             l2cap_inbox: Vec::new(),
             security_requests: Vec::new(),
@@ -166,6 +246,12 @@ impl Device {
             synchronous_connections: Vec::new(),
             synchronous_requests: Vec::new(),
             synchronous_inbox: Vec::new(),
+            cis_requests: Vec::new(),
+            configured_cis_handles: Vec::new(),
+            established_cis_handles: BTreeSet::new(),
+            iso_sequence_numbers: BTreeMap::new(),
+            iso_assemblers: BTreeMap::new(),
+            iso_inbox: Vec::new(),
             inbox: Vec::new(),
             l2cap_inbox: Vec::new(),
             security_requests: Vec::new(),
@@ -585,6 +671,169 @@ impl Device {
         std::mem::take(&mut self.synchronous_inbox)
     }
 
+    /// Configure a CIG using Bumble's deterministic in-process defaults. The
+    /// allocated CIS handles become available through
+    /// [`Device::take_configured_cis_handles`] after [`pump`].
+    pub fn configure_cig(&mut self, link: &mut LocalLink, cig_id: u8, cis_ids: &[u8]) -> bool {
+        if cis_ids.is_empty() || cis_ids.len() > u8::MAX as usize {
+            return false;
+        }
+        let count = cis_ids.len();
+        self.send_hci_command(
+            link,
+            Command::LeSetCigParameters {
+                cig_id,
+                sdu_interval_c_to_p: 10_000,
+                sdu_interval_p_to_c: 10_000,
+                worst_case_sca: 0,
+                packing: 0,
+                framing: 0,
+                max_transport_latency_c_to_p: 10,
+                max_transport_latency_p_to_c: 10,
+                cis_id: cis_ids.to_vec(),
+                max_sdu_c_to_p: vec![251; count],
+                max_sdu_p_to_c: vec![251; count],
+                phy_c_to_p: vec![1; count],
+                phy_p_to_c: vec![1; count],
+                rtn_c_to_p: vec![3; count],
+                rtn_p_to_c: vec![3; count],
+            },
+        );
+        true
+    }
+
+    pub fn take_configured_cis_handles(&mut self) -> Vec<u16> {
+        std::mem::take(&mut self.configured_cis_handles)
+    }
+
+    pub fn create_cis(&mut self, link: &mut LocalLink, cis_handle: u16) -> bool {
+        let Some(acl_handle) = self.connection_handle else {
+            return false;
+        };
+        self.send_hci_command(
+            link,
+            Command::LeCreateCis {
+                cis_connection_handle: vec![cis_handle],
+                acl_connection_handle: vec![acl_handle],
+            },
+        );
+        true
+    }
+
+    pub fn take_cis_requests(&mut self) -> Vec<CisRequestInfo> {
+        std::mem::take(&mut self.cis_requests)
+    }
+
+    pub fn accept_cis(&mut self, link: &mut LocalLink, cis_handle: u16) {
+        self.send_hci_command(
+            link,
+            Command::LeAcceptCisRequest {
+                connection_handle: cis_handle,
+            },
+        );
+    }
+
+    pub fn established_cis_handles(&self) -> impl Iterator<Item = u16> + '_ {
+        self.established_cis_handles.iter().copied()
+    }
+
+    pub fn setup_iso_data_path(
+        &mut self,
+        link: &mut LocalLink,
+        cis_handle: u16,
+        direction: u8,
+    ) -> bool {
+        if !self.established_cis_handles.contains(&cis_handle) || direction > 1 {
+            return false;
+        }
+        self.send_hci_command(
+            link,
+            Command::LeSetupIsoDataPath {
+                connection_handle: cis_handle,
+                data_path_direction: direction,
+                data_path_id: 0,
+                codec_id: CodingFormat::TRANSPARENT,
+                controller_delay: 0,
+                codec_configuration: Vec::new(),
+            },
+        );
+        true
+    }
+
+    pub fn remove_iso_data_path(
+        &mut self,
+        link: &mut LocalLink,
+        cis_handle: u16,
+        directions: u8,
+    ) -> bool {
+        if !self.established_cis_handles.contains(&cis_handle) || directions & !0x03 != 0 {
+            return false;
+        }
+        self.send_hci_command(
+            link,
+            Command::LeRemoveIsoDataPath {
+                connection_handle: cis_handle,
+                data_path_direction: directions,
+            },
+        );
+        true
+    }
+
+    /// Fragment and send one ISO SDU through an established CIS. The 960-byte
+    /// controller packet size and first-fragment SDU-info overhead match
+    /// upstream Bumble's software-controller defaults.
+    pub fn send_iso_sdu(&mut self, link: &mut LocalLink, cis_handle: u16, sdu: &[u8]) -> bool {
+        const ISO_PACKET_LENGTH: usize = 960;
+        const SDU_INFO_LENGTH: usize = 4;
+        if !self.established_cis_handles.contains(&cis_handle) || sdu.len() > 0x0FFF {
+            return false;
+        }
+        let sequence = *self.iso_sequence_numbers.entry(cis_handle).or_default();
+        let mut offset = 0;
+        loop {
+            let first = offset == 0;
+            let capacity = ISO_PACKET_LENGTH - if first { SDU_INFO_LENGTH } else { 0 };
+            let end = (offset + capacity).min(sdu.len());
+            let last = end == sdu.len();
+            let fragment = sdu[offset..end].to_vec();
+            let packet = IsoDataPacket {
+                connection_handle: cis_handle,
+                pb_flag: match (first, last) {
+                    (true, true) => 0b10,
+                    (true, false) => 0b00,
+                    (false, true) => 0b11,
+                    (false, false) => 0b01,
+                },
+                ts_flag: 0,
+                data_total_length: (fragment.len() + if first { SDU_INFO_LENGTH } else { 0 })
+                    as u16,
+                time_stamp: None,
+                packet_sequence_number: first.then_some(sequence),
+                iso_sdu_length: first.then_some(sdu.len() as u16),
+                packet_status_flag: first.then_some(0),
+                iso_sdu_fragment: fragment,
+            };
+            if !link.send_iso_packet(self.controller_id, packet) {
+                return false;
+            }
+            if last {
+                break;
+            }
+            offset = end;
+        }
+        self.iso_sequence_numbers
+            .insert(cis_handle, sequence.wrapping_add(1));
+        true
+    }
+
+    pub fn take_iso_sdus(&mut self, cis_handle: u16) -> Vec<IsoSdu> {
+        let (matching, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut self.iso_inbox)
+            .into_iter()
+            .partition(|sdu| sdu.connection_handle == cis_handle);
+        self.iso_inbox = rest;
+        matching
+    }
+
     /// Submit any typed HCI command through this device's attached controller.
     pub fn send_hci_command(&mut self, link: &mut LocalLink, command: Command) {
         link.handle_command(self.controller_id, command);
@@ -770,10 +1019,51 @@ impl Device {
                 })) => {
                     self.extended_advertising_reports.extend(reports);
                 }
+                HciPacket::Event(Event::LeMeta(LeMetaEvent::CisRequest {
+                    acl_connection_handle,
+                    cis_connection_handle,
+                    cig_id,
+                    cis_id,
+                })) => self.cis_requests.push(CisRequestInfo {
+                    acl_connection_handle,
+                    cis_connection_handle,
+                    cig_id,
+                    cis_id,
+                }),
+                HciPacket::Event(Event::LeMeta(LeMetaEvent::CisEstablished {
+                    status: 0,
+                    connection_handle,
+                    ..
+                })) => {
+                    self.established_cis_handles.insert(connection_handle);
+                    self.iso_sequence_numbers
+                        .entry(connection_handle)
+                        .or_default();
+                }
+                HciPacket::Event(Event::CommandComplete {
+                    command_opcode,
+                    return_parameters: bumble_hci::ReturnParameters::Raw { data },
+                    ..
+                }) if command_opcode == bumble_hci::HCI_LE_SET_CIG_PARAMETERS_COMMAND => {
+                    if data.len() >= 3 && data[0] == 0 {
+                        let count = usize::from(data[2]);
+                        if data.len() == 3 + count * 2 {
+                            self.configured_cis_handles = data[3..]
+                                .chunks_exact(2)
+                                .map(|bytes| u16::from_le_bytes([bytes[0], bytes[1]]))
+                                .collect();
+                        }
+                    }
+                }
                 HciPacket::Event(Event::DisconnectionComplete {
                     connection_handle, ..
                 }) => {
                     self.encrypted_handles.remove(&connection_handle);
+                    self.established_cis_handles.remove(&connection_handle);
+                    self.iso_sequence_numbers.remove(&connection_handle);
+                    self.iso_assemblers.remove(&connection_handle);
+                    self.iso_inbox
+                        .retain(|sdu| sdu.connection_handle != connection_handle);
                     self.acl_assemblers.remove(&connection_handle);
                     self.acl_packet_queue.flush(connection_handle);
                     if self.connection_handle == Some(connection_handle) {
@@ -838,6 +1128,12 @@ impl Device {
                 }
                 HciPacket::AclData(acl) => self.on_acl(link, acl),
                 HciPacket::SyncData(packet) => self.synchronous_inbox.push(packet),
+                HciPacket::IsoData(packet) => {
+                    let handle = packet.connection_handle;
+                    if let Some(sdu) = self.iso_assemblers.entry(handle).or_default().push(packet) {
+                        self.iso_inbox.push(sdu);
+                    }
+                }
                 _ => {}
             }
         }

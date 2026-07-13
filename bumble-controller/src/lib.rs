@@ -60,6 +60,9 @@
 //!   `LE CIS Request`, and on `LE_Accept_CIS_Request` a `CisRsp`/`CisInd`
 //!   exchange yields `LE CIS Established` on both sides (timing params are
 //!   placeholders, as upstream).
+//! - **CIS data**: Setup/Remove ISO Data Path retain directional state, and the
+//!   link routes HCI ISO fragments between peer CIS handles with completed-
+//!   packet flow events.
 //!
 //! ## Classic (BR/EDR)
 //!
@@ -75,8 +78,8 @@
 //! ## Deferred (behavioral simulation, not the codec)
 //!
 //! The remaining deep behavior is not simulated: LTK verification, periodic
-//! advertising synchronization, ISO data-path streaming, remote-version
-//! exchange, and the classic authentication/role-switch sub-flows. The HCI
+//! advertising synchronization, remote-version exchange, and the classic
+//! authentication/role-switch sub-flows. The HCI
 //! *codec* for all of them (in `bumble-hci`) is complete and oracle-pinned; what
 //! remains is controller-side behavior, which — unlike the codec — has no
 //! ground-truth oracle to pin against (upstream's controller is itself a
@@ -91,7 +94,7 @@ use bumble_crypto::ah;
 use bumble_hci::codes::*;
 use bumble_hci::{
     AclDataPacket, AdvertisingReport, Command, Event, ExtendedAdvertisingReport, HciPacket,
-    LeMetaEvent, ReturnParameters, SynchronousDataPacket,
+    IsoDataPacket, LeMetaEvent, ReturnParameters, SynchronousDataPacket,
 };
 
 /// Legacy connectable-and-scannable undirected advertising event type.
@@ -108,6 +111,8 @@ const UNKNOWN_HCI_COMMAND_ERROR: u8 = 0x01;
 const INVALID_COMMAND_PARAMETERS: u8 = 0x12;
 /// HCI "Unknown Advertising Identifier" error.
 const UNKNOWN_ADVERTISING_IDENTIFIER_ERROR: u8 = 0x42;
+/// HCI "Command Disallowed" error.
+const COMMAND_DISALLOWED_ERROR: u8 = 0x0C;
 /// LE connection role: central (initiator).
 pub const ROLE_CENTRAL: u8 = 0x00;
 /// LE connection role: peripheral (advertiser).
@@ -170,6 +175,7 @@ pub enum ConnectionKind {
     LeAcl,
     ClassicAcl,
     Synchronous,
+    Iso { cig_id: u8, cis_id: u8 },
 }
 
 /// A Connected Isochronous Stream (CIS) link, established over an ACL connection
@@ -183,6 +189,8 @@ struct CisLink {
     /// The endpoints of the ACL connection carrying this CIS.
     acl_self: Address,
     acl_peer: Address,
+    /// Installed ISO data paths, indexed by Setup ISO Data Path direction.
+    data_paths: u8,
 }
 
 /// A pending outgoing connection recorded by `LE_Create_Connection`.
@@ -656,6 +664,15 @@ impl Controller {
             Command::LeAcceptCisRequest { connection_handle } => {
                 self.handle_accept_cis_request(connection_handle)
             }
+            Command::LeSetupIsoDataPath {
+                connection_handle,
+                data_path_direction,
+                ..
+            } => self.handle_setup_iso_data_path(connection_handle, data_path_direction),
+            Command::LeRemoveIsoDataPath {
+                connection_handle,
+                data_path_direction,
+            } => self.handle_remove_iso_data_path(connection_handle, data_path_direction),
             Command::SetConnectionEncryption {
                 connection_handle,
                 encryption_enable,
@@ -913,6 +930,7 @@ impl Controller {
                 handle,
                 acl_self: unset.clone(),
                 acl_peer: unset.clone(),
+                data_paths: 0,
             });
         }
         // Return parameters: status, cig_id, num_cis, then each handle (u16 LE).
@@ -980,6 +998,53 @@ impl Controller {
         self.command_status(HCI_LE_ACCEPT_CIS_REQUEST_COMMAND, HCI_SUCCESS);
     }
 
+    fn handle_setup_iso_data_path(&mut self, connection_handle: u16, direction: u8) {
+        let status = if direction > 1 {
+            INVALID_COMMAND_PARAMETERS
+        } else if let Some(link) = self.cis_link_by_handle_mut(connection_handle) {
+            let bit = 1 << direction;
+            if link.data_paths & bit != 0 {
+                COMMAND_DISALLOWED_ERROR
+            } else {
+                link.data_paths |= bit;
+                HCI_SUCCESS
+            }
+        } else {
+            UNKNOWN_CONNECTION_IDENTIFIER_ERROR
+        };
+        self.complete_status_and_handle(
+            HCI_LE_SETUP_ISO_DATA_PATH_COMMAND,
+            status,
+            connection_handle,
+        );
+    }
+
+    fn handle_remove_iso_data_path(&mut self, connection_handle: u16, directions: u8) {
+        let status = if directions & !0x03 != 0 {
+            INVALID_COMMAND_PARAMETERS
+        } else if let Some(link) = self.cis_link_by_handle_mut(connection_handle) {
+            if link.data_paths & directions != directions {
+                COMMAND_DISALLOWED_ERROR
+            } else {
+                link.data_paths &= !directions;
+                HCI_SUCCESS
+            }
+        } else {
+            UNKNOWN_CONNECTION_IDENTIFIER_ERROR
+        };
+        self.complete_status_and_handle(
+            HCI_LE_REMOVE_ISO_DATA_PATH_COMMAND,
+            status,
+            connection_handle,
+        );
+    }
+
+    fn complete_status_and_handle(&mut self, op_code: u16, status: u8, handle: u16) {
+        let mut data = vec![status];
+        data.extend_from_slice(&handle.to_le_bytes());
+        self.complete(op_code, ReturnParameters::Raw { data });
+    }
+
     /// Handle an incoming `CisReq` (peripheral side): record a pending CIS link
     /// and raise an `LE CIS Request` event to the host.
     fn on_le_cis_request(
@@ -997,6 +1062,7 @@ impl Controller {
             handle,
             acl_self,
             acl_peer,
+            data_paths: 0,
         });
         self.host_queue
             .push(HciPacket::Event(Event::LeMeta(LeMetaEvent::CisRequest {
@@ -1707,6 +1773,16 @@ impl Controller {
             ConnectionKind::Synchronous => self.synchronous_connections.iter().any(|connection| {
                 connection.self_address == *self_address && connection.peer_address == *peer_address
             }),
+            ConnectionKind::Iso { cig_id, cis_id } => self
+                .central_cis_links
+                .iter()
+                .chain(self.peripheral_cis_links.iter())
+                .any(|link| {
+                    link.cig_id == cig_id
+                        && link.cis_id == cis_id
+                        && link.acl_self == *self_address
+                        && link.acl_peer == *peer_address
+                }),
         }
     }
 
@@ -1867,15 +1943,17 @@ impl Controller {
         handle: u16,
         reason: u8,
     ) -> Option<(Address, Address, ConnectionKind)> {
-        let (self_address, peer_address, kind, dependent_synchronous_handles) = if let Some(index) =
+        let (self_address, peer_address, kind, dependent_handles) = if let Some(index) =
             self.connections.iter().position(|c| c.handle == handle)
         {
             let connection = self.connections.remove(index);
+            let dependent_handles =
+                self.remove_cis_for_acl(&connection.self_address, &connection.peer_address);
             (
                 connection.self_address,
                 connection.peer_address,
                 ConnectionKind::LeAcl,
-                Vec::new(),
+                dependent_handles,
             )
         } else if let Some(index) = self
             .classic_connections
@@ -1903,6 +1981,16 @@ impl Controller {
                 ConnectionKind::Synchronous,
                 Vec::new(),
             )
+        } else if let Some(connection) = self.remove_cis_by_handle(handle) {
+            (
+                connection.acl_self,
+                connection.acl_peer,
+                ConnectionKind::Iso {
+                    cig_id: connection.cig_id,
+                    cis_id: connection.cis_id,
+                },
+                Vec::new(),
+            )
         } else {
             return None;
         };
@@ -1911,7 +1999,7 @@ impl Controller {
             num_hci_command_packets: 1,
             command_opcode: HCI_DISCONNECT_COMMAND,
         }));
-        for dependent_handle in dependent_synchronous_handles {
+        for dependent_handle in dependent_handles {
             self.push_disconnection_complete(dependent_handle, reason);
         }
         self.push_disconnection_complete(handle, reason);
@@ -1933,7 +2021,11 @@ impl Controller {
                 .connections
                 .iter()
                 .position(|c| c.self_address == *self_address && c.peer_address == *peer_address)
-                .map(|index| (self.connections.remove(index).handle, Vec::new())),
+                .map(|index| self.connections.remove(index))
+                .map(|connection| {
+                    let dependent_handles = self.remove_cis_for_acl(self_address, peer_address);
+                    (connection.handle, dependent_handles)
+                }),
             ConnectionKind::ClassicAcl => self
                 .classic_connections
                 .iter()
@@ -1955,6 +2047,9 @@ impl Controller {
                         Vec::new(),
                     )
                 }),
+            ConnectionKind::Iso { cig_id, cis_id } => self
+                .remove_cis_for_peer(self_address, peer_address, cig_id, cis_id)
+                .map(|connection| (connection.handle, Vec::new())),
         };
         if let Some((handle, dependent_synchronous_handles)) = connection {
             for dependent_handle in dependent_synchronous_handles {
@@ -1982,6 +2077,55 @@ impl Controller {
             }
         });
         handles
+    }
+
+    fn remove_cis_for_acl(&mut self, self_address: &Address, peer_address: &Address) -> Vec<u16> {
+        let mut handles = Vec::new();
+        self.central_cis_links
+            .retain(|link| retain_other_cis(link, self_address, peer_address, &mut handles));
+        self.peripheral_cis_links
+            .retain(|link| retain_other_cis(link, self_address, peer_address, &mut handles));
+        handles
+    }
+
+    fn remove_cis_by_handle(&mut self, handle: u16) -> Option<CisLink> {
+        if let Some(index) = self
+            .central_cis_links
+            .iter()
+            .position(|link| link.handle == handle)
+        {
+            return Some(self.central_cis_links.remove(index));
+        }
+        self.peripheral_cis_links
+            .iter()
+            .position(|link| link.handle == handle)
+            .map(|index| self.peripheral_cis_links.remove(index))
+    }
+
+    fn remove_cis_for_peer(
+        &mut self,
+        self_address: &Address,
+        peer_address: &Address,
+        cig_id: u8,
+        cis_id: u8,
+    ) -> Option<CisLink> {
+        if let Some(index) = self.central_cis_links.iter().position(|link| {
+            link.cig_id == cig_id
+                && link.cis_id == cis_id
+                && link.acl_self == *self_address
+                && link.acl_peer == *peer_address
+        }) {
+            return Some(self.central_cis_links.remove(index));
+        }
+        self.peripheral_cis_links
+            .iter()
+            .position(|link| {
+                link.cig_id == cig_id
+                    && link.cis_id == cis_id
+                    && link.acl_self == *self_address
+                    && link.acl_peer == *peer_address
+            })
+            .map(|index| self.peripheral_cis_links.remove(index))
     }
 
     fn push_disconnection_complete(&mut self, connection_handle: u16, reason: u8) {
@@ -2018,6 +2162,13 @@ impl Controller {
             }));
     }
 
+    fn deliver_iso(&mut self, connection_handle: u16, packet: IsoDataPacket) {
+        self.host_queue.push(HciPacket::IsoData(IsoDataPacket {
+            connection_handle,
+            ..packet
+        }));
+    }
+
     fn connection_by_handle(&self, handle: u16) -> Option<&Connection> {
         self.connections.iter().find(|c| c.handle == handle)
     }
@@ -2027,6 +2178,20 @@ impl Controller {
             .iter()
             .chain(self.classic_connections.iter())
             .find(|connection| connection.handle == handle)
+    }
+
+    fn cis_link_by_handle(&self, handle: u16) -> Option<&CisLink> {
+        self.central_cis_links
+            .iter()
+            .chain(self.peripheral_cis_links.iter())
+            .find(|link| link.handle == handle)
+    }
+
+    fn cis_link_by_handle_mut(&mut self, handle: u16) -> Option<&mut CisLink> {
+        self.central_cis_links
+            .iter_mut()
+            .chain(self.peripheral_cis_links.iter_mut())
+            .find(|link| link.handle == handle)
     }
 
     fn ack(&mut self, command_opcode: u16, status: u8) {
@@ -2063,6 +2228,20 @@ fn resolve_phy(no_preference: bool, phys_mask: u8) -> u8 {
         LE_1M_PHY
     } else {
         (phys_mask.trailing_zeros() as u8) + 1
+    }
+}
+
+fn retain_other_cis(
+    link: &CisLink,
+    self_address: &Address,
+    peer_address: &Address,
+    removed_handles: &mut Vec<u16>,
+) -> bool {
+    if link.acl_self == *self_address && link.acl_peer == *peer_address {
+        removed_handles.push(link.handle);
+        false
+    } else {
+        true
     }
 }
 
@@ -2347,6 +2526,52 @@ impl LocalLink {
         } else {
             false
         }
+    }
+
+    /// Route one HCI ISO fragment over an established CIS. The sender must
+    /// have installed the Host-to-Controller data path (direction 0) and the
+    /// peer must have installed Controller-to-Host (direction 1). Packet
+    /// boundary/timestamp/SDU metadata are preserved while the connection
+    /// handle is translated to the peer's CIS handle.
+    pub fn send_iso_packet(&mut self, from: usize, packet: IsoDataPacket) -> bool {
+        let source_handle = packet.connection_handle;
+        let Some(source) = self.controllers[from].cis_link_by_handle(source_handle) else {
+            return false;
+        };
+        if source.data_paths & 0x01 == 0 {
+            return false;
+        }
+        let (acl_self, acl_peer, cig_id, cis_id) = (
+            source.acl_self.clone(),
+            source.acl_peer.clone(),
+            source.cig_id,
+            source.cis_id,
+        );
+        let destination = self
+            .controllers
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| *index != from)
+            .find_map(|(index, controller)| {
+                controller
+                    .central_cis_links
+                    .iter()
+                    .chain(controller.peripheral_cis_links.iter())
+                    .find(|link| {
+                        link.cig_id == cig_id
+                            && link.cis_id == cis_id
+                            && link.acl_self == acl_peer
+                            && link.acl_peer == acl_self
+                            && link.data_paths & 0x02 != 0
+                    })
+                    .map(|link| (index, link.handle))
+            });
+        let Some((destination_index, destination_handle)) = destination else {
+            return false;
+        };
+        self.controllers[destination_index].deliver_iso(destination_handle, packet);
+        self.controllers[from].complete_acl_packets(source_handle, 1);
+        true
     }
 
     /// Disconnect the connection `connection_handle` on controller `from`,

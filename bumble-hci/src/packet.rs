@@ -267,6 +267,17 @@ impl IsoDataPacket {
                 (None, None, None)
             };
 
+        let iso_sdu_fragment = r.rest().to_vec();
+        let metadata_length =
+            usize::from(ts_flag != 0) * 4 + usize::from(should_include_sdu_info) * 4;
+        if usize::from(data_total_length) != metadata_length + iso_sdu_fragment.len() {
+            return Err(Error::InvalidPacket(format!(
+                "invalid ISO packet length {} != {}",
+                metadata_length + iso_sdu_fragment.len(),
+                data_total_length
+            )));
+        }
+
         Ok(IsoDataPacket {
             connection_handle,
             pb_flag,
@@ -276,7 +287,7 @@ impl IsoDataPacket {
             packet_sequence_number,
             iso_sdu_length,
             packet_status_flag,
-            iso_sdu_fragment: r.rest().to_vec(),
+            iso_sdu_fragment,
         })
     }
 
