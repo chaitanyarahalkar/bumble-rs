@@ -195,6 +195,14 @@ impl OpenedTransport {
     pub fn try_split(self) -> Result<SplitOpenedTransport> {
         let (source, sink): (Box<dyn PacketSource + Send>, Box<dyn PacketSink + Send>) =
             match self.transport {
+                ExternalTransport::AndroidEmulator(transport) => {
+                    let (source, sink) = transport.try_split();
+                    (Box::new(source), Box::new(sink))
+                }
+                ExternalTransport::AndroidNetsim(transport) => {
+                    let (source, sink) = transport.try_split();
+                    (Box::new(source), Box::new(sink))
+                }
                 ExternalTransport::File(transport) => {
                     let (source, sink) = transport.try_split()?;
                     (Box::new(source), Box::new(sink))
@@ -223,6 +231,10 @@ impl OpenedTransport {
                     let (source, sink) = transport.try_split()?;
                     (Box::new(source), Box::new(sink))
                 }
+                ExternalTransport::WebSocket(transport) => {
+                    let (source, sink) = transport.try_split()?;
+                    (Box::new(source), Box::new(sink))
+                }
                 #[cfg(unix)]
                 ExternalTransport::Pty(transport) => {
                     let (source, sink) = transport.try_split()?;
@@ -232,13 +244,6 @@ impl OpenedTransport {
                 ExternalTransport::Unix(transport) => {
                     let (source, sink) = transport.try_split()?;
                     (Box::new(source), Box::new(sink))
-                }
-                ExternalTransport::AndroidEmulator(_)
-                | ExternalTransport::AndroidNetsim(_)
-                | ExternalTransport::WebSocket(_) => {
-                    return Err(Error::Unsupported(
-                        "independent read/write halves for this scheme".into(),
-                    ));
                 }
             };
         Ok(SplitOpenedTransport {

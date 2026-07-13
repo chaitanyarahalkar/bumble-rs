@@ -56,3 +56,28 @@ fn websocket_client_dispatch_preserves_metadata() {
     client.write_packet(&expected).unwrap();
     server_thread.join().unwrap();
 }
+
+#[test]
+fn websocket_split_halves_exchange_packets_in_both_directions() {
+    let server = WebSocketServer::bind("127.0.0.1:0").unwrap();
+    let address = server.local_addr().unwrap();
+    let expected = packets();
+    let server_expected = expected.clone();
+    let server_thread = std::thread::spawn(move || {
+        let accepted = server.accept().unwrap();
+        let (mut source, mut sink) = accepted.try_split().unwrap();
+        assert_eq!(
+            source.read_packet().unwrap(),
+            Some(server_expected[0].clone())
+        );
+        sink.write_packet(&server_expected[1]).unwrap();
+        sink.flush().unwrap();
+    });
+
+    let client = WebSocketTransport::connect(&format!("ws://{address}/hci")).unwrap();
+    let (mut source, mut sink) = client.try_split().unwrap();
+    sink.write_packet(&expected[0]).unwrap();
+    sink.flush().unwrap();
+    assert_eq!(source.read_packet().unwrap(), Some(expected[1].clone()));
+    server_thread.join().unwrap();
+}

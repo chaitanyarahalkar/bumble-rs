@@ -1,7 +1,7 @@
 use crate::{Error, PacketSink, PacketSource, Result};
 use bumble_hci::HciPacket;
 use std::io;
-use std::sync::mpsc;
+use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use tokio::sync::{mpsc as tokio_mpsc, oneshot};
 use tokio_stream::wrappers::UnboundedReceiverStream;
@@ -197,8 +197,33 @@ impl<B: AndroidEmulatorIo> PacketSink for AndroidEmulatorTransport<B> {
 pub struct GrpcAndroidEmulatorIo {
     outgoing: tokio_mpsc::UnboundedSender<proto::HciPacket>,
     incoming: mpsc::Receiver<Result<Option<AndroidEmulatorPacket>>>,
-    shutdown: Option<oneshot::Sender<()>>,
-    worker: Option<thread::JoinHandle<()>>,
+    lifetime: Arc<GrpcAndroidEmulatorLifetime>,
+}
+
+struct GrpcAndroidEmulatorLifetime {
+    shutdown: Mutex<Option<oneshot::Sender<()>>>,
+    worker: Mutex<Option<thread::JoinHandle<()>>>,
+}
+
+impl Drop for GrpcAndroidEmulatorLifetime {
+    fn drop(&mut self) {
+        if let Some(shutdown) = self
+            .shutdown
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take()
+        {
+            let _ = shutdown.send(());
+        }
+        if let Some(worker) = self
+            .worker
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take()
+        {
+            let _ = worker.join();
+        }
+    }
 }
 
 impl GrpcAndroidEmulatorIo {
@@ -233,8 +258,10 @@ impl GrpcAndroidEmulatorIo {
             Ok(Ok(())) => Ok(Self {
                 outgoing,
                 incoming,
-                shutdown: Some(shutdown),
-                worker: Some(worker),
+                lifetime: Arc::new(GrpcAndroidEmulatorLifetime {
+                    shutdown: Mutex::new(Some(shutdown)),
+                    worker: Mutex::new(Some(worker)),
+                }),
             }),
             Ok(Err(error)) => {
                 let _ = worker.join();
@@ -275,14 +302,40 @@ impl AndroidEmulatorIo for GrpcAndroidEmulatorIo {
     }
 }
 
-impl Drop for GrpcAndroidEmulatorIo {
-    fn drop(&mut self) {
-        if let Some(shutdown) = self.shutdown.take() {
-            let _ = shutdown.send(());
+pub struct AndroidEmulatorPacketSource {
+    incoming: mpsc::Receiver<Result<Option<AndroidEmulatorPacket>>>,
+    _lifetime: Arc<GrpcAndroidEmulatorLifetime>,
+}
+
+impl PacketSource for AndroidEmulatorPacketSource {
+    fn read_packet(&mut self) -> Result<Option<HciPacket>> {
+        match self.incoming.recv() {
+            Ok(result) => result?.map(AndroidEmulatorPacket::into_hci).transpose(),
+            Err(_) => Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "Android emulator gRPC response worker stopped unexpectedly",
+            )
+            .into()),
         }
-        if let Some(worker) = self.worker.take() {
-            let _ = worker.join();
-        }
+    }
+}
+
+pub struct AndroidEmulatorPacketSink {
+    outgoing: tokio_mpsc::UnboundedSender<proto::HciPacket>,
+    _lifetime: Arc<GrpcAndroidEmulatorLifetime>,
+}
+
+impl PacketSink for AndroidEmulatorPacketSink {
+    fn write_packet(&mut self, packet: &HciPacket) -> Result<()> {
+        self.outgoing
+            .send(AndroidEmulatorPacket::from_hci(packet).into_proto())
+            .map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "Android emulator gRPC request stream is closed",
+                )
+                .into()
+            })
     }
 }
 
@@ -362,5 +415,23 @@ impl SystemAndroidEmulatorTransport {
         let spec = AndroidEmulatorSpec::parse(parameters)?;
         let io = GrpcAndroidEmulatorIo::connect(spec.clone())?;
         Ok(Self::from_io(io, spec))
+    }
+
+    pub fn try_split(self) -> (AndroidEmulatorPacketSource, AndroidEmulatorPacketSink) {
+        let GrpcAndroidEmulatorIo {
+            outgoing,
+            incoming,
+            lifetime,
+        } = self.io;
+        (
+            AndroidEmulatorPacketSource {
+                incoming,
+                _lifetime: Arc::clone(&lifetime),
+            },
+            AndroidEmulatorPacketSink {
+                outgoing,
+                _lifetime: lifetime,
+            },
+        )
     }
 }

@@ -1,7 +1,10 @@
 use crate::{Error, PacketFramer, PacketSink, PacketSource, Result};
 use bumble_hci::HciPacket;
 use std::collections::VecDeque;
+use std::io;
 use std::net::{SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use tungstenite::stream::MaybeTlsStream;
 use tungstenite::{HandshakeError, Message, WebSocket};
 
@@ -9,6 +12,8 @@ enum Connection {
     Client(Box<WebSocket<MaybeTlsStream<TcpStream>>>),
     Server(Box<WebSocket<TcpStream>>),
 }
+
+const SPLIT_READ_TIMEOUT: Duration = Duration::from_millis(50);
 
 impl Connection {
     fn read(&mut self) -> tungstenite::Result<Message> {
@@ -38,6 +43,26 @@ impl Connection {
             Self::Server(connection) => connection.close(None),
         }
     }
+
+    fn set_read_timeout(&mut self, timeout: Option<Duration>) -> io::Result<()> {
+        match self {
+            Self::Client(connection) => match connection.get_mut() {
+                MaybeTlsStream::Plain(stream) => stream.set_read_timeout(timeout),
+                MaybeTlsStream::Rustls(stream) => stream.sock.set_read_timeout(timeout),
+                _ => Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "unsupported WebSocket TLS stream",
+                )),
+            },
+            Self::Server(connection) => connection.get_mut().set_read_timeout(timeout),
+        }
+    }
+}
+
+enum PollPacket {
+    Packet(Box<HciPacket>),
+    Pending,
+    Closed,
 }
 
 /// HCI packets carried in binary WebSocket messages.
@@ -83,26 +108,58 @@ impl WebSocketTransport {
             Err(error) => Err(error.into()),
         }
     }
+
+    fn poll_packet(&mut self) -> Result<PollPacket> {
+        if let Some(packet) = self.pending.pop_front() {
+            return Ok(PollPacket::Packet(Box::new(packet)));
+        }
+        match self.connection.read() {
+            Ok(Message::Binary(bytes)) => {
+                self.pending.extend(self.framer.feed(&bytes)?);
+                Ok(self
+                    .pending
+                    .pop_front()
+                    .map(Box::new)
+                    .map(PollPacket::Packet)
+                    .unwrap_or(PollPacket::Pending))
+            }
+            Ok(Message::Close(_))
+            | Err(tungstenite::Error::ConnectionClosed)
+            | Err(tungstenite::Error::AlreadyClosed) => Ok(PollPacket::Closed),
+            Ok(Message::Text(_) | Message::Ping(_) | Message::Pong(_) | Message::Frame(_)) => {
+                Ok(PollPacket::Pending)
+            }
+            Err(tungstenite::Error::Io(error))
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                ) =>
+            {
+                Ok(PollPacket::Pending)
+            }
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    pub fn try_split(mut self) -> Result<(WebSocketPacketSource, WebSocketPacketSink)> {
+        self.connection.set_read_timeout(Some(SPLIT_READ_TIMEOUT))?;
+        let transport = Arc::new(Mutex::new(self));
+        Ok((
+            WebSocketPacketSource {
+                transport: Arc::clone(&transport),
+            },
+            WebSocketPacketSink { transport },
+        ))
+    }
 }
 
 impl PacketSource for WebSocketTransport {
     fn read_packet(&mut self) -> Result<Option<HciPacket>> {
-        if let Some(packet) = self.pending.pop_front() {
-            return Ok(Some(packet));
-        }
         loop {
-            match self.connection.read() {
-                Ok(Message::Binary(bytes)) => {
-                    self.pending.extend(self.framer.feed(&bytes)?);
-                    if let Some(packet) = self.pending.pop_front() {
-                        return Ok(Some(packet));
-                    }
-                }
-                Ok(Message::Close(_))
-                | Err(tungstenite::Error::ConnectionClosed)
-                | Err(tungstenite::Error::AlreadyClosed) => return Ok(None),
-                Ok(Message::Text(_) | Message::Ping(_) | Message::Pong(_) | Message::Frame(_)) => {}
-                Err(error) => return Err(error.into()),
+            match self.poll_packet()? {
+                PollPacket::Packet(packet) => return Ok(Some(*packet)),
+                PollPacket::Pending => {}
+                PollPacket::Closed => return Ok(None),
             }
         }
     }
@@ -116,6 +173,47 @@ impl PacketSink for WebSocketTransport {
     fn flush(&mut self) -> Result<()> {
         self.connection.flush()?;
         Ok(())
+    }
+}
+
+pub struct WebSocketPacketSource {
+    transport: Arc<Mutex<WebSocketTransport>>,
+}
+
+impl PacketSource for WebSocketPacketSource {
+    fn read_packet(&mut self) -> Result<Option<HciPacket>> {
+        loop {
+            let result = self
+                .transport
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .poll_packet()?;
+            match result {
+                PollPacket::Packet(packet) => return Ok(Some(*packet)),
+                PollPacket::Pending => std::thread::sleep(Duration::from_millis(1)),
+                PollPacket::Closed => return Ok(None),
+            }
+        }
+    }
+}
+
+pub struct WebSocketPacketSink {
+    transport: Arc<Mutex<WebSocketTransport>>,
+}
+
+impl PacketSink for WebSocketPacketSink {
+    fn write_packet(&mut self, packet: &HciPacket) -> Result<()> {
+        self.transport
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .write_packet(packet)
+    }
+
+    fn flush(&mut self) -> Result<()> {
+        self.transport
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .flush()
     }
 }
 

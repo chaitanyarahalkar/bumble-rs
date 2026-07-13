@@ -2,8 +2,7 @@ use bumble_hci::HciPacket;
 use bumble_transport::android_netsim_proto as proto;
 use bumble_transport::{
     find_netsim_grpc_port, find_netsim_grpc_port_in, netsim_ini_file_name, open_transport,
-    AndroidNetsimMode, AndroidNetsimSpec, Error, PacketSink, PacketSource,
-    DEFAULT_ANDROID_NETSIM_NAME,
+    AndroidNetsimMode, AndroidNetsimSpec, Error, PacketSource, DEFAULT_ANDROID_NETSIM_NAME,
 };
 use prost::Message;
 use std::fs;
@@ -126,28 +125,30 @@ fn real_netsim_host_controller_exchange_and_exclusive_lease() {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .subsec_nanos();
-    let mut controller = open_transport(&format!(
+    let controller = open_transport(&format!(
         "android-netsim:127.0.0.1:0,mode=controller,instance={instance}"
     ))
     .unwrap();
     assert_eq!(controller.metadata["mode"], "controller");
     let port = controller.metadata["port"].parse::<u16>().unwrap();
     assert_ne!(port, 0);
+    let mut controller = controller.try_split().unwrap();
 
     let host_name = if find_netsim_grpc_port(instance).unwrap() == Some(port) {
         format!("android-netsim:instance={instance},name=primary")
     } else {
         format!("android-netsim:127.0.0.1:{port},mode=host,name=primary")
     };
-    let mut host = open_transport(&host_name).unwrap();
+    let host = open_transport(&host_name).unwrap();
     assert_eq!(host.metadata["mode"], "host");
+    let mut host = host.try_split().unwrap();
     let command = reset_command();
-    host.write_packet(&command).unwrap();
-    assert_eq!(controller.read_packet().unwrap(), Some(command));
+    host.sink.write_packet(&command).unwrap();
+    assert_eq!(controller.source.read_packet().unwrap(), Some(command));
 
     let event = command_complete();
-    controller.write_packet(&event).unwrap();
-    assert_eq!(host.read_packet().unwrap(), Some(event));
+    controller.sink.write_packet(&event).unwrap();
+    assert_eq!(host.source.read_packet().unwrap(), Some(event));
 
     let mut second = open_transport(&format!(
         "android-netsim:127.0.0.1:{port},mode=host,name=secondary"

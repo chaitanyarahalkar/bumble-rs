@@ -1,9 +1,9 @@
 use bumble_hci::HciPacket;
 use bumble_transport::android_emulator_proto as proto;
 use bumble_transport::{
-    open_transport, AndroidEmulatorIo, AndroidEmulatorMode, AndroidEmulatorPacket,
-    AndroidEmulatorSpec, AndroidEmulatorTransport, Error, PacketSink, PacketSource,
-    SystemAndroidEmulatorTransport, DEFAULT_ANDROID_EMULATOR_ADDRESS,
+    open_split_transport, open_transport, AndroidEmulatorIo, AndroidEmulatorMode,
+    AndroidEmulatorPacket, AndroidEmulatorSpec, AndroidEmulatorTransport, Error, PacketSink,
+    PacketSource, SystemAndroidEmulatorTransport, DEFAULT_ANDROID_EMULATOR_ADDRESS,
 };
 use prost::Message;
 use std::collections::VecDeque;
@@ -265,4 +265,10 @@ fn real_grpc_host_and_controller_modes_exchange_hci_packets() {
         transport.write_packet(&packet).unwrap();
         assert_eq!(transport.read_packet().unwrap(), Some(packet));
     }
+
+    let mut transport =
+        open_split_transport(&format!("android-emulator:{},mode=host", server.address)).unwrap();
+    let packet = reset_command();
+    transport.sink.write_packet(&packet).unwrap();
+    assert_eq!(transport.source.read_packet().unwrap(), Some(packet));
 }

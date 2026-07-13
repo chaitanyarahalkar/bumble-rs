@@ -358,8 +358,34 @@ impl<B: AndroidNetsimIo> PacketSink for AndroidNetsimTransport<B> {
 pub struct GrpcAndroidNetsimHostIo {
     outgoing: tokio_mpsc::UnboundedSender<proto::PacketRequest>,
     incoming: mpsc::Receiver<Result<Option<AndroidNetsimPacket>>>,
-    shutdown: Option<oneshot::Sender<()>>,
-    worker: Option<thread::JoinHandle<()>>,
+    lifetime: Arc<GrpcAndroidNetsimLifetime>,
+}
+
+struct GrpcAndroidNetsimLifetime {
+    shutdown: Mutex<Option<oneshot::Sender<()>>>,
+    worker: Mutex<Option<thread::JoinHandle<()>>>,
+    _ini_registration: Option<NetsimIniRegistration>,
+}
+
+impl Drop for GrpcAndroidNetsimLifetime {
+    fn drop(&mut self) {
+        if let Some(shutdown) = self
+            .shutdown
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take()
+        {
+            let _ = shutdown.send(());
+        }
+        if let Some(worker) = self
+            .worker
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take()
+        {
+            let _ = worker.join();
+        }
+    }
 }
 
 impl GrpcAndroidNetsimHostIo {
@@ -397,8 +423,11 @@ impl GrpcAndroidNetsimHostIo {
             Ok(Ok(())) => Ok(Self {
                 outgoing,
                 incoming,
-                shutdown: Some(shutdown),
-                worker: Some(worker),
+                lifetime: Arc::new(GrpcAndroidNetsimLifetime {
+                    shutdown: Mutex::new(Some(shutdown)),
+                    worker: Mutex::new(Some(worker)),
+                    _ini_registration: None,
+                }),
             }),
             Ok(Err(error)) => {
                 let _ = worker.join();
@@ -442,17 +471,6 @@ impl AndroidNetsimIo for GrpcAndroidNetsimHostIo {
                 )
                 .into()
             })
-    }
-}
-
-impl Drop for GrpcAndroidNetsimHostIo {
-    fn drop(&mut self) {
-        if let Some(shutdown) = self.shutdown.take() {
-            let _ = shutdown.send(());
-        }
-        if let Some(worker) = self.worker.take() {
-            let _ = worker.join();
-        }
     }
 }
 
@@ -650,9 +668,7 @@ pub struct GrpcAndroidNetsimControllerIo {
     incoming: mpsc::Receiver<Result<Option<AndroidNetsimPacket>>>,
     state: Arc<Mutex<ControllerState>>,
     local_address: SocketAddr,
-    shutdown: Option<oneshot::Sender<()>>,
-    worker: Option<thread::JoinHandle<()>>,
-    _ini_registration: Option<NetsimIniRegistration>,
+    lifetime: Arc<GrpcAndroidNetsimLifetime>,
 }
 
 impl GrpcAndroidNetsimControllerIo {
@@ -720,12 +736,14 @@ impl GrpcAndroidNetsimControllerIo {
                 incoming,
                 state,
                 local_address,
-                shutdown: Some(shutdown),
-                worker: Some(worker),
-                _ini_registration: NetsimIniRegistration::publish(
-                    local_address.port(),
-                    spec.instance,
-                ),
+                lifetime: Arc::new(GrpcAndroidNetsimLifetime {
+                    shutdown: Mutex::new(Some(shutdown)),
+                    worker: Mutex::new(Some(worker)),
+                    _ini_registration: NetsimIniRegistration::publish(
+                        local_address.port(),
+                        spec.instance,
+                    ),
+                }),
             }),
             Ok(Err(error)) => {
                 let _ = worker.join();
@@ -785,13 +803,74 @@ impl AndroidNetsimIo for GrpcAndroidNetsimControllerIo {
     }
 }
 
-impl Drop for GrpcAndroidNetsimControllerIo {
-    fn drop(&mut self) {
-        if let Some(shutdown) = self.shutdown.take() {
-            let _ = shutdown.send(());
+pub struct AndroidNetsimPacketSource {
+    incoming: mpsc::Receiver<Result<Option<AndroidNetsimPacket>>>,
+    _lifetime: Arc<GrpcAndroidNetsimLifetime>,
+}
+
+impl PacketSource for AndroidNetsimPacketSource {
+    fn read_packet(&mut self) -> Result<Option<HciPacket>> {
+        match self.incoming.recv() {
+            Ok(result) => result?.map(AndroidNetsimPacket::into_hci).transpose(),
+            Err(_) => Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "Android netsim worker stopped unexpectedly",
+            )
+            .into()),
         }
-        if let Some(worker) = self.worker.take() {
-            let _ = worker.join();
+    }
+}
+
+enum AndroidNetsimPacketSinkKind {
+    Host(tokio_mpsc::UnboundedSender<proto::PacketRequest>),
+    Controller(Arc<Mutex<ControllerState>>),
+}
+
+pub struct AndroidNetsimPacketSink {
+    kind: AndroidNetsimPacketSinkKind,
+    _lifetime: Arc<GrpcAndroidNetsimLifetime>,
+}
+
+impl PacketSink for AndroidNetsimPacketSink {
+    fn write_packet(&mut self, packet: &HciPacket) -> Result<()> {
+        let packet = AndroidNetsimPacket::from_hci(packet);
+        match &self.kind {
+            AndroidNetsimPacketSinkKind::Host(outgoing) => outgoing
+                .send(proto::PacketRequest {
+                    request_type: Some(proto::packet_request::RequestType::HciPacket(
+                        packet_into_proto(packet),
+                    )),
+                })
+                .map_err(|_| {
+                    io::Error::new(
+                        io::ErrorKind::BrokenPipe,
+                        "Android netsim request stream is closed",
+                    )
+                    .into()
+                }),
+            AndroidNetsimPacketSinkKind::Controller(state) => {
+                let outgoing = state
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .outgoing
+                    .clone();
+                let Some(outgoing) = outgoing else {
+                    return Ok(());
+                };
+                outgoing
+                    .send(Ok(proto::PacketResponse {
+                        response_type: Some(proto::packet_response::ResponseType::HciPacket(
+                            packet_into_proto(packet),
+                        )),
+                    }))
+                    .map_err(|_| {
+                        io::Error::new(
+                            io::ErrorKind::BrokenPipe,
+                            "Android netsim response stream is closed",
+                        )
+                        .into()
+                    })
+            }
         }
     }
 }
@@ -838,5 +917,39 @@ impl SystemAndroidNetsimTransport {
             }
         };
         Ok(Self::from_io(io, spec))
+    }
+
+    pub fn try_split(self) -> (AndroidNetsimPacketSource, AndroidNetsimPacketSink) {
+        match self.io {
+            SystemAndroidNetsimIo::Host(GrpcAndroidNetsimHostIo {
+                outgoing,
+                incoming,
+                lifetime,
+            }) => (
+                AndroidNetsimPacketSource {
+                    incoming,
+                    _lifetime: Arc::clone(&lifetime),
+                },
+                AndroidNetsimPacketSink {
+                    kind: AndroidNetsimPacketSinkKind::Host(outgoing),
+                    _lifetime: lifetime,
+                },
+            ),
+            SystemAndroidNetsimIo::Controller(GrpcAndroidNetsimControllerIo {
+                incoming,
+                state,
+                local_address: _,
+                lifetime,
+            }) => (
+                AndroidNetsimPacketSource {
+                    incoming,
+                    _lifetime: Arc::clone(&lifetime),
+                },
+                AndroidNetsimPacketSink {
+                    kind: AndroidNetsimPacketSinkKind::Controller(state),
+                    _lifetime: lifetime,
+                },
+            ),
+        }
     }
 }
