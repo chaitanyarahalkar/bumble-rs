@@ -134,6 +134,22 @@ const UNKNOWN_CONNECTION_IDENTIFIER_ERROR: u8 = 0x02;
 /// placeholders for this in-process controller.
 const LE_ACL_DATA_PACKET_LENGTH: u16 = 27;
 const TOTAL_NUM_LE_ACL_DATA_PACKETS: u8 = 64;
+const ISO_DATA_PACKET_LENGTH: u16 = 960;
+const TOTAL_NUM_ISO_DATA_PACKETS: u8 = 64;
+const ACL_DATA_PACKET_LENGTH: u16 = 27;
+const TOTAL_NUM_ACL_DATA_PACKETS: u16 = 64;
+const SUPPORTED_MAX_DATA_OCTETS: u16 = 27;
+const SUPPORTED_MAX_DATA_TIME: u16 = 10_000;
+const SUGGESTED_MAX_DATA_OCTETS: u16 = 27;
+const SUGGESTED_MAX_DATA_TIME: u16 = 0x0148;
+const MAX_ADVERTISING_DATA_LENGTH: u16 = 0x0672;
+const NUM_SUPPORTED_ADVERTISING_SETS: u8 = 0xF0;
+const LOCAL_SUPPORTED_COMMANDS: [u8; 64] = [
+    0x20, 0x00, 0x80, 0x03, 0x00, 0xc0, 0x00, 0x00, 0x00, 0x00, 0xe4, 0x00, 0x00, 0x00, 0xa8, 0x22,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0xf7, 0xff, 0xff, 0x7f, 0x00, 0x00, 0x00,
+    0x30, 0xf0, 0xf9, 0xff, 0x01, 0x00, 0x80, 0x04, 0x00, 0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+];
 /// The LE features bitmap reported by `LE_Read_Local_Supported_Features`.
 /// Bit 12 advertises the extended-advertising set/scan implementation and bits
 /// 28/29 advertise the central/peripheral CIS paths implemented below.
@@ -591,16 +607,18 @@ impl Controller {
             Command::LeReadMaximumAdvertisingDataLength => {
                 self.complete(
                     op_code,
-                    ReturnParameters::Raw {
-                        data: vec![HCI_SUCCESS, 0x72, 0x06],
+                    ReturnParameters::LeReadMaximumAdvertisingDataLength {
+                        status: HCI_SUCCESS,
+                        max_advertising_data_length: MAX_ADVERTISING_DATA_LENGTH,
                     },
                 );
             }
             Command::LeReadNumberOfSupportedAdvertisingSets => {
                 self.complete(
                     op_code,
-                    ReturnParameters::Raw {
-                        data: vec![HCI_SUCCESS, 0xF0],
+                    ReturnParameters::LeReadNumberOfSupportedAdvertisingSets {
+                        status: HCI_SUCCESS,
+                        num_supported_advertising_sets: NUM_SUPPORTED_ADVERTISING_SETS,
                     },
                 );
             }
@@ -732,6 +750,49 @@ impl Controller {
                     },
                 );
             }
+            Command::ReadLocalVersionInformation => {
+                self.complete(
+                    op_code,
+                    ReturnParameters::ReadLocalVersionInformation {
+                        status: HCI_SUCCESS,
+                        hci_version: 9,
+                        hci_subversion: 0,
+                        lmp_version: 9,
+                        company_identifier: 0xFFFF,
+                        lmp_subversion: 0,
+                    },
+                );
+            }
+            Command::ReadLocalSupportedCommands => {
+                self.complete(
+                    op_code,
+                    ReturnParameters::ReadLocalSupportedCommands {
+                        status: HCI_SUCCESS,
+                        supported_commands: LOCAL_SUPPORTED_COMMANDS,
+                    },
+                );
+            }
+            Command::ReadLocalSupportedFeatures => {
+                self.complete(
+                    op_code,
+                    ReturnParameters::ReadLocalSupportedFeatures {
+                        status: HCI_SUCCESS,
+                        lmp_features: LMP_FEATURES,
+                    },
+                );
+            }
+            Command::ReadBufferSize => {
+                self.complete(
+                    op_code,
+                    ReturnParameters::ReadBufferSize {
+                        status: HCI_SUCCESS,
+                        hc_acl_data_packet_length: ACL_DATA_PACKET_LENGTH,
+                        hc_synchronous_data_packet_length: 0,
+                        hc_total_num_acl_data_packets: TOTAL_NUM_ACL_DATA_PACKETS,
+                        hc_total_num_synchronous_data_packets: 0,
+                    },
+                );
+            }
             Command::LeReadBufferSize => {
                 self.complete(
                     op_code,
@@ -742,12 +803,48 @@ impl Controller {
                     },
                 );
             }
+            Command::LeReadBufferSizeV2 => {
+                self.complete(
+                    op_code,
+                    ReturnParameters::LeReadBufferSizeV2 {
+                        status: HCI_SUCCESS,
+                        le_acl_data_packet_length: LE_ACL_DATA_PACKET_LENGTH,
+                        total_num_le_acl_data_packets: TOTAL_NUM_LE_ACL_DATA_PACKETS,
+                        iso_data_packet_length: ISO_DATA_PACKET_LENGTH,
+                        total_num_iso_data_packets: TOTAL_NUM_ISO_DATA_PACKETS,
+                    },
+                );
+            }
             Command::LeReadLocalSupportedFeatures => {
-                // No typed return-parameter variant exists for this command; the
-                // controller returns status + the 8-byte LE features bitmap.
-                let mut data = vec![HCI_SUCCESS];
-                data.extend_from_slice(&LOCAL_LE_FEATURES);
-                self.complete(op_code, ReturnParameters::Raw { data });
+                self.complete(
+                    op_code,
+                    ReturnParameters::LeReadLocalSupportedFeatures {
+                        status: HCI_SUCCESS,
+                        le_features: LOCAL_LE_FEATURES,
+                    },
+                );
+            }
+            Command::LeReadSuggestedDefaultDataLength => {
+                self.complete(
+                    op_code,
+                    ReturnParameters::LeReadSuggestedDefaultDataLength {
+                        status: HCI_SUCCESS,
+                        suggested_max_tx_octets: SUGGESTED_MAX_DATA_OCTETS,
+                        suggested_max_tx_time: SUGGESTED_MAX_DATA_TIME,
+                    },
+                );
+            }
+            Command::LeReadMaximumDataLength => {
+                self.complete(
+                    op_code,
+                    ReturnParameters::LeReadMaximumDataLength {
+                        status: HCI_SUCCESS,
+                        supported_max_tx_octets: SUPPORTED_MAX_DATA_OCTETS,
+                        supported_max_tx_time: SUPPORTED_MAX_DATA_TIME,
+                        supported_max_rx_octets: SUPPORTED_MAX_DATA_OCTETS,
+                        supported_max_rx_time: SUPPORTED_MAX_DATA_TIME,
+                    },
+                );
             }
             Command::LeRand => {
                 // Deterministic stand-in for a hardware RNG (see `rand_counter`).

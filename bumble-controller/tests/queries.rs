@@ -77,11 +77,38 @@ fn le_read_local_supported_features_returns_bitmap() {
     let mut c = Controller::new("C", addr("00:11:22:33:44:55"));
     c.handle_command(Command::LeReadLocalSupportedFeatures);
     match only_complete(&c.drain_host_events()) {
-        ReturnParameters::Raw { data } => {
-            assert_eq!(data.len(), 9); // status + 8-byte features bitmap
-            assert_eq!(data[0], 0);
+        ReturnParameters::LeReadLocalSupportedFeatures {
+            status,
+            le_features,
+        } => {
+            assert_eq!(*status, 0);
+            assert_eq!(*le_features, [0x00, 0x10, 0x00, 0x30, 0, 0, 0, 0]);
         }
-        other => panic!("expected Raw params, got {other:?}"),
+        other => panic!("expected LE feature params, got {other:?}"),
+    }
+}
+
+#[test]
+fn controller_information_queries_have_typed_serializable_payloads() {
+    let mut c = Controller::new("C", addr("00:11:22:33:44:55"));
+    let commands = [
+        Command::ReadLocalVersionInformation,
+        Command::ReadLocalSupportedCommands,
+        Command::ReadLocalSupportedFeatures,
+        Command::ReadBufferSize,
+        Command::LeReadBufferSizeV2,
+        Command::LeReadLocalSupportedFeatures,
+        Command::LeReadSuggestedDefaultDataLength,
+        Command::LeReadMaximumDataLength,
+        Command::LeReadMaximumAdvertisingDataLength,
+        Command::LeReadNumberOfSupportedAdvertisingSets,
+    ];
+
+    for command in commands {
+        c.handle_command(command);
+        let packet = c.drain_host_events().remove(0);
+        let reparsed = HciPacket::from_bytes(&packet.to_bytes()).unwrap();
+        assert_eq!(reparsed, packet);
     }
 }
 

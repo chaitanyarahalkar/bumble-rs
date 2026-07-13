@@ -165,16 +165,22 @@ fn advertising_set_reads_unknown_handle_and_lifecycle_match_upstream() {
     assert!(matches!(
         &events[1],
         HciPacket::Event(Event::CommandComplete {
-            return_parameters: ReturnParameters::Raw { data },
+            return_parameters: ReturnParameters::LeReadMaximumAdvertisingDataLength {
+                status: 0,
+                max_advertising_data_length: 0x0672,
+            },
             ..
-        }) if data == &[0, 0x72, 0x06]
+        })
     ));
     assert!(matches!(
         &events[2],
         HciPacket::Event(Event::CommandComplete {
-            return_parameters: ReturnParameters::Raw { data },
+            return_parameters: ReturnParameters::LeReadNumberOfSupportedAdvertisingSets {
+                status: 0,
+                num_supported_advertising_sets: 0xF0,
+            },
             ..
-        }) if data == &[0, 0xF0]
+        })
     ));
 
     controller.handle_command(enable_set(1, true));

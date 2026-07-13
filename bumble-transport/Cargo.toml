@@ -12,6 +12,7 @@ categories.workspace = true
 description = "HCI packet framing and external transports for bumble-rs"
 
 [dependencies]
+bumble = { path = "../bumble" }
 bumble-hci = { path = "../bumble-hci" }
 prost = "0.13.5"
 serialport = { version = "4.9.0", default-features = false }

@@ -32,6 +32,71 @@ pub enum ReturnParameters {
         le_acl_data_packet_length: u16,
         total_num_le_acl_data_packets: u8,
     },
+    LeReadBufferSizeV2 {
+        status: u8,
+        le_acl_data_packet_length: u16,
+        total_num_le_acl_data_packets: u8,
+        iso_data_packet_length: u16,
+        total_num_iso_data_packets: u8,
+    },
+    ReadLocalVersionInformation {
+        status: u8,
+        hci_version: u8,
+        hci_subversion: u16,
+        lmp_version: u8,
+        company_identifier: u16,
+        lmp_subversion: u16,
+    },
+    ReadLocalSupportedCommands {
+        status: u8,
+        supported_commands: [u8; 64],
+    },
+    ReadLocalSupportedFeatures {
+        status: u8,
+        lmp_features: [u8; 8],
+    },
+    LeReadLocalSupportedFeatures {
+        status: u8,
+        le_features: [u8; 8],
+    },
+    ReadBufferSize {
+        status: u8,
+        hc_acl_data_packet_length: u16,
+        hc_synchronous_data_packet_length: u8,
+        hc_total_num_acl_data_packets: u16,
+        hc_total_num_synchronous_data_packets: u16,
+    },
+    ReadVoiceSetting {
+        status: u8,
+        voice_setting: u16,
+    },
+    LeReadSuggestedDefaultDataLength {
+        status: u8,
+        suggested_max_tx_octets: u16,
+        suggested_max_tx_time: u16,
+    },
+    LeReadMaximumDataLength {
+        status: u8,
+        supported_max_tx_octets: u16,
+        supported_max_tx_time: u16,
+        supported_max_rx_octets: u16,
+        supported_max_rx_time: u16,
+    },
+    LeReadMaximumAdvertisingDataLength {
+        status: u8,
+        max_advertising_data_length: u16,
+    },
+    LeReadNumberOfSupportedAdvertisingSets {
+        status: u8,
+        num_supported_advertising_sets: u8,
+    },
+    LeReadMinimumSupportedConnectionInterval {
+        status: u8,
+        minimum_supported_connection_interval: u8,
+        group_min: Vec<u16>,
+        group_max: Vec<u16>,
+        group_stride: Vec<u16>,
+    },
     ReadBdAddr {
         status: u8,
         bd_addr: Address,
@@ -65,6 +130,18 @@ impl ReturnParameters {
         Some(match self {
             ReturnParameters::Status { status }
             | ReturnParameters::LeReadBufferSize { status, .. }
+            | ReturnParameters::LeReadBufferSizeV2 { status, .. }
+            | ReturnParameters::ReadLocalVersionInformation { status, .. }
+            | ReturnParameters::ReadLocalSupportedCommands { status, .. }
+            | ReturnParameters::ReadLocalSupportedFeatures { status, .. }
+            | ReturnParameters::LeReadLocalSupportedFeatures { status, .. }
+            | ReturnParameters::ReadBufferSize { status, .. }
+            | ReturnParameters::ReadVoiceSetting { status, .. }
+            | ReturnParameters::LeReadSuggestedDefaultDataLength { status, .. }
+            | ReturnParameters::LeReadMaximumDataLength { status, .. }
+            | ReturnParameters::LeReadMaximumAdvertisingDataLength { status, .. }
+            | ReturnParameters::LeReadNumberOfSupportedAdvertisingSets { status, .. }
+            | ReturnParameters::LeReadMinimumSupportedConnectionInterval { status, .. }
             | ReturnParameters::ReadBdAddr { status, .. }
             | ReturnParameters::ReadLocalName { status, .. }
             | ReturnParameters::ReadLocalSupportedCodecs { status, .. }
@@ -86,6 +163,132 @@ impl ReturnParameters {
                 p.push(*status);
                 p.extend_from_slice(&le_acl_data_packet_length.to_le_bytes());
                 p.push(*total_num_le_acl_data_packets);
+            }
+            ReturnParameters::LeReadBufferSizeV2 {
+                status,
+                le_acl_data_packet_length,
+                total_num_le_acl_data_packets,
+                iso_data_packet_length,
+                total_num_iso_data_packets,
+            } => {
+                p.push(*status);
+                p.extend_from_slice(&le_acl_data_packet_length.to_le_bytes());
+                p.push(*total_num_le_acl_data_packets);
+                p.extend_from_slice(&iso_data_packet_length.to_le_bytes());
+                p.push(*total_num_iso_data_packets);
+            }
+            ReturnParameters::ReadLocalVersionInformation {
+                status,
+                hci_version,
+                hci_subversion,
+                lmp_version,
+                company_identifier,
+                lmp_subversion,
+            } => {
+                p.push(*status);
+                p.push(*hci_version);
+                p.extend_from_slice(&hci_subversion.to_le_bytes());
+                p.push(*lmp_version);
+                p.extend_from_slice(&company_identifier.to_le_bytes());
+                p.extend_from_slice(&lmp_subversion.to_le_bytes());
+            }
+            ReturnParameters::ReadLocalSupportedCommands {
+                status,
+                supported_commands,
+            } => {
+                p.push(*status);
+                p.extend_from_slice(supported_commands);
+            }
+            ReturnParameters::ReadLocalSupportedFeatures {
+                status,
+                lmp_features,
+            } => {
+                p.push(*status);
+                p.extend_from_slice(lmp_features);
+            }
+            ReturnParameters::LeReadLocalSupportedFeatures {
+                status,
+                le_features,
+            } => {
+                p.push(*status);
+                p.extend_from_slice(le_features);
+            }
+            ReturnParameters::ReadBufferSize {
+                status,
+                hc_acl_data_packet_length,
+                hc_synchronous_data_packet_length,
+                hc_total_num_acl_data_packets,
+                hc_total_num_synchronous_data_packets,
+            } => {
+                p.push(*status);
+                p.extend_from_slice(&hc_acl_data_packet_length.to_le_bytes());
+                p.push(*hc_synchronous_data_packet_length);
+                p.extend_from_slice(&hc_total_num_acl_data_packets.to_le_bytes());
+                p.extend_from_slice(&hc_total_num_synchronous_data_packets.to_le_bytes());
+            }
+            ReturnParameters::ReadVoiceSetting {
+                status,
+                voice_setting,
+            } => {
+                p.push(*status);
+                p.extend_from_slice(&voice_setting.to_le_bytes());
+            }
+            ReturnParameters::LeReadSuggestedDefaultDataLength {
+                status,
+                suggested_max_tx_octets,
+                suggested_max_tx_time,
+            } => {
+                p.push(*status);
+                p.extend_from_slice(&suggested_max_tx_octets.to_le_bytes());
+                p.extend_from_slice(&suggested_max_tx_time.to_le_bytes());
+            }
+            ReturnParameters::LeReadMaximumDataLength {
+                status,
+                supported_max_tx_octets,
+                supported_max_tx_time,
+                supported_max_rx_octets,
+                supported_max_rx_time,
+            } => {
+                p.push(*status);
+                p.extend_from_slice(&supported_max_tx_octets.to_le_bytes());
+                p.extend_from_slice(&supported_max_tx_time.to_le_bytes());
+                p.extend_from_slice(&supported_max_rx_octets.to_le_bytes());
+                p.extend_from_slice(&supported_max_rx_time.to_le_bytes());
+            }
+            ReturnParameters::LeReadMaximumAdvertisingDataLength {
+                status,
+                max_advertising_data_length,
+            } => {
+                p.push(*status);
+                p.extend_from_slice(&max_advertising_data_length.to_le_bytes());
+            }
+            ReturnParameters::LeReadNumberOfSupportedAdvertisingSets {
+                status,
+                num_supported_advertising_sets,
+            } => {
+                p.push(*status);
+                p.push(*num_supported_advertising_sets);
+            }
+            ReturnParameters::LeReadMinimumSupportedConnectionInterval {
+                status,
+                minimum_supported_connection_interval,
+                group_min,
+                group_max,
+                group_stride,
+            } => {
+                p.push(*status);
+                p.push(*minimum_supported_connection_interval);
+                let count = group_min
+                    .len()
+                    .min(group_max.len())
+                    .min(group_stride.len())
+                    .min(u8::MAX as usize);
+                p.push(count as u8);
+                for index in 0..count {
+                    p.extend_from_slice(&group_min[index].to_le_bytes());
+                    p.extend_from_slice(&group_max[index].to_le_bytes());
+                    p.extend_from_slice(&group_stride[index].to_le_bytes());
+                }
             }
             ReturnParameters::ReadBdAddr { status, bd_addr } => {
                 p.push(*status);
@@ -147,6 +350,18 @@ impl ReturnParameters {
         let is_typed = matches!(
             command_opcode,
             HCI_LE_READ_BUFFER_SIZE_COMMAND
+                | HCI_LE_READ_BUFFER_SIZE_V2_COMMAND
+                | HCI_READ_LOCAL_VERSION_INFORMATION_COMMAND
+                | HCI_READ_LOCAL_SUPPORTED_COMMANDS_COMMAND
+                | HCI_READ_LOCAL_SUPPORTED_FEATURES_COMMAND
+                | HCI_LE_READ_LOCAL_SUPPORTED_FEATURES_COMMAND
+                | HCI_READ_BUFFER_SIZE_COMMAND
+                | HCI_READ_VOICE_SETTING_COMMAND
+                | HCI_LE_READ_SUGGESTED_DEFAULT_DATA_LENGTH_COMMAND
+                | HCI_LE_READ_MAXIMUM_DATA_LENGTH_COMMAND
+                | HCI_LE_READ_MAXIMUM_ADVERTISING_DATA_LENGTH_COMMAND
+                | HCI_LE_READ_NUMBER_OF_SUPPORTED_ADVERTISING_SETS_COMMAND
+                | HCI_LE_READ_MINIMUM_SUPPORTED_CONNECTION_INTERVAL_COMMAND
                 | HCI_READ_BD_ADDR_COMMAND
                 | HCI_READ_LOCAL_NAME_COMMAND
                 | HCI_READ_LOCAL_SUPPORTED_CODECS_COMMAND
@@ -172,6 +387,97 @@ impl ReturnParameters {
                 le_acl_data_packet_length: r.u16_le()?,
                 total_num_le_acl_data_packets: r.u8()?,
             },
+            HCI_LE_READ_BUFFER_SIZE_V2_COMMAND => ReturnParameters::LeReadBufferSizeV2 {
+                status,
+                le_acl_data_packet_length: r.u16_le()?,
+                total_num_le_acl_data_packets: r.u8()?,
+                iso_data_packet_length: r.u16_le()?,
+                total_num_iso_data_packets: r.u8()?,
+            },
+            HCI_READ_LOCAL_VERSION_INFORMATION_COMMAND => {
+                ReturnParameters::ReadLocalVersionInformation {
+                    status,
+                    hci_version: r.u8()?,
+                    hci_subversion: r.u16_le()?,
+                    lmp_version: r.u8()?,
+                    company_identifier: r.u16_le()?,
+                    lmp_subversion: r.u16_le()?,
+                }
+            }
+            HCI_READ_LOCAL_SUPPORTED_COMMANDS_COMMAND => {
+                ReturnParameters::ReadLocalSupportedCommands {
+                    status,
+                    supported_commands: r.array::<64>()?,
+                }
+            }
+            HCI_READ_LOCAL_SUPPORTED_FEATURES_COMMAND => {
+                ReturnParameters::ReadLocalSupportedFeatures {
+                    status,
+                    lmp_features: r.array::<8>()?,
+                }
+            }
+            HCI_LE_READ_LOCAL_SUPPORTED_FEATURES_COMMAND => {
+                ReturnParameters::LeReadLocalSupportedFeatures {
+                    status,
+                    le_features: r.array::<8>()?,
+                }
+            }
+            HCI_READ_BUFFER_SIZE_COMMAND => ReturnParameters::ReadBufferSize {
+                status,
+                hc_acl_data_packet_length: r.u16_le()?,
+                hc_synchronous_data_packet_length: r.u8()?,
+                hc_total_num_acl_data_packets: r.u16_le()?,
+                hc_total_num_synchronous_data_packets: r.u16_le()?,
+            },
+            HCI_READ_VOICE_SETTING_COMMAND => ReturnParameters::ReadVoiceSetting {
+                status,
+                voice_setting: r.u16_le()?,
+            },
+            HCI_LE_READ_SUGGESTED_DEFAULT_DATA_LENGTH_COMMAND => {
+                ReturnParameters::LeReadSuggestedDefaultDataLength {
+                    status,
+                    suggested_max_tx_octets: r.u16_le()?,
+                    suggested_max_tx_time: r.u16_le()?,
+                }
+            }
+            HCI_LE_READ_MAXIMUM_DATA_LENGTH_COMMAND => ReturnParameters::LeReadMaximumDataLength {
+                status,
+                supported_max_tx_octets: r.u16_le()?,
+                supported_max_tx_time: r.u16_le()?,
+                supported_max_rx_octets: r.u16_le()?,
+                supported_max_rx_time: r.u16_le()?,
+            },
+            HCI_LE_READ_MAXIMUM_ADVERTISING_DATA_LENGTH_COMMAND => {
+                ReturnParameters::LeReadMaximumAdvertisingDataLength {
+                    status,
+                    max_advertising_data_length: r.u16_le()?,
+                }
+            }
+            HCI_LE_READ_NUMBER_OF_SUPPORTED_ADVERTISING_SETS_COMMAND => {
+                ReturnParameters::LeReadNumberOfSupportedAdvertisingSets {
+                    status,
+                    num_supported_advertising_sets: r.u8()?,
+                }
+            }
+            HCI_LE_READ_MINIMUM_SUPPORTED_CONNECTION_INTERVAL_COMMAND => {
+                let minimum_supported_connection_interval = r.u8()?;
+                let count = r.u8()? as usize;
+                let mut group_min = Vec::with_capacity(count);
+                let mut group_max = Vec::with_capacity(count);
+                let mut group_stride = Vec::with_capacity(count);
+                for _ in 0..count {
+                    group_min.push(r.u16_le()?);
+                    group_max.push(r.u16_le()?);
+                    group_stride.push(r.u16_le()?);
+                }
+                ReturnParameters::LeReadMinimumSupportedConnectionInterval {
+                    status,
+                    minimum_supported_connection_interval,
+                    group_min,
+                    group_max,
+                    group_stride,
+                }
+            }
             HCI_READ_BD_ADDR_COMMAND => ReturnParameters::ReadBdAddr {
                 status,
                 bd_addr: Address::from_bytes(r.array::<6>()?, AddressType::PUBLIC_DEVICE),

@@ -226,6 +226,7 @@ size, to convey remaining surface.
 | `profiles/*` — all 23 modules | `bumble-profiles` | ✅ | All upstream profile modules are live: GAP/GATT/Battery/Device Information/Heart Rate, ASHA/HAP/CSIP, VCS/VOCS/AICS, MCP/GMCS, LE Audio metadata plus BAP/PACS/ASCS/BASS/CAP/TMAP/GMAP/PBP, and AMS/ANCS. Services, typed proxies, control/state runtimes, assigned-number and vendor UUID catalogs, strict wire models, encryption requirements, notifications/indications, and included-service discovery are covered by live tests. |
 | `bridge.py` (0.1k) | `bumble-transport::HciBridge` | ✅ | Separate host/controller sources and sinks, directional single-packet pumping, typed replacement filters, responses short-circuited to the sender, post-filter directional tracing, EOF reporting, and transport-error propagation. |
 | `apps/show.py` | `bumble-show` (`bumble-transport`) | ✅ | Runnable H4/BTSnoop capture decoder with upstream `--format` and repeatable Android/Zephyr `--vendor` options, typed HCI parsing, direction/timestamp output, and explicit truncated-record reporting. Rust vendor codecs are statically linked rather than dynamically registered. |
+| `apps/controller_info.py` | `bumble-controller-info` (`bumble-transport`) | 🟡 | Runnable external-controller inspection with reset, optional primed latency probes, local version/address/name, Classic + LE feature and buffer queries, data/advertising limits, minimum connection intervals, codec/voice queries, and V2-to-V1 LE buffer fallback. Unsupported commands are skipped and interleaved asynchronous packets are preserved. Deferred: symbolic supported-command, feature, codec, version, and voice-field names instead of numeric/bitmap rendering. |
 | `apps/ble_rpa_tool.py` | `bumble-rpa-tool` (`bumble-smp`) | ✅ | Runnable `gen-irk`, `gen-rpa`, and `verify-rpa` commands backed by the OS RNG and the real SMP `ah` primitive. Flexible Python-style hex input, address validation, colored verification results, and malformed/extra argument errors are covered. |
 | `apps/unbond.py` | `bumble-unbond` (`bumble`) | 🟡 | File-backed list/delete mode is runnable with namespace selection, upstream-style colored key rendering, atomic persistence, and `!!! pairing not found` behavior. Controller-backed device-config discovery remains deferred until the external-transport host bootstrap is available without introducing a crate cycle. |
 | `pandora/`, remaining apps | — | ⬜ | Conformance harnesses and the remaining command-line applications; still unported. |
@@ -286,10 +287,11 @@ The HCI packet codec in the [`bumble-hci`](bumble-hci/) crate (depends on
   Connection_Update_Complete / Channel_Selection_Algorithm /
   Read_Remote_Features_Complete meta events, and both LE Advertising Report
   events (nested per-report structs), plus `Generic` fallbacks.
-- **`ReturnParameters`** — typed Command_Complete return parameters
-  (LE_Read_Buffer_Size, Read_BD_ADDR, Read_Local_Name,
-  Read_Local_Supported_Codecs + V2) with the status-based short-response
-  fallback, plus a `Raw` fallback.
+- **`ReturnParameters`** — typed Command_Complete return parameters for the
+  controller-information query surface (local version/commands/features,
+  Classic + LE buffer sizes, LE features/data/advertising limits and minimum
+  connection intervals, voice setting, address/name, and supported codecs),
+  with the status-based short-response fallback plus a `Raw` fallback.
 - **Data packets** — ACL, Synchronous (SCO), ISO (with the timestamp / SDU-info
   blocks), and the custom passthrough packet.
 
@@ -2416,6 +2418,24 @@ External transports now have a reusable synchronous HCI command path:
 - `CommandResponse` exposes command credits, status, and typed return parameters.
   Mock-transport tests cover completion, status, unrelated-packet retention,
   exact outbound command/flush behavior, and premature EOF.
+
+## Slice 111 — what's here
+
+External controllers can now be inspected with a runnable information tool:
+
+- `bumble-controller-info` accepts the upstream transport and latency-probe
+  options, resets the controller, measures primed command latency, and reports
+  every upstream controller-info query family while cleanly skipping unsupported
+  commands and preserving unrelated asynchronous packets.
+- Twelve additional Command Complete layouts are typed and byte-pinned:
+  version/commands/features, Classic + LE V2 buffer sizing, LE features,
+  suggested/maximum data length, advertising limits, minimum connection
+  interval groups, and voice settings. Error statuses remain valid short
+  responses while successful truncation is rejected.
+- The software controller now returns spec-shaped values for each information
+  query it advertises instead of successful empty stubs. Tests serialize and
+  reparse every new controller response, covering the real HCI boundary rather
+  than only in-memory enum matching.
 
 ## Acceptance
 
