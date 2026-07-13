@@ -1346,7 +1346,8 @@ impl ExternalHost {
                 Command::LeSetEventMask {
                     le_event_mask: event_mask(&[
                         0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x0A, 0x0C, 0x0D, 0x0E, 0x0F,
-                        0x10, 0x18, 0x19, 0x1A, 0x22, 0x23, 0x24, 0x25, 0x26, 0x29,
+                        0x10, 0x18, 0x19, 0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x22, 0x23, 0x24, 0x25,
+                        0x26, 0x29,
                     ]),
                 },
                 timeout,
@@ -1874,6 +1875,24 @@ mod tests {
                 Command::LeReadBufferSizeV2.op_code(),
             ]
         );
+        let packets = recorded.0.lock().unwrap();
+        let le_event_mask = packets
+            .iter()
+            .find_map(|packet| match packet {
+                HciPacket::Command(Command::LeSetEventMask { le_event_mask }) => {
+                    Some(*le_event_mask)
+                }
+                _ => None,
+            })
+            .expect("LE event mask command");
+        for subevent in [0x1B_u8, 0x1C, 0x1D, 0x1E, 0x22] {
+            let bit = usize::from(subevent - 1);
+            assert_ne!(
+                le_event_mask[bit / 8] & (1 << (bit % 8)),
+                0,
+                "LE subevent 0x{subevent:02X} is masked out"
+            );
+        }
     }
 
     #[test]

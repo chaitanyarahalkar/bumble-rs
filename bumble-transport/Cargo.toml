@@ -32,12 +32,14 @@ bumble-sdp = { path = "../bumble-sdp" }
 bumble-smp = { path = "../bumble-smp" }
 prost = "0.13.5"
 regex = "1"
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serialport = { version = "4.9.0", default-features = false }
 tokio = { version = "1.45.1", features = ["macros", "rt", "sync"] }
 tokio-stream = { version = "0.1.17", features = ["net"] }
 tonic = { version = "0.13.1", default-features = false, features = ["codegen", "prost", "router", "transport"] }
 tungstenite = { version = "0.30.0", features = ["rustls-tls-native-roots"] }
+toml = { version = "1.1.2", features = ["parse", "serde"] }
 rusb = { version = "0.9.4", features = ["vendored"] }
 
 [build-dependencies]

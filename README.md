@@ -239,13 +239,14 @@ size, to convey remaining surface.
 | `apps/player/player.py` | `bumble-player` (`bumble-transport`) | ✅ | Runnable Classic A2DP source with the complete upstream `discover`, `inquire`, `pair`, and `play` command surface. It publishes the source SDP record, persists SSP link keys, discovers sink endpoints, configures SBC/AAC/vendor Opus, opens and controls AVDTP streams, paces RTP media with controller backpressure, and serves AVRCP over incoming AVCTP. |
 | `apps/speaker/speaker.py` | `bumble-speaker` (`bumble-transport`) | ✅ | Runnable Classic A2DP sink with the complete upstream codec, sampling-frequency, bitrate, VBR, discovery, output, UI, peer, device-config, and transport surface. It accepts incoming Classic connections or initiates authenticated/encrypted ones, publishes the sink SDP record, negotiates SBC/AAC/vendor Opus through AVDTP, extracts received RTP audio to files or `ffplay`, and serves the live browser UI over HTTP/WebSocket. |
 | `apps/console.py` | `bumble-console` (`bumble-transport`) | ✅ | Runnable scriptable interactive LE console over external controllers. It preserves the upstream scan/filter/RSSI, advertising, connect/disconnect, parameter, encryption, MTU, PHY, GATT discovery/read/write/subscription, local-write, status-view, and exit command grammar. The Python fullscreen widgets become terminal views while live controller events remain continuously pumped. |
+| `apps/auracast.py` | `bumble-auracast` (`bumble-transport`) | ✅ | Runnable Auracast scanner, BASS broadcast assistant, pairing client, LC3 receiver, and multi-broadcast transmitter over external controllers. It preserves the upstream five-command CLI, TOML broadcast lists, Broadcast Code encoding, BAP/PBP announcements, periodic synchronization, PAST, BIG/BIS setup, and portable PCM input/output paths. The optional platform sound-device backend remains tracked under `bumble-audio`; file, stdio, and `ffplay` paths are live. |
 | `apps/lea_unicast/app.py` | `bumble-lea-unicast` (`bumble-transport`) | ✅ | Runnable LE Audio unicast sink/source over external controllers with the upstream UI-port, device-config, transport, and WAVE-input CLI. It publishes GAP, PACS, and ASCS, advertises the unicast-server announcement, negotiates sink/source ASEs, accepts and binds CIS links, decodes received LC3 to the browser UI, and resamples/encodes looping WAVE PCM into source ISO SDUs. |
 | `apps/pair.py` | `bumble-pair` (`bumble-transport`) | ✅ | Runnable LE, Classic, and simultaneous dual-mode listener paths over external controllers with the complete upstream option surface. LE supports direct address/name connection or configurable advertising, Legacy/SC pairing, and OOB data. Classic supports inquiry/name resolution, incoming/outgoing ACL setup, PIN and Secure Simple Pairing delegates, stored link-key reuse, controller encryption, and best-effort SMP-over-BR/EDR CTKD for P-256 link keys. Both paths provide bond policy, JSON key persistence/printing, and linger behavior. |
 | `apps/scan.py` | `bumble-scan` (`bumble-transport`) | ✅ | Runnable external HCI scanner with upstream RSSI/passive/interval/window/PHY/duplicate/raw/IRK/key-store/device-config options, extended scanning with legacy fallback, typed legacy + extended report decoding, exact active/passive scan-response accumulation, labeled AD rendering, RSSI bars, and real RPA identity resolution. |
 | `apps/usb_probe.py` | `bumble-usb-probe` (`bumble-transport`) | ✅ | Runnable libusb device inventory with upstream `--verbose`, `--hci-only`, manufacturer, and product filters; device/interface-level Bluetooth HCI classification; stable index, VID/PID, duplicate, and serial transport names; string-descriptor error tolerance; and verbose configuration/interface/endpoint details including isochronous packet sizes. |
 | `apps/ble_rpa_tool.py` | `bumble-rpa-tool` (`bumble-smp`) | ✅ | Runnable `gen-irk`, `gen-rpa`, and `verify-rpa` commands backed by the OS RNG and the real SMP `ah` primitive. Flexible Python-style hex input, address validation, colored verification results, and malformed/extra argument errors are covered. |
 | `apps/unbond.py` | `bumble-unbond` (`bumble-transport`) | ✅ | File-backed and external-controller list/delete modes are runnable with upstream-style colored key rendering and `!!! pairing not found` behavior. Controller mode resets HCI, discovers the public BD_ADDR, falls back to the configured random address, reproduces `JsonKeyStore[:filename]` namespace/path selection, and uses an in-memory store for absent or unknown keystore types. |
-| `apps/auracast.py`, `apps/bench.py`, `pandora/` | — | ⬜ | The three remaining application/conformance entry points; still unported. The broadcast-ISO runtime required by Auracast is now live. |
+| `apps/bench.py`, `apps/pandora_server.py` + `pandora/` | — | ⬜ | The two remaining application/conformance entry points; still unported. |
 
 ### Roughly where that leaves things
 
@@ -2920,6 +2921,30 @@ The broadcast-ISO runtime required by the upstream Auracast app is now live:
   Broadcast Code, synchronizes two receivers, fans out a 2,500-byte SDU to both,
   terminates one receiver independently, and propagates source termination to
   the remaining receiver.
+
+## Slice 136 — what's here
+
+The upstream Auracast application is now runnable over external controllers:
+
+- `bumble-auracast` preserves the upstream `scan`, `assist`, `pair`, `receive`,
+  and `transmit` commands, including duplicate filtering, sync timeouts,
+  broadcast/subgroup selection, Broadcast Codes, BASS source operations, and
+  single-source or TOML multi-broadcast transmitter configuration.
+- The shared scanner correlates extended Broadcast Audio Announcements with
+  periodic Basic Audio Announcements and BIGInfo, serializes controller sync
+  procedures, and removes lost sync state. `assist` discovers and subscribes to
+  BASS, requests MTU 256, adds/modifies/removes sources, and performs PAST for
+  add-source.
+- Transmit opens one- or two-channel 16/24/48-kHz portable PCM sources, creates
+  LC3 subgroups and sequential BIS assignments, publishes BAP/PBP and optional
+  manufacturer data, creates encrypted or clear BIGs, and paces each encoded
+  channel into its source BIS. Receive selects a subgroup, synchronizes its BIS
+  set, reassembles aligned LC3 channel SDUs, and writes float32 PCM.
+- Six focused tests cover every command shape, TOML and Broadcast Code
+  compatibility, malformed inputs, service-data/config decoding, and a live
+  two-controller extended-advertising to periodic-BAA/BIGInfo scan. The
+  external-host initialization test now also pins the BIG/BIS LE event-mask
+  bits required on real controllers.
 
 ## Acceptance
 
