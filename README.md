@@ -113,7 +113,8 @@ crate whose behavior is verified against the upstream Python.
 | 96. Connected ISO data paths and SDU streaming | `bumble-controller` / `bumble-host` / `bumble-hci` | ✅ setup/remove + fragmentation/reassembly + live CIS routing green |
 | 97. G.722 64 kbit/s audio decoder | `bumble-codecs` | ✅ upstream fixture PCM byte-exact + incremental-state green |
 | 98. Portable PCM audio input and output | `bumble-audio` | ✅ format/raw/WAVE/subprocess paths + looping and threaded output green |
-| 99+. Repository completion audit and remaining gaps | workspace | in progress |
+| 99. Android and Zephyr vendor HCI codecs | `bumble-hci` | ✅ exact command envelopes + versioned returns/BQR parsing green |
+| 100+. Repository completion audit and remaining gaps | workspace | in progress |
 
 The LE lifecycle is now complete end-to-end through library APIs: **connect →
 discover → read/write → notify → disconnect** between two virtual devices — and
@@ -165,6 +166,7 @@ size, to convey remaining surface.
 | Upstream (LOC) | Rust crate | Status | Notes |
 |---|---|---|---|
 | `hci.py` (8.3k) | `bumble-hci` | ✅ | **Full typed catalog: 196 command op codes + 81 event / LE-meta sub-event codes**, generated from upstream's declarative field specs by [`tools/hcigen`](bumble-hci/tools/hcigen/) and **byte-pinned against real Python Bumble** (320 oracle tests). Framing (Command/Event/ACL/SCO/ISO), `Command_Complete` with typed `ReturnParameters`, the open-enum `Generic` tail, and upstream-equivalent ACL/L2CAP fragmentation/reassembly with PB-flag, length, continuation, handle, and overflow validation. Two phys-derived array commands and the two nested-report events are hand-written; everything else is generated. |
+| `vendor/{android,zephyr}/hci.py` | `bumble-hci::vendor` | ✅ | Android vendor-capability responses preserve all historical length prefixes; APCF, energy-info, A2DP-offload, and dynamic-buffer command/return payloads remain open where upstream does. Bluetooth Quality Reports decode every recognized report ID with signed radio metrics and opaque vendor tails. Zephyr read/write TX-power commands and return parameters preserve signed dBm values and open handle types. |
 | `controller.py` (2.8k) | `bumble-controller` | 🟡 | **Full command surface**: every command upstream's `controller.py` handles (93, via the generated [`command_surface`](bumble-controller/src/command_surface.rs) table) gets a reply of the matching HCI shape — Command Complete + SUCCESS for config/set commands, Command Status for operations completing via a later event, and the spec-correct "Unknown HCI Command" for anything upstream also doesn't handle. **Functionally simulated**: legacy and extended LE advertising/scanning/connection establishment, multi-set parameters/random addresses/fragmented data/scan responses, IRK resolving-list offload with identity-targeted RPA connections, ACL routing with PB/BC preservation and Number Of Completed Packets flow events, disconnection, the read commands (`Read_BD_ADDR`/`Read_Local_Name`/`LE_Read_Buffer_Size`/`LE_Read_Local_Supported_Features`/`LE_Rand`), per-connection `LE_Set_Data_Length`/`LE_Set_PHY` (with follow-up meta events), and — via LL control-PDU exchange over the link — **encryption start**, **remote-features**, and **CIS establishment**. CIS links retain Setup/Remove ISO data paths and route HCI ISO fragments with handle translation and completed-packet events. Also **classic (BR/EDR)** connection/name/features and SCO/eSCO request/accept/reject/disconnect with synchronous-data routing. Other read commands are acknowledged SUCCESS **without a synthesized payload** (a documented stub, not a full read). Deferred: LTK verification, remote-version exchange, periodic-advertising synchronization (upstream's software-controller set-periodic handlers are also no-ops), and classic authentication/role-switch sub-flows. |
 | `link.py` (0.15k) | `bumble-controller` | 🟡 | In-process **synchronous** `LocalLink` with LL-control, simplified LMP, ACL, and SCO/eSCO routing. Deferred: serialized over-the-air PDUs and async scheduling. |
 | `ll.py` (0.2k) | `bumble-controller` | 🟡 | Advertising/connection PDUs modeled as in-process structs, not serialized LL PDUs. Control PDUs (`EncReq`, `FeatureReq`/`PeripheralFeatureReq`/`FeatureRsp`, `TerminateInd`) are exchanged between controllers via `LocalLink::pump_ll` to drive the encryption-start, remote-features, and CIS-establishment (`CisReq`/`CisRsp`/`CisInd`) flows. |
@@ -2216,6 +2218,23 @@ The portable portion of upstream `audio/io.py` now lives in `bumble-audio`:
   `auto` WAVE detection, and `ffplay`. Hardware device selection remains a
   platform-backend integration rather than a portable core behavior.
 
+## Slice 99 — what's here
+
+The two upstream vendor HCI modules now live under `bumble-hci::vendor`:
+
+- Android LE vendor capabilities parse every historical response prefix while
+  defaulting fields introduced by newer controller versions. APCF, activity
+  energy, A2DP hardware-offload, and dynamic-buffer commands use exact Android
+  OGF/OCF envelopes and retain subcommand-specific opaque payloads.
+- Android Bluetooth Quality Report vendor events recognize the same seven
+  report IDs as Python Bumble and safely decode the complete common telemetry
+  block, signed TX power/RSSI, Bluetooth address, packet counters, and arbitrary
+  vendor-specific suffix.
+- Zephyr read/write TX-power commands and responses preserve open handle-type
+  values, little-endian handles, and signed dBm values. Exact HCI command bytes,
+  historical/truncated capability responses, malformed events, and both vendor
+  return families are covered by focused tests.
+
 ## Acceptance
 
 The port's contract is the upstream Python test suite, ported 1:1:
@@ -2257,7 +2276,9 @@ bumble-rs/
 │   └── tests/key_store.rs     # slice-51 atomic namespaced persistence
 ├── bumble-hci/                # slice-2 HCI codec crate
 │   ├── src/{lib,codes,command,event,packet,return_parameters}.rs
-│   └── tests/acceptance.rs    # ported hci_test.py cases (oracle-pinned)
+│   ├── src/vendor/{android,zephyr}.rs # slice-99 vendor HCI codecs
+│   ├── tests/acceptance.rs    # ported hci_test.py cases (oracle-pinned)
+│   └── tests/vendor.rs        # Android/Zephyr exact envelopes and events
 ├── bumble-controller/         # slice-3 controller + virtual link crate
 │   ├── src/lib.rs
 │   ├── tests/scenario.rs      # end-to-end advertising→scan→report scenario

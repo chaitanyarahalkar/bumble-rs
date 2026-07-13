@@ -1,35 +1,26 @@
 //! bumble-hci — a Rust port of the HCI packet codec from
 //! [`google/bumble`](https://github.com/google/bumble).
 //!
-//! **Slice 2** of the incremental port: the HCI framing layer plus a
-//! representative subset of commands and events. It builds on the `bumble`
-//! crate (slice 1) for the [`bumble::Address`] type.
+//! The complete HCI framing and typed command/event catalog. It builds on the
+//! `bumble` crate for the [`bumble::Address`] type.
 //!
 //! Every packet type indicator dispatches through [`HciPacket::from_bytes`];
 //! [`HciPacket::to_bytes`] round-trips back to the wire form. Typed
 //! commands/events are modeled as enum variants with a `Generic` fallback for
-//! op/event codes this slice does not yet decode.
+//! open and vendor-specific op/event codes.
 //!
 //! ## Scope
 //!
-//! Ported: generic events; the Reset / Disconnect / Set_Event_Mask /
-//! LE_Set_Event_Mask / LE_Set_Random_Address / LE_Set_Scan_Enable /
-//! Read_Local_Version_Information / Read_Local_Supported_Commands /
-//! Read_Local_Supported_Features commands; the Command_Status and
-//! Number_Of_Completed_Packets events; the LE Connection_Complete /
-//! Connection_Update_Complete / Channel_Selection_Algorithm /
-//! Read_Remote_Features_Complete meta events; and the ACL / Synchronous / ISO
-//! data packets and custom packets.
-//!
-//! Deferred to later slices: the full command/event catalog, Advertising
-//! Report events, Command_Complete return-parameters, the vendor-event
-//! factory, and complex multi-array commands.
+//! The generated core catalog is supplemented by hand-written nested report
+//! and PHY-derived array codecs, typed Command Complete return parameters, ACL
+//! and ISO reassembly, and Android/Zephyr definitions under [`vendor`].
 
 pub mod codes;
 pub mod command;
 pub mod event;
 pub mod packet;
 pub mod return_parameters;
+pub mod vendor;
 
 pub use bumble::{Address, AddressType};
 pub use codes::*;
