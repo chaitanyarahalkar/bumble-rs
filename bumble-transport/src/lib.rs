@@ -13,6 +13,7 @@ mod common;
 mod dispatch;
 mod file;
 mod hci_socket;
+mod host;
 #[cfg(unix)]
 mod pty;
 mod serial;
@@ -54,6 +55,7 @@ pub use hci_socket::{
     HciSocketAddress, HciSocketIo, HciSocketSpec, HciSocketTransport, RawHciSocket,
     SystemHciSocketTransport, HCI_CHANNEL_USER,
 };
+pub use host::{ExternalHost, ExternalHostActivity, ExternalHostState};
 #[cfg(unix)]
 pub use pty::PtyTransport;
 pub use serial::{SerialConfig, SerialTransport, DEFAULT_POST_OPEN_DELAY, DEFAULT_SERIAL_SPEED};

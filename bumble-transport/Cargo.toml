@@ -15,6 +15,7 @@ description = "HCI packet framing and external transports for bumble-rs"
 bumble = { path = "../bumble" }
 bumble-hci = { path = "../bumble-hci" }
 bumble-controller = { path = "../bumble-controller" }
+bumble-host = { path = "../bumble-host" }
 bumble-smp = { path = "../bumble-smp" }
 prost = "0.13.5"
 serde_json = "1"

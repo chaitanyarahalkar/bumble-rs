@@ -6,16 +6,16 @@
 //! ACL to send, and unwrapping received ACL back up to ATT. This turns the
 //! cross-layer composition into a real library capability.
 //!
-//! A `Device` sits above a [`bumble_controller::Controller`] (addressed by id
-//! on a shared [`bumble_controller::LocalLink`]). It:
+//! A `Device` sits above a [`HostTransport`], either an in-process
+//! [`bumble_controller::LocalLink`] or an external-controller adapter. It:
 //! - owns its LE connections by handle and exposes a selectable current one,
 //! - sends ATT PDUs on the ATT channel with [`Device::send_att`],
 //! - on [`Device::poll`], processes inbound ACL: an optional server-role
 //!   [`bumble_gatt::AttServer`] answers requests automatically; other ATT PDUs (responses /
 //!   notifications) are queued for the client to collect.
 //!
-//! [`pump`] drives a set of devices to quiescence, which is all the
-//! (synchronous) event loop this port needs.
+//! [`pump`] drives a set of devices to quiescence for deterministic in-process
+//! operation; external adapters can wait for transport activity between polls.
 //!
 //! ## Scope
 //!
@@ -30,7 +30,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use bumble::Address;
 use bumble_att::AttPdu;
-use bumble_controller::LocalLink;
+use bumble_controller::LocalLink as ControllerLocalLink;
 use bumble_gatt::AttRequestHandler;
 use bumble_hci::{
     fragment_l2cap_pdu, AclDataPacket, AclDataPacketAssembler, AdvertisingReport, CodingFormat,
@@ -50,6 +50,111 @@ pub use data_queue::{DataPacketQueue, DataPacketQueueError};
 pub const ATT_CID: u16 = 0x0004;
 /// The fixed L2CAP channel id for LE SMP.
 pub const SMP_CID: u16 = 0x0006;
+
+/// Transport-neutral HCI link used by [`Device`].
+///
+/// [`bumble_controller::LocalLink`] implements this interface for deterministic
+/// in-process tests and simulations. External-controller adapters can implement
+/// the same operations by writing HCI packets and returning packets read from a
+/// real transport.
+pub trait HostTransport {
+    fn handle_command(&mut self, controller_id: usize, command: Command);
+
+    fn send_acl_packet(&mut self, controller_id: usize, packet: AclDataPacket) -> bool;
+
+    fn send_synchronous_data(
+        &mut self,
+        controller_id: usize,
+        connection_handle: u16,
+        packet_status: u8,
+        data: &[u8],
+    ) -> bool;
+
+    fn send_iso_packet(&mut self, controller_id: usize, packet: IsoDataPacket) -> bool;
+
+    fn disconnect(&mut self, controller_id: usize, connection_handle: u16, reason: u8) -> bool {
+        self.handle_command(
+            controller_id,
+            Command::Disconnect {
+                connection_handle,
+                reason,
+            },
+        );
+        true
+    }
+
+    fn drain_host_events(&mut self, controller_id: usize) -> Vec<HciPacket>;
+
+    /// Advance any in-process connection setup. External controllers progress
+    /// independently, so their implementation may leave this as a no-op.
+    fn establish_connections(&mut self) {}
+
+    /// Advance pending LE link-layer control procedures when applicable.
+    fn pump_ll(&mut self) {}
+
+    /// Advance pending Classic baseband procedures when applicable.
+    fn pump_classic(&mut self) {}
+
+    /// Advance pending periodic sync transfers when applicable.
+    fn pump_periodic_sync_transfers(&mut self) {}
+}
+
+impl HostTransport for ControllerLocalLink {
+    fn handle_command(&mut self, controller_id: usize, command: Command) {
+        ControllerLocalLink::handle_command(self, controller_id, command);
+    }
+
+    fn send_acl_packet(&mut self, controller_id: usize, packet: AclDataPacket) -> bool {
+        ControllerLocalLink::send_acl_packet(self, controller_id, packet)
+    }
+
+    fn send_synchronous_data(
+        &mut self,
+        controller_id: usize,
+        connection_handle: u16,
+        packet_status: u8,
+        data: &[u8],
+    ) -> bool {
+        ControllerLocalLink::send_synchronous_data(
+            self,
+            controller_id,
+            connection_handle,
+            packet_status,
+            data,
+        )
+    }
+
+    fn send_iso_packet(&mut self, controller_id: usize, packet: IsoDataPacket) -> bool {
+        ControllerLocalLink::send_iso_packet(self, controller_id, packet)
+    }
+
+    fn disconnect(&mut self, controller_id: usize, connection_handle: u16, reason: u8) -> bool {
+        ControllerLocalLink::disconnect(self, controller_id, connection_handle, reason)
+    }
+
+    fn drain_host_events(&mut self, controller_id: usize) -> Vec<HciPacket> {
+        ControllerLocalLink::drain_host_events(self, controller_id)
+    }
+
+    fn establish_connections(&mut self) {
+        ControllerLocalLink::establish_connections(self);
+    }
+
+    fn pump_ll(&mut self) {
+        ControllerLocalLink::pump_ll(self);
+    }
+
+    fn pump_classic(&mut self) {
+        ControllerLocalLink::pump_classic(self);
+    }
+
+    fn pump_periodic_sync_transfers(&mut self) {
+        ControllerLocalLink::pump_periodic_sync_transfers(self);
+    }
+}
+
+/// Dynamically dispatched host link accepted by [`Device`] operations.
+pub type LocalLink = dyn HostTransport;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SynchronousConnectionInfo {
@@ -245,7 +350,7 @@ pub struct PeriodicAdvertisement {
     pub data: Vec<u8>,
 }
 
-/// A host attached to a controller on a [`LocalLink`]. Owns the
+/// A host attached to a controller through a [`HostTransport`]. Owns the
 /// ATT↔L2CAP↔ACL sequencing.
 pub struct Device {
     controller_id: usize,

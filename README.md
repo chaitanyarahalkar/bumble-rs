@@ -2599,6 +2599,22 @@ radio link:
   it verifies peer-handle translation and Number Of Completed Packets flow
   control alongside strict CLI arity.
 
+## Slice 121 — what's here
+
+The host stack is no longer coupled to the in-process controller simulation:
+
+- `bumble-host::HostTransport` captures the small HCI/link operation surface used by
+  `Device`; `LocalLink` implements it without changing the existing deterministic
+  test and simulation behavior.
+- `bumble-transport::ExternalHost` owns an arbitrary split HCI transport, keeps
+  its blocking reader on a worker, serializes all outbound command/ACL/SCO/ISO
+  packets through the caller-owned sink, and exposes bounded activity waits,
+  clean EOF, and durable read/write failure state.
+- Adapter tests exercise typed outbound traffic, asynchronous inbound events,
+  controller-id and SCO-size rejection, and an actual `Device::connect_le`
+  transition driven entirely through external HCI packets. This is the shared
+  runtime foundation for the remaining device-facing command-line apps.
+
 ## Acceptance
 
 The port's contract is the upstream Python test suite, ported 1:1:
