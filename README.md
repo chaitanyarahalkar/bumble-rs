@@ -231,7 +231,7 @@ size, to convey remaining surface.
 | `apps/scan.py` | `bumble-scan` (`bumble-transport`) | ✅ | Runnable external HCI scanner with upstream RSSI/passive/interval/window/PHY/duplicate/raw/IRK/key-store/device-config options, extended scanning with legacy fallback, typed legacy + extended report decoding, exact active/passive scan-response accumulation, labeled AD rendering, RSSI bars, and real RPA identity resolution. |
 | `apps/usb_probe.py` | `bumble-usb-probe` (`bumble-transport`) | ✅ | Runnable libusb device inventory with upstream `--verbose`, `--hci-only`, manufacturer, and product filters; device/interface-level Bluetooth HCI classification; stable index, VID/PID, duplicate, and serial transport names; string-descriptor error tolerance; and verbose configuration/interface/endpoint details including isochronous packet sizes. |
 | `apps/ble_rpa_tool.py` | `bumble-rpa-tool` (`bumble-smp`) | ✅ | Runnable `gen-irk`, `gen-rpa`, and `verify-rpa` commands backed by the OS RNG and the real SMP `ah` primitive. Flexible Python-style hex input, address validation, colored verification results, and malformed/extra argument errors are covered. |
-| `apps/unbond.py` | `bumble-unbond` (`bumble`) | 🟡 | File-backed list/delete mode is runnable with namespace selection, upstream-style colored key rendering, atomic persistence, and `!!! pairing not found` behavior. Controller-backed device-config discovery remains deferred until the external-transport host bootstrap is available without introducing a crate cycle. |
+| `apps/unbond.py` | `bumble-unbond` (`bumble-transport`) | ✅ | File-backed and external-controller list/delete modes are runnable with upstream-style colored key rendering and `!!! pairing not found` behavior. Controller mode resets HCI, discovers the public BD_ADDR, falls back to the configured random address, reproduces `JsonKeyStore[:filename]` namespace/path selection, and uses an in-memory store for absent or unknown keystore types. |
 | `pandora/`, remaining apps | — | ⬜ | Conformance harnesses and the remaining command-line applications; still unported. |
 
 ### Roughly where that leaves things
@@ -2526,6 +2526,23 @@ Local controller loopback testing is now runnable over external transports:
   and monotonically increasing 16-bit counter before producing receive,
   throughput, and RTT statistics. Scripted controllers exercise asynchronous
   connection events interleaved with command responses and both data paths.
+
+## Slice 117 — what's here
+
+Controller-backed pairing-key removal now works without a crate dependency
+cycle:
+
+- `bumble-unbond` now lives beside the external transports it consumes while
+  preserving the direct `--keystore-file` list/delete mode and optional
+  namespace extension.
+- Controller mode loads the upstream device-config `address` and `keystore`
+  fields, resets HCI, reads the controller public BD_ADDR when supported, and
+  applies Bumble's public-address, configured-address, then default-namespace
+  precedence.
+- `JsonKeyStore`, `JsonKeyStore:<filename>`, absent, and unknown keystore
+  settings reproduce upstream persistent/default-path and in-memory behavior.
+  Scripted-controller tests cover public-address selection, configured-address
+  fallback, deletion, memory fallback, and invalid configuration.
 
 ## Acceptance
 
