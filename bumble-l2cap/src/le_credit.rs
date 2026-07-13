@@ -1,8 +1,8 @@
 //! Synchronous LE credit-based channel segmentation and credit accounting.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 
-use crate::{Error, Result};
+use crate::{ControlFrame, Error, L2capPdu, Result, L2CAP_LE_SIGNALING_CID};
 
 pub const L2CAP_LE_CREDIT_BASED_CONNECTION_MAX_CREDITS: u16 = u16::MAX;
 pub const L2CAP_LE_CREDIT_BASED_CONNECTION_MIN_MTU: u16 = 23;
@@ -12,6 +12,16 @@ pub const L2CAP_LE_CREDIT_BASED_CONNECTION_MAX_MPS: u16 = 65_533;
 pub const L2CAP_LE_CREDIT_BASED_CONNECTION_DEFAULT_MTU: u16 = 2048;
 pub const L2CAP_LE_CREDIT_BASED_CONNECTION_DEFAULT_MPS: u16 = 2048;
 pub const L2CAP_LE_CREDIT_BASED_CONNECTION_DEFAULT_INITIAL_CREDITS: u16 = 256;
+pub const L2CAP_LE_U_DYNAMIC_CID_RANGE_START: u16 = 0x0040;
+pub const L2CAP_LE_U_DYNAMIC_CID_RANGE_END: u16 = 0x007F;
+pub const L2CAP_LE_PSM_DYNAMIC_RANGE_START: u16 = 0x0080;
+pub const L2CAP_LE_PSM_DYNAMIC_RANGE_END: u16 = 0x00FF;
+
+pub const LE_CONNECTION_SUCCESSFUL: u16 = 0x0000;
+pub const LE_CONNECTION_REFUSED_PSM_NOT_SUPPORTED: u16 = 0x0002;
+pub const LE_CONNECTION_REFUSED_NO_RESOURCES: u16 = 0x0004;
+pub const LE_CONNECTION_REFUSED_SOURCE_CID_ALREADY_ALLOCATED: u16 = 0x000A;
+pub const LE_CONNECTION_REFUSED_UNACCEPTABLE_PARAMETERS: u16 = 0x000B;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LeCreditBasedChannelSpec {
@@ -52,6 +62,7 @@ impl LeCreditBasedChannelSpec {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LeCreditBasedChannelState {
     Connected,
+    Disconnecting,
     Disconnected,
 }
 
@@ -216,12 +227,26 @@ impl LeCreditBasedChannel {
 
     pub fn disconnect(&mut self) -> Result<()> {
         self.ensure_connected()?;
+        self.begin_disconnect();
+        self.complete_disconnect();
+        Ok(())
+    }
+
+    fn begin_disconnect(&mut self) {
+        self.state = LeCreditBasedChannelState::Disconnecting;
+        self.flush();
+    }
+
+    fn complete_disconnect(&mut self) {
         self.state = LeCreditBasedChannelState::Disconnected;
+        self.flush();
+    }
+
+    fn flush(&mut self) {
         self.output_stream.clear();
         self.output_sdu.clear();
         self.outbound_pdus.clear();
         self.reset_input();
-        Ok(())
     }
 
     fn ensure_connected(&self) -> Result<()> {
@@ -255,5 +280,424 @@ impl LeCreditBasedChannel {
     fn reset_input(&mut self) {
         self.input_sdu.clear();
         self.input_sdu_length = None;
+    }
+}
+
+#[derive(Clone, Debug)]
+struct PendingConnection {
+    psm: u16,
+    source_cid: u16,
+    spec: LeCreditBasedChannelSpec,
+}
+
+/// A sans-I/O manager for one LE logical link. Relay polled PDUs to another
+/// manager to run complete connection, transfer, credit, and disconnect flows.
+#[derive(Debug, Default)]
+pub struct LeCreditChannelManager {
+    servers: BTreeMap<u16, LeCreditBasedChannelSpec>,
+    channels: BTreeMap<u16, LeCreditBasedChannel>,
+    pending: BTreeMap<u8, PendingConnection>,
+    connection_results: BTreeMap<u16, u16>,
+    accepted_channels: VecDeque<u16>,
+    outbound: VecDeque<L2capPdu>,
+    identifier: u8,
+}
+
+impl LeCreditChannelManager {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn register_server(&mut self, mut spec: LeCreditBasedChannelSpec) -> Result<u16> {
+        spec.validate()?;
+        let psm = match spec.psm {
+            Some(0) => return Err(Error::InvalidPacket("LE PSM cannot be zero".into())),
+            Some(psm) => psm,
+            None => (L2CAP_LE_PSM_DYNAMIC_RANGE_START..=L2CAP_LE_PSM_DYNAMIC_RANGE_END)
+                .find(|candidate| !self.servers.contains_key(candidate))
+                .ok_or_else(|| Error::InvalidPacket("no free LE PSM".into()))?,
+        };
+        if self.servers.contains_key(&psm) {
+            return Err(Error::InvalidPacket(format!(
+                "LE PSM {psm:#06x} is already in use"
+            )));
+        }
+        spec.psm = Some(psm);
+        self.servers.insert(psm, spec);
+        Ok(psm)
+    }
+
+    pub fn unregister_server(&mut self, psm: u16) -> bool {
+        self.servers.remove(&psm).is_some()
+    }
+
+    pub fn connect(&mut self, psm: u16, mut spec: LeCreditBasedChannelSpec) -> Result<u16> {
+        if psm == 0 {
+            return Err(Error::InvalidPacket("LE PSM cannot be zero".into()));
+        }
+        spec.validate()?;
+        spec.psm = Some(psm);
+        let source_cid = self.allocate_cid()?;
+        let identifier = self.next_identifier();
+        self.pending.insert(
+            identifier,
+            PendingConnection {
+                psm,
+                source_cid,
+                spec,
+            },
+        );
+        self.queue_control(ControlFrame::LeCreditBasedConnectionRequest {
+            identifier,
+            le_psm: psm,
+            source_cid,
+            mtu: spec.mtu,
+            mps: spec.mps,
+            initial_credits: spec.max_credits,
+        });
+        Ok(source_cid)
+    }
+
+    pub fn channel(&self, source_cid: u16) -> Option<&LeCreditBasedChannel> {
+        self.channels.get(&source_cid)
+    }
+
+    pub fn channel_mut(&mut self, source_cid: u16) -> Option<&mut LeCreditBasedChannel> {
+        self.channels.get_mut(&source_cid)
+    }
+
+    pub fn connection_result(&self, source_cid: u16) -> Option<u16> {
+        self.connection_results.get(&source_cid).copied()
+    }
+
+    pub fn poll_accepted_channel(&mut self) -> Option<u16> {
+        self.accepted_channels.pop_front()
+    }
+
+    pub fn poll_outbound(&mut self) -> Option<L2capPdu> {
+        self.outbound.pop_front()
+    }
+
+    pub fn drain_outbound(&mut self) -> Vec<L2capPdu> {
+        self.outbound.drain(..).collect()
+    }
+
+    pub fn process_pdu(&mut self, pdu: L2capPdu) -> Result<()> {
+        if pdu.cid == L2CAP_LE_SIGNALING_CID {
+            return self.process_control(ControlFrame::from_bytes(&pdu.payload)?);
+        }
+        let source_cid = pdu.cid;
+        self.channels
+            .get_mut(&source_cid)
+            .ok_or_else(|| Error::InvalidPacket(format!("unknown LE CID {source_cid:#06x}")))?
+            .receive_pdu(&pdu.payload)?;
+        self.flush_channel(source_cid)
+    }
+
+    pub fn send(&mut self, source_cid: u16, data: &[u8]) -> Result<()> {
+        self.channels
+            .get_mut(&source_cid)
+            .ok_or_else(|| Error::InvalidPacket(format!("unknown LE CID {source_cid:#06x}")))?
+            .write(data)?;
+        self.flush_channel(source_cid)
+    }
+
+    pub fn disconnect(&mut self, source_cid: u16) -> Result<()> {
+        let destination_cid = {
+            let channel = self
+                .channels
+                .get_mut(&source_cid)
+                .ok_or_else(|| Error::InvalidPacket(format!("unknown LE CID {source_cid:#06x}")))?;
+            channel.ensure_connected()?;
+            channel.begin_disconnect();
+            channel.destination_cid
+        };
+        let identifier = self.next_identifier();
+        self.queue_control(ControlFrame::DisconnectionRequest {
+            identifier,
+            destination_cid,
+            source_cid,
+        });
+        Ok(())
+    }
+
+    fn process_control(&mut self, frame: ControlFrame) -> Result<()> {
+        match frame {
+            ControlFrame::LeCreditBasedConnectionRequest {
+                identifier,
+                le_psm,
+                source_cid,
+                mtu,
+                mps,
+                initial_credits,
+            } => self.on_connection_request(
+                identifier,
+                le_psm,
+                source_cid,
+                mtu,
+                mps,
+                initial_credits,
+            ),
+            ControlFrame::LeCreditBasedConnectionResponse {
+                identifier,
+                destination_cid,
+                mtu,
+                mps,
+                initial_credits,
+                result,
+            } => self.on_connection_response(
+                identifier,
+                destination_cid,
+                mtu,
+                mps,
+                initial_credits,
+                result,
+            ),
+            ControlFrame::LeFlowControlCredit { cid, credits, .. } => {
+                let source_cid = self
+                    .channels
+                    .iter()
+                    .find_map(|(source, channel)| {
+                        (channel.destination_cid == cid).then_some(*source)
+                    })
+                    .ok_or_else(|| {
+                        Error::InvalidPacket(format!("unknown credit CID {cid:#06x}"))
+                    })?;
+                self.channels
+                    .get_mut(&source_cid)
+                    .expect("channel was just found")
+                    .add_credits(credits)?;
+                self.flush_channel(source_cid)
+            }
+            ControlFrame::DisconnectionRequest {
+                identifier,
+                destination_cid,
+                source_cid,
+            } => self.on_disconnection_request(identifier, destination_cid, source_cid),
+            ControlFrame::DisconnectionResponse {
+                destination_cid,
+                source_cid,
+                ..
+            } => self.on_disconnection_response(destination_cid, source_cid),
+            _ => Ok(()),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn on_connection_request(
+        &mut self,
+        identifier: u8,
+        psm: u16,
+        remote_cid: u16,
+        peer_mtu: u16,
+        peer_mps: u16,
+        credits: u16,
+    ) -> Result<()> {
+        let Some(spec) = self.servers.get(&psm).copied() else {
+            self.queue_connection_response(
+                identifier,
+                0,
+                LeCreditBasedChannelSpec::default(),
+                0,
+                LE_CONNECTION_REFUSED_PSM_NOT_SUPPORTED,
+            );
+            return Ok(());
+        };
+        if self
+            .channels
+            .values()
+            .any(|channel| channel.destination_cid == remote_cid)
+        {
+            self.queue_connection_response(
+                identifier,
+                0,
+                spec,
+                0,
+                LE_CONNECTION_REFUSED_SOURCE_CID_ALREADY_ALLOCATED,
+            );
+            return Ok(());
+        }
+        if peer_mtu < L2CAP_LE_CREDIT_BASED_CONNECTION_MIN_MTU
+            || !(L2CAP_LE_CREDIT_BASED_CONNECTION_MIN_MPS
+                ..=L2CAP_LE_CREDIT_BASED_CONNECTION_MAX_MPS)
+                .contains(&peer_mps)
+        {
+            self.queue_connection_response(
+                identifier,
+                0,
+                spec,
+                0,
+                LE_CONNECTION_REFUSED_UNACCEPTABLE_PARAMETERS,
+            );
+            return Ok(());
+        }
+        let local_cid = match self.allocate_cid() {
+            Ok(cid) => cid,
+            Err(_) => {
+                self.queue_connection_response(
+                    identifier,
+                    0,
+                    spec,
+                    0,
+                    LE_CONNECTION_REFUSED_NO_RESOURCES,
+                );
+                return Ok(());
+            }
+        };
+        let channel = LeCreditBasedChannel::connected(
+            psm, local_cid, remote_cid, spec, peer_mtu, peer_mps, credits,
+        )?;
+        self.channels.insert(local_cid, channel);
+        self.accepted_channels.push_back(local_cid);
+        self.queue_connection_response(
+            identifier,
+            local_cid,
+            spec,
+            spec.max_credits,
+            LE_CONNECTION_SUCCESSFUL,
+        );
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn on_connection_response(
+        &mut self,
+        identifier: u8,
+        destination_cid: u16,
+        peer_mtu: u16,
+        peer_mps: u16,
+        credits: u16,
+        result: u16,
+    ) -> Result<()> {
+        let pending = self.pending.remove(&identifier).ok_or_else(|| {
+            Error::InvalidPacket(format!("unknown LE connection response ID {identifier}"))
+        })?;
+        self.connection_results.insert(pending.source_cid, result);
+        if result != LE_CONNECTION_SUCCESSFUL {
+            return Ok(());
+        }
+        if destination_cid == 0 {
+            return Err(Error::InvalidPacket(
+                "successful response has zero destination CID".into(),
+            ));
+        }
+        let channel = LeCreditBasedChannel::connected(
+            pending.psm,
+            pending.source_cid,
+            destination_cid,
+            pending.spec,
+            peer_mtu,
+            peer_mps,
+            credits,
+        )?;
+        self.channels.insert(pending.source_cid, channel);
+        Ok(())
+    }
+
+    fn on_disconnection_request(
+        &mut self,
+        identifier: u8,
+        destination_cid: u16,
+        source_cid: u16,
+    ) -> Result<()> {
+        let mut channel = self.channels.remove(&destination_cid).ok_or_else(|| {
+            Error::InvalidPacket(format!("unknown disconnect CID {destination_cid:#06x}"))
+        })?;
+        if channel.destination_cid != source_cid {
+            self.channels.insert(destination_cid, channel);
+            return Err(Error::InvalidPacket("disconnect CID pair mismatch".into()));
+        }
+        channel.complete_disconnect();
+        self.queue_control(ControlFrame::DisconnectionResponse {
+            identifier,
+            destination_cid,
+            source_cid,
+        });
+        Ok(())
+    }
+
+    fn on_disconnection_response(&mut self, destination_cid: u16, source_cid: u16) -> Result<()> {
+        let mut channel = self.channels.remove(&source_cid).ok_or_else(|| {
+            Error::InvalidPacket(format!("unknown disconnect response CID {source_cid:#06x}"))
+        })?;
+        if channel.destination_cid != destination_cid
+            || channel.state != LeCreditBasedChannelState::Disconnecting
+        {
+            self.channels.insert(source_cid, channel);
+            return Err(Error::InvalidPacket(
+                "unexpected disconnect response".into(),
+            ));
+        }
+        channel.complete_disconnect();
+        Ok(())
+    }
+
+    fn queue_connection_response(
+        &mut self,
+        identifier: u8,
+        destination_cid: u16,
+        spec: LeCreditBasedChannelSpec,
+        initial_credits: u16,
+        result: u16,
+    ) {
+        self.queue_control(ControlFrame::LeCreditBasedConnectionResponse {
+            identifier,
+            destination_cid,
+            mtu: spec.mtu,
+            mps: spec.mps,
+            initial_credits,
+            result,
+        });
+    }
+
+    fn flush_channel(&mut self, source_cid: u16) -> Result<()> {
+        let channel = self
+            .channels
+            .get_mut(&source_cid)
+            .ok_or_else(|| Error::InvalidPacket(format!("unknown LE CID {source_cid:#06x}")))?;
+        let destination_cid = channel.destination_cid;
+        let mut pdus = Vec::new();
+        while let Some(payload) = channel.poll_outbound_pdu() {
+            pdus.push(L2capPdu::new(destination_cid, payload));
+        }
+        let mut grants = Vec::new();
+        while let Some(credits) = channel.poll_credit_grant() {
+            grants.push((channel.source_cid, credits));
+        }
+        self.outbound.extend(pdus);
+        for (cid, credits) in grants {
+            let identifier = self.next_identifier();
+            self.queue_control(ControlFrame::LeFlowControlCredit {
+                identifier,
+                cid,
+                credits,
+            });
+        }
+        Ok(())
+    }
+
+    fn allocate_cid(&self) -> Result<u16> {
+        (L2CAP_LE_U_DYNAMIC_CID_RANGE_START..=L2CAP_LE_U_DYNAMIC_CID_RANGE_END)
+            .find(|cid| {
+                !self.channels.contains_key(cid)
+                    && !self
+                        .pending
+                        .values()
+                        .any(|pending| pending.source_cid == *cid)
+            })
+            .ok_or_else(|| Error::InvalidPacket("no free LE CID".into()))
+    }
+
+    fn next_identifier(&mut self) -> u8 {
+        self.identifier = self.identifier.wrapping_add(1);
+        if self.identifier == 0 {
+            self.identifier = 1;
+        }
+        self.identifier
+    }
+
+    fn queue_control(&mut self, frame: ControlFrame) {
+        self.outbound
+            .push_back(L2capPdu::new(L2CAP_LE_SIGNALING_CID, frame.to_bytes()));
     }
 }

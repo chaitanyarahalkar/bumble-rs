@@ -13,8 +13,8 @@
 //! every upstream signaling control frame, and a synchronous Classic channel
 //! manager with a [`ControlFrame::Generic`] fallback for extension codes.
 //!
-//! Deferred to later slices: enhanced-retransmission control fields, manager
-//! wiring for the LE credit-based channel engine, and ACL
+//! Deferred to later slices: enhanced credit-based multi-channel/reconfigure
+//! runtime, enhanced-retransmission control fields, and ACL
 //! fragmentation-and-reassembly logic.
 
 use core::fmt;
@@ -29,11 +29,15 @@ pub use classic::{
 };
 pub use le_credit::{
     LeCreditBasedChannel, LeCreditBasedChannelSpec, LeCreditBasedChannelState,
-    L2CAP_LE_CREDIT_BASED_CONNECTION_DEFAULT_INITIAL_CREDITS,
+    LeCreditChannelManager, L2CAP_LE_CREDIT_BASED_CONNECTION_DEFAULT_INITIAL_CREDITS,
     L2CAP_LE_CREDIT_BASED_CONNECTION_DEFAULT_MPS, L2CAP_LE_CREDIT_BASED_CONNECTION_DEFAULT_MTU,
     L2CAP_LE_CREDIT_BASED_CONNECTION_MAX_CREDITS, L2CAP_LE_CREDIT_BASED_CONNECTION_MAX_MPS,
     L2CAP_LE_CREDIT_BASED_CONNECTION_MAX_MTU, L2CAP_LE_CREDIT_BASED_CONNECTION_MIN_MPS,
-    L2CAP_LE_CREDIT_BASED_CONNECTION_MIN_MTU,
+    L2CAP_LE_CREDIT_BASED_CONNECTION_MIN_MTU, L2CAP_LE_PSM_DYNAMIC_RANGE_END,
+    L2CAP_LE_PSM_DYNAMIC_RANGE_START, L2CAP_LE_U_DYNAMIC_CID_RANGE_END,
+    L2CAP_LE_U_DYNAMIC_CID_RANGE_START, LE_CONNECTION_REFUSED_NO_RESOURCES,
+    LE_CONNECTION_REFUSED_PSM_NOT_SUPPORTED, LE_CONNECTION_REFUSED_SOURCE_CID_ALREADY_ALLOCATED,
+    LE_CONNECTION_REFUSED_UNACCEPTABLE_PARAMETERS, LE_CONNECTION_SUCCESSFUL,
 };
 
 /// L2CAP signaling command codes (Vol 3, Part A - 4).

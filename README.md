@@ -72,7 +72,8 @@ crate whose behavior is verified against the upstream Python.
 | 55. Complete Python 3.14 packed-value compatibility | `bumble-gatt` | ✅ native/half/complex oracle green |
 | 56. Complete L2CAP signaling control-frame catalog | `bumble-l2cap` | ✅ all upstream dataclasses typed |
 | 57. LE credit-based channel segmentation and credit engine | `bumble-l2cap` | ✅ MTU/MPS/credit/reassembly green |
-| 58+. Remaining modules… | — | planned |
+| 58. Paired LE credit-based channel manager runtime | `bumble-l2cap` | ✅ connect/transfer/replenish/disconnect green |
+| 59+. Remaining modules… | — | planned |
 
 The LE lifecycle is now complete end-to-end through library APIs: **connect →
 discover → read/write → notify → disconnect** between two virtual devices — and
@@ -133,7 +134,7 @@ size, to convey remaining surface.
 ### L2CAP
 | Upstream (LOC) | Rust crate | Status | Notes |
 |---|---|---|---|
-| `l2cap.py` (3.1k) | `bumble-l2cap` | 🟡 | PDU + complete typed upstream signaling-frame catalog + FCS, plus a synchronous Classic connection-oriented `ChannelManager`: valid dynamic PSM/CID allocation, Connection/Configure/Disconnection signaling, MTU option negotiation, PSM refusal, bidirectional basic-mode SDUs, and deterministic server accept. Slice 57 adds the LE credit-based channel engine: validated MTU/MPS/credits, stream-to-SDU/K-frame segmentation, reassembly, replenishment, and violation handling. Deferred: manager-level LE CoC signaling/CID wiring, ACL fragmentation/reassembly, and enhanced retransmission mode. |
+| `l2cap.py` (3.1k) | `bumble-l2cap` | 🟡 | PDU + complete typed upstream signaling-frame catalog + FCS, synchronous Classic connection-oriented channels, and a paired LE CoC runtime. Classic covers dynamic PSM/CID allocation, Connection/Configure/Disconnection, MTU negotiation/refusal, and bidirectional basic-mode SDUs. LE covers dynamic LE_PSM/CIDs, negotiation/refusal, MTU/MPS segmentation/reassembly, credit stalls/replenishment, accepted channels, bidirectional transfer, and disconnect cleanup. Deferred: ACL fragmentation/reassembly, enhanced retransmission mode, and enhanced credit-based multi-channel/reconfigure runtime. |
 
 ### ATT / GATT
 | Upstream (LOC) | Rust crate | Status | Notes |
@@ -1301,6 +1302,27 @@ with LE credit-based channel credit accounting and SDU segmentation/reassembly.
 
 The next slice wires this engine into LE signaling, deterministic CID/PSM
 allocation, server acceptance, data routing, and disconnect handling.
+
+## Slice 58 — what's here
+
+`LeCreditChannelManager` completes the single-channel LE CoC runtime:
+
+- Servers allocate LE_PSMs deterministically from `0x0080..=0x00FF`; channels
+  allocate local CIDs from `0x0040..=0x007F` while excluding active and pending
+  connections. Explicit duplicates and exhausted pools fail.
+- Outgoing requests correlate responses by nonzero signaling identifier.
+  Incoming requests return spec result codes for unsupported PSMs, duplicate
+  peer CIDs, unacceptable MTU/MPS, and exhausted resources, or create and queue
+  an accepted server channel.
+- Data PDUs route by local CID into the Slice 57 engine. Generated K-frames go
+  to the peer CID, and half-window replenishments become LE Flow Control Credit
+  frames addressed to the correct remote channel.
+- Paired-manager tests transfer hundreds of bytes in both directions with a
+  one-credit window, forcing repeated stalls and resumes. Disconnect request/
+  response validates both CIDs and removes channel state symmetrically.
+
+Remaining L2CAP runtime work is enhanced credit-based multi-channel/reconfigure,
+ERTM, and host-level ACL fragmentation/reassembly.
 
 ## Acceptance
 
