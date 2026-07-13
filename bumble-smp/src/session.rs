@@ -56,6 +56,7 @@ pub struct LegacyPairingOutcome {
     pub method: PairingMethod,
     pub authenticated: bool,
     pub bonding: bool,
+    pub ct2: bool,
     pub maximum_encryption_key_size: u8,
     pub initiator_key_distribution: KeyDistribution,
     pub responder_key_distribution: KeyDistribution,
@@ -83,6 +84,7 @@ pub struct LegacyPairingSession {
     outcome: Option<LegacyPairingOutcome>,
     failure: Option<PairingFailureReason>,
     bonding: bool,
+    ct2: bool,
     maximum_encryption_key_size: u8,
     initiator_key_distribution: KeyDistribution,
     responder_key_distribution: KeyDistribution,
@@ -107,6 +109,7 @@ impl LegacyPairingSession {
         Ok(Self {
             role,
             bonding: config.bonding,
+            ct2: config.ct2,
             maximum_encryption_key_size: config.capabilities.maximum_encryption_key_size,
             initiator_key_distribution: config.capabilities.local_initiator_key_distribution,
             responder_key_distribution: config.capabilities.local_responder_key_distribution,
@@ -255,6 +258,7 @@ impl LegacyPairingSession {
         let mut distribution = KeyDistributionSession::new(KeyDistributionConfig {
             role: self.role,
             secure_connections: false,
+            ct2: outcome.ct2,
             authenticated: outcome.authenticated,
             maximum_encryption_key_size: outcome.maximum_encryption_key_size,
             pairing_ltk: outcome.stk,
@@ -331,6 +335,7 @@ impl LegacyPairingSession {
             return Ok(());
         }
         self.bonding &= AuthReq(features.auth_req).contains(AuthReq::BONDING);
+        self.ct2 &= AuthReq(features.auth_req).contains(AuthReq::CT2);
         self.initiator_key_distribution = self
             .initiator_key_distribution
             .intersection(KeyDistribution(features.initiator_key_distribution));
@@ -393,6 +398,7 @@ impl LegacyPairingSession {
             method,
             authenticated: method != PairingMethod::JustWorks,
             bonding: self.bonding,
+            ct2: self.ct2,
             maximum_encryption_key_size: self.maximum_encryption_key_size,
             initiator_key_distribution: self.initiator_key_distribution,
             responder_key_distribution: self.responder_key_distribution,
@@ -417,6 +423,7 @@ impl LegacyPairingSession {
             return Err(Error::InvalidPacket("encryption key size too small".into()));
         }
         self.bonding &= AuthReq(peer.auth_req).contains(AuthReq::BONDING);
+        self.ct2 &= AuthReq(peer.auth_req).contains(AuthReq::CT2);
         self.initiator_key_distribution = KeyDistribution(peer.initiator_key_distribution)
             .intersection(self.initiator_key_distribution);
         self.responder_key_distribution = KeyDistribution(peer.responder_key_distribution)
@@ -509,7 +516,7 @@ impl LegacyPairingSession {
                 false,
                 self.config.mitm,
                 false,
-                false,
+                self.config.ct2,
             )
             .0,
             maximum_encryption_key_size: self.config.capabilities.maximum_encryption_key_size,

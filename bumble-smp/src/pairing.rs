@@ -96,6 +96,14 @@ impl AuthReq {
     }
 }
 
+impl core::ops::BitOr for AuthReq {
+    type Output = Self;
+
+    fn bitor(self, rhs: Self) -> Self::Output {
+        Self(self.0 | rhs.0)
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PairingMethod {
     JustWorks,
@@ -356,6 +364,7 @@ pub enum IdentityAddressType {
 
 pub struct PairingConfig {
     pub secure_connections: bool,
+    pub ct2: bool,
     pub mitm: bool,
     pub bonding: bool,
     pub capabilities: PairingCapabilities,
@@ -373,6 +382,7 @@ impl Default for PairingConfig {
     fn default() -> Self {
         Self {
             secure_connections: true,
+            ct2: false,
             mitm: true,
             bonding: true,
             capabilities: PairingCapabilities::default(),

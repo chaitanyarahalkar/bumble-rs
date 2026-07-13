@@ -71,6 +71,7 @@ fn config(
 ) -> PairingConfig {
     PairingConfig {
         secure_connections: false,
+        ct2: false,
         mitm,
         bonding: true,
         capabilities: PairingCapabilities {

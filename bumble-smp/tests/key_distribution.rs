@@ -25,6 +25,15 @@ fn pair(
     initiator_flags: KeyDistribution,
     responder_flags: KeyDistribution,
 ) -> (KeyDistributionSession, KeyDistributionSession) {
+    pair_with_ct2(secure_connections, false, initiator_flags, responder_flags)
+}
+
+fn pair_with_ct2(
+    secure_connections: bool,
+    ct2: bool,
+    initiator_flags: KeyDistribution,
+    responder_flags: KeyDistribution,
+) -> (KeyDistributionSession, KeyDistributionSession) {
     let initiator_address = address("C4:F2:17:1A:1D:AA");
     let responder_address = address("C4:F2:17:1A:1D:BB");
     let common = [0x55; 16];
@@ -32,6 +41,7 @@ fn pair(
         KeyDistributionSession::new(KeyDistributionConfig {
             role: PairingRole::Initiator,
             secure_connections,
+            ct2,
             authenticated: true,
             maximum_encryption_key_size: 16,
             pairing_ltk: common,
@@ -43,6 +53,7 @@ fn pair(
         KeyDistributionSession::new(KeyDistributionConfig {
             role: PairingRole::Responder,
             secure_connections,
+            ct2,
             authenticated: true,
             maximum_encryption_key_size: 16,
             pairing_ltk: common,
@@ -165,6 +176,20 @@ fn secure_connections_skips_legacy_ltk_pdus_and_derives_link_key() {
     assert_eq!(
         keys.link_key.unwrap().value,
         derive_link_key(&[0x55; 16], false)
+    );
+}
+
+#[test]
+fn negotiated_ct2_selects_h7_ctkd() {
+    let flags = KeyDistribution::LINK_KEY;
+    let (mut initiator, mut responder) = pair_with_ct2(true, true, flags, flags);
+    initiator.mark_encrypted();
+    responder.mark_encrypted();
+    relay(&mut initiator, &mut responder);
+    let keys = initiator.pairing_keys().unwrap();
+    assert_eq!(
+        keys.link_key.unwrap().value,
+        derive_link_key(&[0x55; 16], true)
     );
 }
 

@@ -83,7 +83,8 @@ crate whose behavior is verified against the upstream Python.
 | 66. Live SC JustWorks and Numeric Comparison session | `bumble-smp`, `bumble-host` | ✅ ECDH/confirm/DHKey-check/encryption green |
 | 67. SC Passkey and OOB association models | `bumble-smp` | ✅ 20 rounds + C/R validation green |
 | 68. Encrypted SMP key distribution and bond persistence | `bumble-smp`, `bumble` | ✅ responder-first phase 3 + stores green |
-| 69+. Remaining modules… | — | planned |
+| 69. CT2 negotiation and bonded Security Request reconnect | `bumble-smp`, `bumble-host` | ✅ h7 + live reuse green |
+| 70+. Remaining modules… | — | planned |
 
 The LE lifecycle is now complete end-to-end through library APIs: **connect →
 discover → read/write → notify → disconnect** between two virtual devices — and
@@ -158,7 +159,7 @@ size, to convey remaining surface.
 | Upstream (LOC) | Rust crate | Status | Notes |
 |---|---|---|---|
 | `crypto/` | `bumble-crypto` | ✅ | All SMP **symmetric** security functions — `e`, AES-CMAC, `c1`, `s1`, `f4`/`f5`/`f6`, `g2`, `h6`/`h7`, `ah` — spec/RFC-4493 vector-verified, plus **P-256 `EccKey`** (slice 19: keygen, `from_private_key_bytes`, public-key coordinates, ECDH) oracle-pinned to upstream. Deferred: none of the crypto primitives. |
-| `smp.py` (2.0k), `pairing.py` (0.3k) | `bumble-smp` | 🟡 | PDU codec (incl. all **LE Secure Connections** PDUs), live Legacy and SC sessions covering every association model through host/controller encryption, responder-first encrypted key distribution, SC LTK handling, peer identity/signing keys, h6 CTKD link keys, and memory/JSON bond persistence. Also includes the complete method matrix, auth/key-distribution policy, and SC + Legacy OOB contexts/AD interchange. Deferred: CT2 negotiation, security-request/re-pairing management, and signed-data counters. |
+| `smp.py` (2.0k), `pairing.py` (0.3k) | `bumble-smp` | 🟡 | PDU codec (incl. all **LE Secure Connections** PDUs), live Legacy and SC sessions covering every association model through host/controller encryption, responder-first encrypted key distribution, SC LTK handling, peer identity/signing keys, negotiated h6/h7 CTKD, memory/JSON bond persistence, and Security Request evaluation/reconnect through stored role-correct keys. Also includes the complete method matrix, auth/key-distribution policy, and SC + Legacy OOB contexts/AD interchange. Deferred: automatic pairing-manager lifecycle, privacy resolution integration, and signed-data counters. |
 
 ### Transports & drivers
 | Upstream | Rust crate | Status | Notes |
@@ -1571,8 +1572,8 @@ SMP phase 3 now runs after the controller reports that the link is encrypted:
   `SIGN_KEY`. Distribution PDUs may arrive in any order, matching Bumble's
   expected-command-set behavior.
 - Secure Connections uses its derived shared LTK and deliberately suppresses
-  legacy ENC_INFO/MASTER_ID PDUs. Negotiated `LINK_KEY` produces the h6 CTKD
-  link key (the currently advertised CT2 bit remains disabled).
+  legacy ENC_INFO/MASTER_ID PDUs. Negotiated `LINK_KEY` produces a CTKD link
+  key, using h6 or h7 according to the CT2 result described below.
 - Completed sessions expose Bumble-compatible `PairingKeys`: SC uses the shared
   `ltk`; Legacy preserves central/peripheral LTK, EDIV, and RAND direction; peer
   IRK/CSRK and the peer identity address are retained with authentication state.
@@ -1582,8 +1583,27 @@ SMP phase 3 now runs after the controller reports that the link is encrypted:
   Legacy directional material, SC suppression and CTKD, persistence/readback,
   malformed phase ordering, and live Legacy/SC distribution over host ACL/L2CAP.
 
-The remaining SMP work is CT2 negotiation, Security Request/re-pairing manager
-behavior, privacy resolution integration, and signed-data counters.
+## Slice 69 — what's here
+
+Persisted bonds now participate in subsequent connection security:
+
+- `PairingConfig::ct2` is advertised in AuthReq and remains enabled only when
+  both pairing peers set CT2. The negotiated result is retained in both Legacy
+  and SC outcomes and drives h7 CTKD; otherwise the existing h6 path is used.
+- A peripheral can emit a typed Security Request, and `Device` surfaces its
+  AuthReq while preserving the raw SMP PDU for normal fixed-channel consumers.
+- `security_request_action` evaluates a retrieved `PairingKeys` record. SC and
+  MITM requirements must be met by the stored key; missing, malformed, weaker,
+  or Legacy-only material requests fresh pairing rather than downgrading.
+- SC reconnects select the shared LTK. Legacy reconnects select
+  `ltk_central`/`ltk_peripheral` from the local role and preserve EDIV/RAND in
+  the HCI LE Enable Encryption command.
+- The live host test sends Security Request over SMP/L2CAP/ACL, observes it on
+  the central, selects an authenticated SC bond, and reaches encrypted state on
+  both controllers without running a new pairing exchange.
+
+The remaining SMP work is an automatic multi-connection pairing manager,
+privacy-resolution integration, and signed-write CSRK counters.
 
 ## Acceptance
 

@@ -88,6 +88,7 @@ fn delegate(accept: bool, approve: bool) -> (Box<dyn PairingDelegate>, Arc<Mutex
 fn config(io: IoCapability, mitm: bool, key_size: u8) -> PairingConfig {
     PairingConfig {
         secure_connections: true,
+        ct2: false,
         mitm,
         bonding: true,
         capabilities: PairingCapabilities {
@@ -435,5 +436,49 @@ fn tampered_sc_oob_confirmation_is_rejected_at_public_key_exchange() {
     assert_eq!(
         initiator.failure(),
         Some(PairingFailureReason::ConfirmValueFailed)
+    );
+}
+
+#[test]
+fn ct2_is_negotiated_and_used_for_link_key_distribution() {
+    let (initiator_delegate, _) = delegate(true, true);
+    let (responder_delegate, _) = delegate(true, true);
+    let mut initiator_config = config(IoCapability::NoInputNoOutput, false, 16);
+    initiator_config.ct2 = true;
+    initiator_config
+        .capabilities
+        .local_initiator_key_distribution = KeyDistribution::ALL;
+    initiator_config
+        .capabilities
+        .local_responder_key_distribution = KeyDistribution::ALL;
+    let mut responder_config = config(IoCapability::NoInputNoOutput, false, 16);
+    responder_config.ct2 = true;
+    responder_config
+        .capabilities
+        .local_initiator_key_distribution = KeyDistribution::ALL;
+    responder_config
+        .capabilities
+        .local_responder_key_distribution = KeyDistribution::ALL;
+    let (mut initiator, mut responder) = sessions(
+        initiator_config,
+        responder_config,
+        initiator_delegate,
+        responder_delegate,
+    );
+    initiator.start().unwrap();
+    relay(&mut initiator, &mut responder);
+    assert!(initiator.outcome().unwrap().ct2);
+    assert!(responder.outcome().unwrap().ct2);
+    initiator.mark_encrypted().unwrap();
+    responder.mark_encrypted().unwrap();
+    relay(&mut initiator, &mut responder);
+    let expected = bumble_smp::derive_link_key(&initiator.ltk().unwrap(), true);
+    assert_eq!(
+        initiator.pairing_keys().unwrap().link_key.unwrap().value,
+        expected
+    );
+    assert_eq!(
+        responder.pairing_keys().unwrap().link_key.unwrap().value,
+        expected
     );
 }

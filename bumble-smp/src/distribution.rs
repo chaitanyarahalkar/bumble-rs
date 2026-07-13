@@ -56,6 +56,7 @@ enum DistributionKind {
 pub struct KeyDistributionConfig {
     pub role: PairingRole,
     pub secure_connections: bool,
+    pub ct2: bool,
     pub authenticated: bool,
     pub maximum_encryption_key_size: u8,
     pub pairing_ltk: [u8; 16],
@@ -245,7 +246,10 @@ impl KeyDistributionSession {
             }
         }
         if self.config.secure_connections && local_flags.contains(KeyDistribution::LINK_KEY) {
-            keys.link_key = Some(key(derive_link_key(&self.config.pairing_ltk, false)));
+            keys.link_key = Some(key(derive_link_key(
+                &self.config.pairing_ltk,
+                self.config.ct2,
+            )));
         }
         Some(keys)
     }

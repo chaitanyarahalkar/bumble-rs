@@ -41,6 +41,8 @@ pub use data_queue::{DataPacketQueue, DataPacketQueueError};
 
 /// The fixed L2CAP channel id for the Attribute Protocol.
 pub const ATT_CID: u16 = 0x0004;
+/// The fixed L2CAP channel id for LE SMP.
+pub const SMP_CID: u16 = 0x0006;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SynchronousConnectionInfo {
@@ -63,6 +65,7 @@ pub struct Device {
     inbox: Vec<AttPdu>,
     /// Received payloads on non-ATT L2CAP channels, as `(cid, payload)`.
     l2cap_inbox: Vec<(u16, Vec<u8>)>,
+    security_requests: Vec<u8>,
     acl_data_packet_length: usize,
     acl_assemblers: BTreeMap<u16, AclDataPacketAssembler>,
     acl_packet_queue: DataPacketQueue<AclDataPacket>,
@@ -82,6 +85,7 @@ impl Device {
             synchronous_inbox: Vec::new(),
             inbox: Vec::new(),
             l2cap_inbox: Vec::new(),
+            security_requests: Vec::new(),
             acl_data_packet_length: 27,
             acl_assemblers: BTreeMap::new(),
             acl_packet_queue: DataPacketQueue::new(64).expect("nonzero ACL queue capacity"),
@@ -102,6 +106,7 @@ impl Device {
             synchronous_inbox: Vec::new(),
             inbox: Vec::new(),
             l2cap_inbox: Vec::new(),
+            security_requests: Vec::new(),
             acl_data_packet_length: 27,
             acl_assemblers: BTreeMap::new(),
             acl_packet_queue: DataPacketQueue::new(64).expect("nonzero ACL queue capacity"),
@@ -131,6 +136,18 @@ impl Device {
     /// Enable LE encryption with a pairing-derived STK/LTK. The peer receives
     /// the corresponding LL encryption request through the virtual link.
     pub fn enable_encryption(&mut self, link: &mut LocalLink, key: [u8; 16]) -> bool {
+        self.enable_encryption_with_parameters(link, key, 0, [0; 8])
+    }
+
+    /// Enable LE encryption from a persisted Legacy or SC bond. Legacy bonds
+    /// preserve their EDIV/RAND metadata; SC bonds pass zero values.
+    pub fn enable_encryption_with_parameters(
+        &mut self,
+        link: &mut LocalLink,
+        key: [u8; 16],
+        encrypted_diversifier: u16,
+        random_number: [u8; 8],
+    ) -> bool {
         let Some(connection_handle) = self.connection_handle else {
             return false;
         };
@@ -138,8 +155,8 @@ impl Device {
             link,
             Command::LeEnableEncryption {
                 connection_handle,
-                random_number: [0; 8],
-                encrypted_diversifier: 0,
+                random_number,
+                encrypted_diversifier,
                 long_term_key: key,
             },
         );
@@ -301,6 +318,12 @@ impl Device {
         matching.into_iter().map(|(_, payload)| payload).collect()
     }
 
+    /// Remove Security Request authentication bitmasks observed on the SMP
+    /// fixed channel. The raw PDU remains available through [`Self::take_l2cap`].
+    pub fn take_security_requests(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.security_requests)
+    }
+
     /// Send an unsolicited Handle Value Notification for `value_handle` to the
     /// peer (server → client). The peer collects it from its inbox.
     pub fn notify(&mut self, link: &mut LocalLink, value_handle: u16, value: Vec<u8>) -> bool {
@@ -423,6 +446,9 @@ impl Device {
         };
         // Non-ATT channels (e.g. SMP on 0x0006) are queued raw for the caller.
         if l2cap.cid != ATT_CID {
+            if l2cap.cid == SMP_CID && l2cap.payload.len() == 2 && l2cap.payload[0] == 0x0B {
+                self.security_requests.push(l2cap.payload[1]);
+            }
             self.l2cap_inbox.push((l2cap.cid, l2cap.payload));
             return;
         }

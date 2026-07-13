@@ -37,6 +37,7 @@ pub struct ScPairingOutcome {
     pub method: PairingMethod,
     pub authenticated: bool,
     pub bonding: bool,
+    pub ct2: bool,
     pub maximum_encryption_key_size: u8,
     pub initiator_key_distribution: KeyDistribution,
     pub responder_key_distribution: KeyDistribution,
@@ -67,6 +68,7 @@ pub struct ScPairingSession {
     outcome: Option<ScPairingOutcome>,
     failure: Option<PairingFailureReason>,
     bonding: bool,
+    ct2: bool,
     maximum_encryption_key_size: u8,
     initiator_key_distribution: KeyDistribution,
     responder_key_distribution: KeyDistribution,
@@ -105,6 +107,7 @@ impl ScPairingSession {
         Ok(Self {
             role,
             bonding: config.bonding,
+            ct2: config.ct2,
             maximum_encryption_key_size: config.capabilities.maximum_encryption_key_size,
             initiator_key_distribution: config.capabilities.local_initiator_key_distribution,
             responder_key_distribution: config.capabilities.local_responder_key_distribution,
@@ -270,6 +273,7 @@ impl ScPairingSession {
         let mut distribution = KeyDistributionSession::new(KeyDistributionConfig {
             role: self.role,
             secure_connections: true,
+            ct2: outcome.ct2,
             authenticated: outcome.authenticated,
             maximum_encryption_key_size: outcome.maximum_encryption_key_size,
             pairing_ltk: outcome.ltk,
@@ -643,6 +647,7 @@ impl ScPairingSession {
             method,
             authenticated: method != PairingMethod::JustWorks,
             bonding: self.bonding,
+            ct2: self.ct2,
             maximum_encryption_key_size: self.maximum_encryption_key_size,
             initiator_key_distribution: self.initiator_key_distribution,
             responder_key_distribution: self.responder_key_distribution,
@@ -678,6 +683,7 @@ impl ScPairingSession {
             return Err(Error::InvalidPacket("encryption key size too small".into()));
         }
         self.bonding &= AuthReq(peer.auth_req).contains(AuthReq::BONDING);
+        self.ct2 &= AuthReq(peer.auth_req).contains(AuthReq::CT2);
         self.initiator_key_distribution = self
             .initiator_key_distribution
             .intersection(KeyDistribution(peer.initiator_key_distribution));
@@ -760,7 +766,7 @@ impl ScPairingSession {
                 true,
                 self.config.mitm,
                 false,
-                false,
+                self.config.ct2,
             )
             .0,
             maximum_encryption_key_size: self.config.capabilities.maximum_encryption_key_size,

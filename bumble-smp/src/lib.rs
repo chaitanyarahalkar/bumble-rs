@@ -29,8 +29,9 @@
 //! Comparison, 20-round Passkey, and SC OOB orchestration through DHKey checks.
 //! [`KeyDistributionSession`] adds responder-first encrypted phase-3 key
 //! distribution, Bumble-compatible bond assembly, and key-store persistence.
-//! Deferred: CT2 negotiation, Security Request/re-pairing management, and
-//! signed-data counters.
+//! [`security_request_action`] adds CT2-aware stored-bond evaluation for
+//! Security Request reconnects. Deferred: the automatic multi-connection
+//! pairing manager, privacy resolution, and signed-data counters.
 
 use bumble::Address;
 use core::fmt;
@@ -38,6 +39,7 @@ use core::fmt;
 pub mod distribution;
 pub mod pairing;
 pub mod sc_session;
+pub mod security;
 pub mod session;
 
 pub use distribution::{
@@ -50,6 +52,9 @@ pub use pairing::{
     PairingDelegate, PairingMethod, PairingMethodSelection,
 };
 pub use sc_session::{ScPairingOutcome, ScPairingSession, ScPairingState};
+pub use security::{
+    security_request, security_request_action, BondEncryption, SecurityRequestAction,
+};
 pub use session::{
     LegacyPairingOutcome, LegacyPairingSession, PairingFailureReason, PairingRole, PairingState,
 };

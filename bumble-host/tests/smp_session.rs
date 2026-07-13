@@ -1,11 +1,13 @@
+use bumble::keys::{Key, PairingKeys};
 use bumble::{Address, AddressType};
 use bumble_controller::{Controller, LocalLink};
 use bumble_crypto::EccKey;
 use bumble_hci::Command;
 use bumble_host::{pump, Device};
 use bumble_smp::{
-    AcceptAllDelegate, IoCapability, KeyDistribution, LegacyPairingSession, PairingCapabilities,
-    PairingConfig, PairingRole, PairingState, ScPairingSession, ScPairingState, SmpPdu, SMP_CID,
+    security_request, security_request_action, AcceptAllDelegate, AuthReq, IoCapability,
+    KeyDistribution, LegacyPairingSession, PairingCapabilities, PairingConfig, PairingRole,
+    PairingState, ScPairingSession, ScPairingState, SecurityRequestAction, SmpPdu, SMP_CID,
 };
 
 fn address(value: &str) -> Address {
@@ -56,6 +58,7 @@ fn connect(link: &mut LocalLink, central: usize, peripheral: usize) {
 fn config() -> PairingConfig {
     PairingConfig {
         secure_connections: false,
+        ct2: false,
         mitm: false,
         bonding: true,
         capabilities: PairingCapabilities {
@@ -235,4 +238,43 @@ fn live_sc_session_derives_ltk_and_enables_encryption_on_both_hosts() {
     drive_sc_sessions(&mut link, &mut devices, &mut sessions);
     assert_eq!(sessions[0].state(), ScPairingState::Complete);
     assert_eq!(sessions[1].state(), ScPairingState::Complete);
+}
+
+#[test]
+fn security_request_reuses_a_satisfactory_persisted_bond() {
+    let mut link = LocalLink::new();
+    let central = link.add_controller(Controller::new("C", address("00:00:00:00:00:01")));
+    let peripheral = link.add_controller(Controller::new("P", address("00:00:00:00:00:02")));
+    let mut devices = [Device::new(central), Device::new(peripheral)];
+    connect(&mut link, central, peripheral);
+    pump(&mut link, &mut devices);
+
+    let requested = AuthReq::from_booleans(true, true, true, false, true);
+    assert!(devices[1].send_l2cap(&mut link, SMP_CID, &security_request(requested).to_bytes()));
+    pump(&mut link, &mut devices);
+    assert_eq!(devices[0].take_security_requests(), vec![requested.0]);
+
+    let bond = PairingKeys {
+        ltk: Some(Key {
+            value: vec![0xA5; 16],
+            authenticated: true,
+            ediv: None,
+            rand: None,
+        }),
+        ..PairingKeys::default()
+    };
+    let SecurityRequestAction::EnableEncryption(encryption) =
+        security_request_action(requested, PairingRole::Initiator, Some(&bond))
+    else {
+        panic!("stored SC bond should satisfy the request");
+    };
+    assert!(devices[0].enable_encryption_with_parameters(
+        &mut link,
+        encryption.long_term_key,
+        encryption.encrypted_diversifier,
+        encryption.random_number,
+    ));
+    pump(&mut link, &mut devices);
+    assert!(devices[0].is_encrypted());
+    assert!(devices[1].is_encrypted());
 }
