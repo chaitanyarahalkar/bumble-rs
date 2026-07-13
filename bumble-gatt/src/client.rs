@@ -13,7 +13,10 @@ use std::collections::BTreeMap;
 use bumble::Uuid;
 use bumble_att::{AttPdu, SignedWriteSigner};
 
-use crate::{AttRequestHandler, GATT_CHARACTERISTIC_UUID, GATT_PRIMARY_SERVICE_UUID};
+use crate::{
+    AttRequestHandler, GATT_CHARACTERISTIC_UUID, GATT_INCLUDE_UUID, GATT_PRIMARY_SERVICE_UUID,
+    GATT_SECONDARY_SERVICE_UUID,
+};
 
 /// ATT error: attribute not found (ends a discovery iteration).
 const ATT_ATTRIBUTE_NOT_FOUND_ERROR: u8 = 0x0A;
@@ -222,13 +225,31 @@ impl GattClient {
         t: &mut impl AttTransport,
         uuid: &Uuid,
     ) -> Result<Vec<ServiceProxy>> {
+        self.discover_service_by_uuid_with_type(t, uuid, GATT_PRIMARY_SERVICE_UUID)
+    }
+
+    /// Discover a secondary service by UUID using Find By Type Value.
+    pub fn discover_secondary_service_by_uuid(
+        &mut self,
+        t: &mut impl AttTransport,
+        uuid: &Uuid,
+    ) -> Result<Vec<ServiceProxy>> {
+        self.discover_service_by_uuid_with_type(t, uuid, GATT_SECONDARY_SERVICE_UUID)
+    }
+
+    fn discover_service_by_uuid_with_type(
+        &mut self,
+        t: &mut impl AttTransport,
+        uuid: &Uuid,
+        service_type: u16,
+    ) -> Result<Vec<ServiceProxy>> {
         let mut services = Vec::new();
         let mut starting_handle: u16 = 0x0001;
         loop {
             let response = t.request(&AttPdu::FindByTypeValueRequest {
                 starting_handle,
                 ending_handle: 0xFFFF,
-                attribute_type: Uuid::from_16_bits(GATT_PRIMARY_SERVICE_UUID),
+                attribute_type: Uuid::from_16_bits(service_type),
                 attribute_value: uuid.to_bytes(false),
             });
             match response {
@@ -270,6 +291,100 @@ impl GattClient {
             }
         }
         Ok(services)
+    }
+
+    /// Discover the services referenced by Include declarations in `service`
+    /// (Vol 3, Part G - 4.5.1).
+    pub fn discover_included_services(
+        &mut self,
+        t: &mut impl AttTransport,
+        service: &ServiceProxy,
+    ) -> Result<Vec<ServiceProxy>> {
+        if service.handle >= service.end_group_handle {
+            return Ok(Vec::new());
+        }
+        let mut included_services = Vec::new();
+        let mut starting_handle = service.handle + 1;
+        while starting_handle <= service.end_group_handle {
+            let response = t.request(&AttPdu::ReadByTypeRequest {
+                starting_handle,
+                ending_handle: service.end_group_handle,
+                attribute_type: Uuid::from_16_bits(GATT_INCLUDE_UUID),
+            });
+            match response {
+                AttPdu::ErrorResponse { error_code, .. }
+                    if error_code == ATT_ATTRIBUTE_NOT_FOUND_ERROR =>
+                {
+                    break
+                }
+                AttPdu::ErrorResponse { .. } => return Err(as_error(&response).unwrap()),
+                AttPdu::ReadByTypeResponse {
+                    length,
+                    attribute_data_list,
+                } => {
+                    let entries = parse_type_entries(length, &attribute_data_list)?;
+                    if entries.is_empty() {
+                        break;
+                    }
+                    let mut last_declaration = 0;
+                    for (declaration_handle, value) in entries {
+                        if value.len() != 4 && value.len() != 6 {
+                            return Err(GattError::Protocol(format!(
+                                "invalid Include value length {}",
+                                value.len()
+                            )));
+                        }
+                        let handle = u16::from_le_bytes([value[0], value[1]]);
+                        let end_group_handle = u16::from_le_bytes([value[2], value[3]]);
+                        if handle == 0 || end_group_handle < handle {
+                            return Err(GattError::Protocol(format!(
+                                "invalid included-service handle range {handle:#06x}..={end_group_handle:#06x}"
+                            )));
+                        }
+                        let uuid = if value.len() == 6 {
+                            Uuid::from_bytes(&value[4..]).map_err(|error| {
+                                GattError::Protocol(format!(
+                                    "invalid included-service UUID: {error}"
+                                ))
+                            })?
+                        } else {
+                            let response = t.request(&AttPdu::ReadRequest {
+                                attribute_handle: handle,
+                            });
+                            if let Some(error) = as_error(&response) {
+                                return Err(error);
+                            }
+                            let AttPdu::ReadResponse { attribute_value } = response else {
+                                return Err(GattError::Protocol(format!(
+                                    "expected Read Response for included service, got {response:?}"
+                                )));
+                            };
+                            Uuid::from_bytes(&attribute_value).map_err(|error| {
+                                GattError::Protocol(format!(
+                                    "invalid included-service UUID: {error}"
+                                ))
+                            })?
+                        };
+                        included_services.push(ServiceProxy {
+                            handle,
+                            end_group_handle,
+                            uuid,
+                        });
+                        last_declaration = declaration_handle;
+                    }
+                    if last_declaration >= service.end_group_handle {
+                        break;
+                    }
+                    starting_handle = last_declaration + 1;
+                }
+                other => {
+                    return Err(GattError::Protocol(format!(
+                        "unexpected response to included-service discovery: {other:?}"
+                    )))
+                }
+            }
+        }
+        Ok(included_services)
     }
 
     /// Discover all characteristics of a service (Vol 3, Part G - 4.6.1).

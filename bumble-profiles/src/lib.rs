@@ -7,6 +7,7 @@ use bumble_gatt::{
 };
 use core::fmt;
 
+pub mod aics;
 pub mod asha;
 pub mod battery_service;
 pub mod csip;
@@ -14,6 +15,8 @@ pub mod device_information_service;
 pub mod gap;
 pub mod gatt_service;
 pub mod heart_rate_service;
+pub mod vcs;
+pub mod vocs;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Error {
@@ -92,6 +95,19 @@ pub(crate) fn discover_profile(
     service_uuid: u16,
 ) -> Result<Option<(ServiceProxy, Vec<CharacteristicProxy>)>> {
     let mut services = client.discover_service_by_uuid(transport, &uuid(service_uuid))?;
+    let Some(service) = services.drain(..).next() else {
+        return Ok(None);
+    };
+    let characteristics = client.discover_characteristics(transport, &service)?;
+    Ok(Some((service, characteristics)))
+}
+
+pub(crate) fn discover_secondary_profile(
+    client: &mut GattClient,
+    transport: &mut impl AttTransport,
+    service_uuid: u16,
+) -> Result<Option<(ServiceProxy, Vec<CharacteristicProxy>)>> {
+    let mut services = client.discover_secondary_service_by_uuid(transport, &uuid(service_uuid))?;
     let Some(service) = services.drain(..).next() else {
         return Ok(None);
     };

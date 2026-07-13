@@ -101,7 +101,8 @@ crate whose behavior is verified against the upstream Python.
 | 84. Realtek USB controller firmware driver and driver selection | `bumble-drivers` | ✅ epatch/probe/download + selector green |
 | 85. Foundational GAP/GATT/Battery/Device Info/Heart Rate profiles | `bumble-profiles` | ✅ live service/proxy + database hash green |
 | 86. ASHA hearing-aid streaming and Coordinated Set Identification | `bumble-profiles` | ✅ control/state + CSIS crypto/live encrypted GATT green |
-| 87+. Remaining modules… | — | planned |
+| 87. Volume Control, Volume Offset Control, and Audio Input Control | `bumble-profiles` / `bumble-gatt` | ✅ encrypted control matrices + included-service discovery green |
+| 88+. Remaining modules… | — | planned |
 
 The LE lifecycle is now complete end-to-end through library APIs: **connect →
 discover → read/write → notify → disconnect** between two virtual devices — and
@@ -169,7 +170,7 @@ size, to convey remaining surface.
 |---|---|---|---|
 | `att.py` (1.1k) | `bumble-att` | ✅ | Complete typed catalog for every upstream `ATT_PDU` subclass: discovery, MTU, Read/Blob/Multiple/Multiple Variable/By Type/By Group, Write/Command/Signed, Prepare/Execute Write, notifications/indications, and confirmation. Signed Write separates value/counter/MAC, computes the CSRK AES-CMAC, and provides monotonic signer/verifier state. All added forms are Python-oracle or independent CMAC-vector pinned; variable tuples and handle sets add safe truncation/shape checks. |
 | `gatt.py` (0.6k), `gatt_server.py` (1.2k) | `bumble-gatt` | 🟡 | Attribute DB, primary/secondary services, include declarations, characteristic descriptors, automatic CCCDs, explicit access/security permissions, bearer-aware dynamic read/write callbacks, primary discovery, read/write/notify, Find_Information/Find_By_Type_Value, MTU-sized Read/Blob, fixed + variable Read Multiple, atomic Prepare/Execute Write with cancel/rollback, and authenticated signed-write client/server handling with replay protection. Deferred: the async bearer/event convenience layer. |
-| `gatt_client.py` (1.2k) | `bumble-gatt` | 🟡 | **`GattClient` (slice 18)**: service / characteristic / descriptor discovery, reads (with long-read via Read_Blob), writes (with and without response), and notify/indicate subscriptions (CCCD write + notification/indication handling), over an `AttTransport`. Deferred: async bearer/event listeners. |
+| `gatt_client.py` (1.2k) | `bumble-gatt` | 🟡 | **`GattClient` (slice 18)**: primary/secondary/included service, characteristic, and descriptor discovery; reads (with long-read via Read_Blob); writes (with and without response); and notify/indicate subscriptions (CCCD write + notification/indication handling), over an `AttTransport`. Included-service discovery resolves both compact 16-bit and readback-based 128-bit declarations. Deferred: async bearer/event listeners. |
 | `gatt_adapters.py` (0.4k) | `bumble-gatt` | ✅ | Typed server/proxy adapters for delegated, packed, mapped, UTF-8, serializable, and enum values, including typed dynamic server state and cached proxy decoding. `PackedCodec` covers Python 3.14 portable and native-aligned `struct` modes, zero-repeat tail alignment, pointer-sized integers, binary16, and complex32/64, with host-Python oracle vectors. |
 
 ### Security (SMP + crypto)
@@ -203,7 +204,7 @@ size, to convey remaining surface.
 ### Profiles & apps
 | Upstream | Rust crate | Status | Notes |
 |---|---|---|---|
-| `profiles/*` — GAP, Battery, Device Info, Heart Rate, ASHA, LE Audio (BAP/PACS/ASCS/…), HAP, CSIP, … (24 modules) | `bumble-profiles` | 🟡 | Seven modules are live: foundational GAP/GATT/Battery/Device Information/Heart Rate plus ASHA and CSIP. They cover discovery proxies, dynamic callbacks, typed values, CCCDs, control points, the upstream database-hash vector, hearing-aid state/audio ingress, CSIS key derivation/encryption/RSI generation, and encrypted SIRK reads. Deferred: the remaining 17 media, hearing, LE Audio, telephony, and notification modules. |
+| `profiles/*` — GAP, Battery, Device Info, Heart Rate, ASHA, LE Audio (BAP/PACS/ASCS/…), HAP, CSIP, … (24 modules) | `bumble-profiles` | 🟡 | Ten modules are live: foundational GAP/GATT/Battery/Device Information/Heart Rate, ASHA/CSIP, and the VCS/VOCS/AICS volume-input family. They cover discovery proxies, dynamic callbacks, typed values, CCCDs, encrypted control points, included secondary services, the upstream database-hash vector, hearing-aid state/audio ingress, and CSIS crypto/RSI/SIRK handling. Deferred: the remaining 14 media, hearing, LE Audio, telephony, and notification modules. |
 | `bridge.py`, `pandora/`, apps | — | ⬜ | Test harnesses / apps — out of scope. |
 
 ### Roughly where that leaves things
@@ -2001,6 +2002,23 @@ The first hearing profiles extend `bumble-profiles` with ASHA and CSIP:
   characteristic; malformed key/random/value lengths and the RSI random-bit
   requirements are checked without panics.
 
+## Slice 87 — what's here
+
+The Volume Control profile family now composes through real encrypted ATT:
+
+- VCS implements every relative, unmute-relative, absolute, mute, and unmute
+  procedure with saturating steps, change-on-success counter increments,
+  persisted flags, and the `0x80`/`0x81` application-error paths.
+- Secondary VOCS services expose signed volume offsets, the full 32-bit Audio
+  Location flag set, UTF-8 output descriptions, and checked offset control with
+  counter, opcode, and `-255..=255` range enforcement.
+- Secondary AICS services expose typed input state, gain properties, status,
+  type, and description values. All five control procedures preserve Bumble's
+  manual/automatic-only, mute-disabled, counter, and gain-range behavior.
+- `GattClient` now discovers secondary services and Include declarations,
+  including mixed 16-bit and 128-bit service UUIDs. A live VCS test discovers
+  its included VOCS and AICS records and constructs both proxies from them.
+
 ## Acceptance
 
 The port's contract is the upstream Python test suite, ported 1:1:
@@ -2165,10 +2183,11 @@ bumble-rs/
 │   ├── tests/intel.rs         # exact wire, parser, lookup, full cold-start flow
 │   ├── tests/rtk.rs           # epatch failures, matrix, wrap, full download flow
 │   └── tests/selection.rs     # forced/unknown/automatic driver selection
-├── bumble-profiles/           # slices 85-86 standard GATT profile services
-│   ├── src/{gap,gatt_service,battery_service,device_information_service,heart_rate_service,asha,csip}.rs
+├── bumble-profiles/           # slices 85-87 standard GATT profile services
+│   ├── src/{gap,gatt_service,battery_service,device_information_service,heart_rate_service,asha,csip,vcs,vocs,aics}.rs
 │   ├── tests/foundational_services.rs # live typed proxy/control/hash coverage
-│   └── tests/hearing_profiles.rs # ASHA state + CSIS vectors/encrypted reads
+│   ├── tests/hearing_profiles.rs # ASHA state + CSIS vectors/encrypted reads
+│   └── tests/volume_controls.rs # encrypted VCS/VOCS/AICS control matrices
 └── docs/superpowers/          # design specs + implementation plans
 ```
 

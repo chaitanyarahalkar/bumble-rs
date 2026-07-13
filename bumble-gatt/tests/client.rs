@@ -6,7 +6,9 @@
 //! notify/indicate subscriptions end-to-end.
 
 use bumble::Uuid;
-use bumble_gatt::{properties, Characteristic, GattClient, GattError, GattServer, Service};
+use bumble_gatt::{
+    properties, Characteristic, GattClient, GattError, GattServer, Service, ServiceDefinition,
+};
 
 /// Device Information (0x180A) with:
 /// - Device Name (0x2A00), READ, a short value;
@@ -169,4 +171,51 @@ fn discovery_on_empty_server_returns_nothing() {
         .discover_service_by_uuid(&mut server, &Uuid::from_16_bits(0x180A))
         .unwrap()
         .is_empty());
+}
+
+#[test]
+fn discovers_secondary_and_mixed_width_included_services() {
+    let custom = Uuid::parse("3A12C182-14E2-4FE0-8C5B-65D7C569F9DB").unwrap();
+    let primary_uuid = Uuid::from_16_bits(0x1844);
+    let mut server = GattServer::from_definitions(vec![
+        ServiceDefinition {
+            uuid: Uuid::from_16_bits(0x1845),
+            primary: false,
+            included_services: Vec::new(),
+            characteristics: Vec::new(),
+        },
+        ServiceDefinition {
+            uuid: custom.clone(),
+            primary: false,
+            included_services: Vec::new(),
+            characteristics: Vec::new(),
+        },
+        ServiceDefinition {
+            uuid: primary_uuid.clone(),
+            primary: true,
+            included_services: vec![0, 1],
+            characteristics: Vec::new(),
+        },
+    ])
+    .unwrap();
+    let mut client = GattClient::new();
+    let primary = client
+        .discover_service_by_uuid(&mut server, &primary_uuid)
+        .unwrap()
+        .remove(0);
+    let included = client
+        .discover_included_services(&mut server, &primary)
+        .unwrap();
+    assert_eq!(included.len(), 2);
+    assert_eq!(included[0].handle, 1);
+    assert_eq!(included[0].end_group_handle, 1);
+    assert_eq!(included[0].uuid, Uuid::from_16_bits(0x1845));
+    assert_eq!(included[1].handle, 2);
+    assert_eq!(included[1].end_group_handle, 2);
+    assert_eq!(included[1].uuid, custom.clone());
+
+    let secondary = client
+        .discover_secondary_service_by_uuid(&mut server, &custom)
+        .unwrap();
+    assert_eq!(secondary, [included[1].clone()]);
 }
