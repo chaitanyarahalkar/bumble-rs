@@ -19,6 +19,7 @@ pub mod device_information_service;
 pub mod gap;
 pub mod gatt_service;
 pub mod gmap;
+pub mod hap;
 pub mod heart_rate_service;
 pub mod le_audio;
 pub mod mcp;
