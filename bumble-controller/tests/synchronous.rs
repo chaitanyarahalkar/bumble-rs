@@ -123,7 +123,7 @@ fn establish_acl(
         peripheral,
         Command::AcceptConnectionRequest {
             bd_addr: central_address.clone(),
-            role: 0,
+            role: bumble_controller::ROLE_PERIPHERAL,
         },
     );
     let peripheral_handle =

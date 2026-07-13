@@ -18,7 +18,7 @@ fn create_connection(bd_addr: &Address) -> Command {
         page_scan_repetition_mode: 0,
         reserved: 0,
         clock_offset: 0,
-        allow_role_switch: 0,
+        allow_role_switch: 1,
     }
 }
 
@@ -37,47 +37,155 @@ fn connection_complete(events: &[HciPacket]) -> Option<(u8, u16, Address)> {
 
 #[test]
 fn classic_connection_establishment_end_to_end() {
+    for accepted_role in [
+        bumble_controller::ROLE_CENTRAL,
+        bumble_controller::ROLE_PERIPHERAL,
+    ] {
+        let mut link = LocalLink::new();
+        let central_addr = pub_addr("11:11:11:11:11:11");
+        let peripheral_addr = pub_addr("22:22:22:22:22:22");
+        let central = link.add_controller(Controller::new("C", central_addr.clone()));
+        let peripheral = link.add_controller(Controller::new("P", peripheral_addr.clone()));
+
+        link.handle_command(central, create_connection(&peripheral_addr));
+        assert!(link.drain_host_events(central).iter().any(|e| matches!(
+            e,
+            HciPacket::Event(Event::CommandStatus { command_opcode, status: 0, .. })
+                if *command_opcode == bumble_hci::HCI_CREATE_CONNECTION_COMMAND
+        )));
+
+        link.pump_classic();
+        let req = link.drain_host_events(peripheral);
+        assert!(req.iter().any(|e| matches!(
+            e,
+            HciPacket::Event(Event::ConnectionRequest { bd_addr, .. }) if *bd_addr == central_addr
+        )));
+
+        link.handle_command(
+            peripheral,
+            Command::AcceptConnectionRequest {
+                bd_addr: central_addr.clone(),
+                role: accepted_role,
+            },
+        );
+        link.pump_classic();
+
+        let (pstatus, phandle, ppeer) =
+            connection_complete(&link.drain_host_events(peripheral)).expect("acceptor completes");
+        assert_eq!((pstatus, ppeer), (0, central_addr));
+        assert_ne!(phandle, 0);
+
+        let (cstatus, chandle, cpeer) =
+            connection_complete(&link.drain_host_events(central)).expect("initiator completes");
+        assert_eq!((cstatus, cpeer), (0, peripheral_addr));
+        assert_ne!(chandle, 0);
+
+        let initiating_role = if accepted_role == bumble_controller::ROLE_CENTRAL {
+            bumble_controller::ROLE_PERIPHERAL
+        } else {
+            bumble_controller::ROLE_CENTRAL
+        };
+        assert_eq!(
+            link.controller(central).classic_connections()[0].role,
+            initiating_role
+        );
+        assert_eq!(
+            link.controller(peripheral).classic_connections()[0].role,
+            accepted_role
+        );
+    }
+}
+
+#[test]
+fn classic_role_switch_can_be_rejected_during_accept() {
     let mut link = LocalLink::new();
-    let central_addr = pub_addr("11:11:11:11:11:11");
-    let peripheral_addr = pub_addr("22:22:22:22:22:22");
-    let central = link.add_controller(Controller::new("C", central_addr.clone()));
-    let peripheral = link.add_controller(Controller::new("P", peripheral_addr.clone()));
+    let initiator_address = pub_addr("11:11:11:11:11:11");
+    let acceptor_address = pub_addr("22:22:22:22:22:22");
+    let initiator = link.add_controller(Controller::new("I", initiator_address.clone()));
+    let acceptor = link.add_controller(Controller::new("A", acceptor_address.clone()));
 
-    // Central pages the peripheral.
-    link.handle_command(central, create_connection(&peripheral_addr));
-    assert!(link.drain_host_events(central).iter().any(|e| matches!(
-        e,
-        HciPacket::Event(Event::CommandStatus { command_opcode, status: 0, .. })
-            if *command_opcode == bumble_hci::HCI_CREATE_CONNECTION_COMMAND
-    )));
-
-    // Peripheral receives a Connection Request naming the central.
+    let mut command = create_connection(&acceptor_address);
+    if let Command::CreateConnection {
+        allow_role_switch, ..
+    } = &mut command
+    {
+        *allow_role_switch = 0;
+    }
+    link.handle_command(initiator, command);
+    link.drain_host_events(initiator);
     link.pump_classic();
-    let req = link.drain_host_events(peripheral);
-    assert!(req.iter().any(|e| matches!(
-        e,
-        HciPacket::Event(Event::ConnectionRequest { bd_addr, .. }) if *bd_addr == central_addr
-    )));
-
-    // Peripheral accepts: it completes, then the central completes.
+    link.drain_host_events(acceptor);
     link.handle_command(
-        peripheral,
+        acceptor,
         Command::AcceptConnectionRequest {
-            bd_addr: central_addr.clone(),
-            role: 0,
+            bd_addr: initiator_address.clone(),
+            role: bumble_controller::ROLE_CENTRAL,
         },
     );
-    let (pstatus, _phandle, ppeer) =
-        connection_complete(&link.drain_host_events(peripheral)).expect("peripheral completes");
-    assert_eq!(pstatus, 0);
-    assert_eq!(ppeer, central_addr);
-
     link.pump_classic();
-    let (cstatus, chandle, cpeer) =
-        connection_complete(&link.drain_host_events(central)).expect("central completes");
-    assert_eq!(cstatus, 0);
-    assert_eq!(cpeer, peripheral_addr);
-    assert!(chandle != 0);
+
+    for controller in [initiator, acceptor] {
+        assert!(link
+            .drain_host_events(controller)
+            .iter()
+            .any(|event| matches!(
+                event,
+                HciPacket::Event(Event::ConnectionComplete {
+                    status: 0x21,
+                    connection_handle: 0,
+                    ..
+                })
+            )));
+        assert!(link.controller(controller).classic_connections().is_empty());
+    }
+}
+
+#[test]
+fn switch_role_changes_both_established_endpoints() {
+    let mut link = LocalLink::new();
+    let initiator_address = pub_addr("11:11:11:11:11:11");
+    let acceptor_address = pub_addr("22:22:22:22:22:22");
+    let initiator = link.add_controller(Controller::new("I", initiator_address.clone()));
+    let acceptor = link.add_controller(Controller::new("A", acceptor_address.clone()));
+
+    link.handle_command(initiator, create_connection(&acceptor_address));
+    link.drain_host_events(initiator);
+    link.pump_classic();
+    link.drain_host_events(acceptor);
+    link.handle_command(
+        acceptor,
+        Command::AcceptConnectionRequest {
+            bd_addr: initiator_address,
+            role: bumble_controller::ROLE_PERIPHERAL,
+        },
+    );
+    link.pump_classic();
+    link.drain_host_events(initiator);
+    link.drain_host_events(acceptor);
+
+    link.handle_command(
+        initiator,
+        Command::SwitchRole {
+            bd_addr: acceptor_address,
+            role: bumble_controller::ROLE_PERIPHERAL,
+        },
+    );
+    link.pump_classic();
+
+    assert_eq!(
+        link.controller(initiator).classic_connections()[0].role,
+        bumble_controller::ROLE_PERIPHERAL
+    );
+    assert_eq!(
+        link.controller(acceptor).classic_connections()[0].role,
+        bumble_controller::ROLE_CENTRAL
+    );
+    for controller in [initiator, acceptor] {
+        assert!(link
+            .drain_host_events(controller)
+            .iter()
+            .any(|event| matches!(event, HciPacket::Event(Event::RoleChange { status: 0, .. }))));
+    }
 }
 
 #[test]

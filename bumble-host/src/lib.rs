@@ -235,6 +235,8 @@ pub struct Device {
     connection_role: Option<u8>,
     peer_address: Option<Address>,
     classic_connection_handle: Option<u16>,
+    classic_connection_role: Option<u8>,
+    pending_classic_role: Option<u8>,
     synchronous_connections: Vec<SynchronousConnectionInfo>,
     synchronous_requests: Vec<(Address, u8)>,
     synchronous_inbox: Vec<SynchronousDataPacket>,
@@ -272,6 +274,8 @@ impl Device {
             connection_role: None,
             peer_address: None,
             classic_connection_handle: None,
+            classic_connection_role: None,
+            pending_classic_role: None,
             synchronous_connections: Vec::new(),
             synchronous_requests: Vec::new(),
             synchronous_inbox: Vec::new(),
@@ -309,6 +313,8 @@ impl Device {
             connection_role: None,
             peer_address: None,
             classic_connection_handle: None,
+            classic_connection_role: None,
+            pending_classic_role: None,
             synchronous_connections: Vec::new(),
             synchronous_requests: Vec::new(),
             synchronous_inbox: Vec::new(),
@@ -900,6 +906,11 @@ impl Device {
         self.classic_connection_handle
     }
 
+    /// The local role on the established Classic ACL (`0` Central, `1` Peripheral).
+    pub fn classic_connection_role(&self) -> Option<u8> {
+        self.classic_connection_role
+    }
+
     pub fn set_classic_encryption(&mut self, link: &mut LocalLink, enabled: bool) -> bool {
         let Some(connection_handle) = self.classic_connection_handle else {
             return false;
@@ -1095,6 +1106,7 @@ impl Device {
     }
 
     pub fn connect_classic(&mut self, link: &mut LocalLink, peer_address: Address) {
+        self.pending_classic_role = Some(bumble_controller::ROLE_CENTRAL);
         self.send_hci_command(
             link,
             Command::CreateConnection {
@@ -1103,17 +1115,39 @@ impl Device {
                 page_scan_repetition_mode: 0,
                 reserved: 0,
                 clock_offset: 0,
-                allow_role_switch: 0,
+                allow_role_switch: 1,
             },
         );
     }
 
     pub fn accept_classic(&mut self, link: &mut LocalLink, peer_address: Address) {
+        self.accept_classic_with_role(link, peer_address, bumble_controller::ROLE_PERIPHERAL);
+    }
+
+    /// Accept a pending Classic connection using the requested local role.
+    pub fn accept_classic_with_role(
+        &mut self,
+        link: &mut LocalLink,
+        peer_address: Address,
+        role: u8,
+    ) {
+        self.pending_classic_role = Some(role);
         self.send_hci_command(
             link,
             Command::AcceptConnectionRequest {
                 bd_addr: peer_address,
-                role: 0,
+                role,
+            },
+        );
+    }
+
+    /// Request a role change on an established Classic connection.
+    pub fn switch_classic_role(&mut self, link: &mut LocalLink, peer_address: Address, role: u8) {
+        self.send_hci_command(
+            link,
+            Command::SwitchRole {
+                bd_addr: peer_address,
+                role,
             },
         );
     }
@@ -1429,16 +1463,38 @@ impl Device {
                     }
                     if self.classic_connection_handle == Some(connection_handle) {
                         self.classic_connection_handle = None;
+                        self.classic_connection_role = None;
+                        self.pending_classic_role = None;
                     }
                     self.synchronous_connections
                         .retain(|connection| connection.connection_handle != connection_handle);
                 }
                 HciPacket::Event(Event::ConnectionComplete {
-                    status: 0,
+                    status,
                     connection_handle,
                     link_type: 1,
                     ..
-                }) => self.classic_connection_handle = Some(connection_handle),
+                }) => {
+                    if status == 0 {
+                        self.classic_connection_handle = Some(connection_handle);
+                        self.classic_connection_role = self.pending_classic_role.take();
+                    } else {
+                        self.classic_connection_handle = None;
+                        self.classic_connection_role = None;
+                        self.pending_classic_role = None;
+                    }
+                }
+                HciPacket::Event(Event::RoleChange {
+                    status: 0,
+                    new_role,
+                    ..
+                }) => {
+                    if self.classic_connection_handle.is_some() {
+                        self.classic_connection_role = Some(new_role);
+                    } else {
+                        self.pending_classic_role = Some(new_role);
+                    }
+                }
                 HciPacket::Event(Event::ConnectionRequest {
                     bd_addr, link_type, ..
                 }) if link_type != 1 => self.synchronous_requests.push((bd_addr, link_type)),

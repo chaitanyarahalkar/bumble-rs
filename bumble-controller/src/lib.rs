@@ -72,16 +72,15 @@
 //! by [`LocalLink::pump_classic`] (addressed by public device address):
 //! ACL connection establishment (`Create_Connection` → `Connection Request` →
 //! `Accept_Connection_Request` → `Connection Complete` on both sides),
+//! role negotiation during accept and explicit `Switch_Role` (including
+//! allow/deny policy and `Role Change` events),
 //! `Remote_Name_Request` (→ `Remote Name Request Complete`), and
-//! `Read_Remote_Supported_Features` (→ the matching complete event). The LMP
-//! handshake is simplified relative to upstream (no role-switch / authentication
-//! sub-dance) — enough to reproduce the HCI event sequence a host observes.
+//! `Read_Remote_Supported_Features` (→ the matching complete event).
 //!
 //! ## Deferred (behavioral simulation, not the codec)
 //!
 //! The remaining deep behavior is not simulated: LTK verification,
-//! remote-version exchange, and the classic
-//! authentication/role-switch sub-flows. The HCI
+//! remote-version exchange, and Classic authentication. The HCI
 //! *codec* for all of them (in `bumble-hci`) is complete and oracle-pinned; what
 //! remains is controller-side behavior, which — unlike the codec — has no
 //! ground-truth oracle to pin against (upstream's controller is itself a
@@ -115,6 +114,8 @@ const INVALID_COMMAND_PARAMETERS: u8 = 0x12;
 const UNKNOWN_ADVERTISING_IDENTIFIER_ERROR: u8 = 0x42;
 /// HCI "Command Disallowed" error.
 const COMMAND_DISALLOWED_ERROR: u8 = 0x0C;
+/// HCI "Role Change Not Allowed" error.
+const ROLE_CHANGE_NOT_ALLOWED_ERROR: u8 = 0x21;
 /// LE connection role: central (initiator).
 pub const ROLE_CENTRAL: u8 = 0x00;
 /// LE connection role: peripheral (advertiser).
@@ -151,11 +152,14 @@ pub const LINK_TYPE_ESCO: u8 = 0x02;
 const AIR_MODE_CVSD: u8 = 0x02;
 const AIR_MODE_TRANSPARENT: u8 = 0x03;
 
-/// An established LE connection on a controller.
+/// An LE or Classic ACL connection on a controller.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Connection {
     pub handle: u16,
     pub role: u8,
+    /// Whether this Classic connection permits a peer-initiated role switch.
+    /// This is unused for LE connections.
+    pub classic_allow_role_switch: bool,
     /// The address this controller uses for the connection.
     pub self_address: Address,
     pub peer_address: Address,
@@ -201,6 +205,18 @@ struct PendingConnection {
     peer_address: Address,
     peer_address_type: u8,
     own_address_type: u8,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ClassicRoleSwitchPurpose {
+    AcceptConnection,
+    SwitchRoleCommand { requested_role: u8 },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PendingClassicRoleSwitch {
+    peer_address: Address,
+    purpose: ClassicRoleSwitchPurpose,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -371,6 +387,10 @@ pub struct Controller {
     peripheral_cis_links: Vec<CisLink>,
     /// Classic (BR/EDR) ACL connections, keyed by peer address in `peer_address`.
     classic_connections: Vec<Connection>,
+    /// Controller-wide policy copied to incoming Classic connections.
+    classic_allow_role_switch: bool,
+    /// Local HCI operations awaiting an LMP role-switch response.
+    pending_classic_role_switches: Vec<PendingClassicRoleSwitch>,
     /// SCO/eSCO logical links over established Classic ACL connections.
     synchronous_connections: Vec<SynchronousConnection>,
     /// Classic LMP PDUs waiting for a peer, as `(sender_public, receiver, pdu)`.
@@ -406,6 +426,8 @@ impl Controller {
             central_cis_links: Vec::new(),
             peripheral_cis_links: Vec::new(),
             classic_connections: Vec::new(),
+            classic_allow_role_switch: true,
+            pending_classic_role_switches: Vec::new(),
             synchronous_connections: Vec::new(),
             outbound_classic: Vec::new(),
         }
@@ -417,6 +439,15 @@ impl Controller {
 
     pub fn random_address(&self) -> &Address {
         &self.random_address
+    }
+
+    /// Set the policy copied to subsequently received Classic ACL requests.
+    pub fn set_classic_allow_role_switch(&mut self, allow: bool) {
+        self.classic_allow_role_switch = allow;
+    }
+
+    pub fn classic_allow_role_switch(&self) -> bool {
+        self.classic_allow_role_switch
     }
 
     pub fn is_advertising(&self) -> bool {
@@ -826,10 +857,15 @@ impl Controller {
                 connection_handle,
                 encryption_enable,
             } => self.handle_set_classic_encryption(connection_handle, encryption_enable),
-            Command::CreateConnection { bd_addr, .. } => self.handle_create_connection(bd_addr),
-            Command::AcceptConnectionRequest { bd_addr, .. } => {
-                self.handle_accept_connection_request(bd_addr)
+            Command::CreateConnection {
+                bd_addr,
+                allow_role_switch,
+                ..
+            } => self.handle_create_connection(bd_addr, allow_role_switch),
+            Command::AcceptConnectionRequest { bd_addr, role } => {
+                self.handle_accept_connection_request(bd_addr, role)
             }
+            Command::SwitchRole { bd_addr, role } => self.handle_switch_role(bd_addr, role),
             Command::RemoteNameRequest { bd_addr, .. } => self.handle_remote_name_request(bd_addr),
             Command::ReadRemoteSupportedFeatures { connection_handle } => {
                 self.handle_read_remote_supported_features(connection_handle)
@@ -1508,10 +1544,11 @@ impl Controller {
     /// `Create_Connection` (classic, central): record a pending classic
     /// connection and page the peer with an `LmpHostConnectionReq`. Acknowledged
     /// with Command Status; Connection Complete follows once the peer accepts.
-    fn handle_create_connection(&mut self, bd_addr: Address) {
+    fn handle_create_connection(&mut self, bd_addr: Address, allow_role_switch: u8) {
         self.classic_connections.push(Connection {
             handle: 0,
             role: ROLE_CENTRAL,
+            classic_allow_role_switch: allow_role_switch != 0,
             self_address: self.public_address.clone(),
             peer_address: bd_addr.clone(),
         });
@@ -1520,10 +1557,16 @@ impl Controller {
         self.queue_classic(self_addr, bd_addr, lmp::ClassicPdu::HostConnectionReq);
     }
 
-    /// `Accept_Connection_Request` (classic, peripheral): allocate a handle, emit
-    /// Connection Complete, and signal acceptance to the peer.
-    fn handle_accept_connection_request(&mut self, bd_addr: Address) {
-        let Some(idx) = self
+    /// `Accept_Connection_Request`: accept as Peripheral immediately, or first
+    /// negotiate an LMP role switch when the host requests the Central role.
+    fn handle_accept_connection_request(&mut self, bd_addr: Address, role: u8) {
+        if role > ROLE_PERIPHERAL {
+            return self.command_status(
+                HCI_ACCEPT_CONNECTION_REQUEST_COMMAND,
+                INVALID_COMMAND_PARAMETERS,
+            );
+        }
+        let Some(_) = self
             .classic_connections
             .iter()
             .position(|c| c.peer_address == bd_addr)
@@ -1534,8 +1577,59 @@ impl Controller {
             );
         };
         self.command_status(HCI_ACCEPT_CONNECTION_REQUEST_COMMAND, HCI_SUCCESS);
+        if role == ROLE_CENTRAL {
+            self.pending_classic_role_switches
+                .push(PendingClassicRoleSwitch {
+                    peer_address: bd_addr.clone(),
+                    purpose: ClassicRoleSwitchPurpose::AcceptConnection,
+                });
+            let self_addr = self.public_address.clone();
+            self.queue_classic(self_addr, bd_addr, lmp::ClassicPdu::SwitchReq);
+        } else {
+            self.complete_classic_accept(bd_addr);
+        }
+    }
+
+    /// `Switch_Role`: report the current role immediately when no change is
+    /// needed, otherwise wait for the peer's LMP response.
+    fn handle_switch_role(&mut self, bd_addr: Address, role: u8) {
+        if role > ROLE_PERIPHERAL {
+            return self.command_status(HCI_SWITCH_ROLE_COMMAND, INVALID_COMMAND_PARAMETERS);
+        }
+        let Some(connection) = self
+            .classic_connections
+            .iter()
+            .find(|connection| connection.peer_address == bd_addr && connection.handle != 0)
+        else {
+            return self.command_status(HCI_SWITCH_ROLE_COMMAND, COMMAND_DISALLOWED_ERROR);
+        };
+        let current_role = connection.role;
+        self.command_status(HCI_SWITCH_ROLE_COMMAND, HCI_SUCCESS);
+        if current_role == role {
+            self.push_role_change(HCI_SUCCESS, bd_addr, current_role);
+            return;
+        }
+        self.pending_classic_role_switches
+            .push(PendingClassicRoleSwitch {
+                peer_address: bd_addr.clone(),
+                purpose: ClassicRoleSwitchPurpose::SwitchRoleCommand {
+                    requested_role: role,
+                },
+            });
+        let self_addr = self.public_address.clone();
+        self.queue_classic(self_addr, bd_addr, lmp::ClassicPdu::SwitchReq);
+    }
+
+    fn complete_classic_accept(&mut self, bd_addr: Address) {
+        let Some(index) = self
+            .classic_connections
+            .iter()
+            .position(|connection| connection.peer_address == bd_addr)
+        else {
+            return;
+        };
         let handle = self.allocate_handle();
-        self.classic_connections[idx].handle = handle;
+        self.classic_connections[index].handle = handle;
         self.push_classic_connection_complete(handle, bd_addr.clone());
         let self_addr = self.public_address.clone();
         self.queue_classic(self_addr, bd_addr, lmp::ClassicPdu::Accepted);
@@ -1740,6 +1834,25 @@ impl Controller {
             }));
     }
 
+    fn push_classic_connection_failure(&mut self, status: u8, bd_addr: Address) {
+        self.host_queue
+            .push(HciPacket::Event(Event::ConnectionComplete {
+                status,
+                connection_handle: 0,
+                bd_addr,
+                link_type: LINK_TYPE_ACL,
+                encryption_enabled: 0,
+            }));
+    }
+
+    fn push_role_change(&mut self, status: u8, bd_addr: Address, new_role: u8) {
+        self.host_queue.push(HciPacket::Event(Event::RoleChange {
+            status,
+            bd_addr,
+            new_role,
+        }));
+    }
+
     fn queue_classic(&mut self, self_addr: Address, peer_addr: Address, pdu: lmp::ClassicPdu) {
         self.outbound_classic.push((self_addr, peer_addr, pdu));
     }
@@ -1755,6 +1868,7 @@ impl Controller {
                 self.classic_connections.push(Connection {
                     handle: 0,
                     role: ROLE_PERIPHERAL,
+                    classic_allow_role_switch: self.classic_allow_role_switch,
                     self_address: self.public_address.clone(),
                     peer_address: sender_address.clone(),
                 });
@@ -1774,6 +1888,110 @@ impl Controller {
                     let handle = self.allocate_handle();
                     self.classic_connections[idx].handle = handle;
                     self.push_classic_connection_complete(handle, sender_address.clone());
+                }
+            }
+            lmp::ClassicPdu::Rejected { reason } => {
+                if let Some(index) = self.classic_connections.iter().position(|connection| {
+                    connection.peer_address == *sender_address && connection.handle == 0
+                }) {
+                    self.classic_connections.remove(index);
+                    self.push_classic_connection_failure(reason, sender_address.clone());
+                }
+            }
+            lmp::ClassicPdu::SwitchReq => {
+                let Some(index) = self
+                    .classic_connections
+                    .iter()
+                    .position(|connection| connection.peer_address == *sender_address)
+                else {
+                    return;
+                };
+                let self_addr = self.public_address.clone();
+                if !self.classic_connections[index].classic_allow_role_switch {
+                    self.queue_classic(
+                        self_addr,
+                        sender_address.clone(),
+                        lmp::ClassicPdu::SwitchRejected {
+                            reason: ROLE_CHANGE_NOT_ALLOWED_ERROR,
+                        },
+                    );
+                } else {
+                    let new_role = if self.classic_connections[index].role == ROLE_CENTRAL {
+                        ROLE_PERIPHERAL
+                    } else {
+                        ROLE_CENTRAL
+                    };
+                    self.classic_connections[index].role = new_role;
+                    self.push_role_change(HCI_SUCCESS, sender_address.clone(), new_role);
+                    self.queue_classic(
+                        self_addr,
+                        sender_address.clone(),
+                        lmp::ClassicPdu::SwitchAccepted,
+                    );
+                }
+            }
+            lmp::ClassicPdu::SwitchAccepted => {
+                let Some(pending_index) = self
+                    .pending_classic_role_switches
+                    .iter()
+                    .position(|pending| pending.peer_address == *sender_address)
+                else {
+                    return;
+                };
+                let pending = self.pending_classic_role_switches.remove(pending_index);
+                match pending.purpose {
+                    ClassicRoleSwitchPurpose::AcceptConnection => {
+                        if let Some(connection) = self
+                            .classic_connections
+                            .iter_mut()
+                            .find(|connection| connection.peer_address == *sender_address)
+                        {
+                            connection.role = ROLE_CENTRAL;
+                        }
+                        self.push_role_change(HCI_SUCCESS, sender_address.clone(), ROLE_CENTRAL);
+                        self.complete_classic_accept(sender_address.clone());
+                    }
+                    ClassicRoleSwitchPurpose::SwitchRoleCommand { requested_role } => {
+                        if let Some(connection) = self
+                            .classic_connections
+                            .iter_mut()
+                            .find(|connection| connection.peer_address == *sender_address)
+                        {
+                            connection.role = requested_role;
+                        }
+                        self.push_role_change(HCI_SUCCESS, sender_address.clone(), requested_role);
+                    }
+                }
+            }
+            lmp::ClassicPdu::SwitchRejected { reason } => {
+                let Some(pending_index) = self
+                    .pending_classic_role_switches
+                    .iter()
+                    .position(|pending| pending.peer_address == *sender_address)
+                else {
+                    return;
+                };
+                let pending = self.pending_classic_role_switches.remove(pending_index);
+                match pending.purpose {
+                    ClassicRoleSwitchPurpose::AcceptConnection => {
+                        self.push_classic_connection_failure(reason, sender_address.clone());
+                        self.classic_connections
+                            .retain(|connection| connection.peer_address != *sender_address);
+                        let self_addr = self.public_address.clone();
+                        self.queue_classic(
+                            self_addr,
+                            sender_address.clone(),
+                            lmp::ClassicPdu::Rejected { reason },
+                        );
+                    }
+                    ClassicRoleSwitchPurpose::SwitchRoleCommand { .. } => {
+                        let role = self
+                            .classic_connections
+                            .iter()
+                            .find(|connection| connection.peer_address == *sender_address)
+                            .map_or(ROLE_CENTRAL, |connection| connection.role);
+                        self.push_role_change(reason, sender_address.clone(), role);
+                    }
                 }
             }
             lmp::ClassicPdu::NameReq => {
@@ -2401,6 +2619,7 @@ impl Controller {
         let connection = Connection {
             handle,
             role: ROLE_CENTRAL,
+            classic_allow_role_switch: false,
             self_address,
             peer_address: link_peer_address,
         };
@@ -2432,6 +2651,7 @@ impl Controller {
         let connection = Connection {
             handle,
             role: ROLE_PERIPHERAL,
+            classic_allow_role_switch: false,
             self_address,
             peer_address: central_address,
         };

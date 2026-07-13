@@ -28,6 +28,32 @@ fn hfp_msbc_audio_lifecycle_through_device_api() {
     hf.poll(&mut link); // central connection complete
     let hf_acl = hf.classic_connection_handle().unwrap();
     assert!(ag.classic_connection_handle().is_some());
+    assert_eq!(
+        hf.classic_connection_role(),
+        Some(bumble_controller::ROLE_CENTRAL)
+    );
+    assert_eq!(
+        ag.classic_connection_role(),
+        Some(bumble_controller::ROLE_PERIPHERAL)
+    );
+
+    hf.switch_classic_role(
+        &mut link,
+        peripheral_address.clone(),
+        bumble_controller::ROLE_PERIPHERAL,
+    );
+    hf.poll(&mut link); // command status
+    link.pump_classic();
+    hf.poll(&mut link);
+    ag.poll(&mut link);
+    assert_eq!(
+        hf.classic_connection_role(),
+        Some(bumble_controller::ROLE_PERIPHERAL)
+    );
+    assert_eq!(
+        ag.classic_connection_role(),
+        Some(bumble_controller::ROLE_CENTRAL)
+    );
 
     // HFP's negotiated mSBC codec selects its normative T1 eSCO parameters.
     let parameters = parameters_for_codec(AudioCodec::Msbc);
