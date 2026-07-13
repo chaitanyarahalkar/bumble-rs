@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en" data-bs-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Bumble Unicast Server</title>
+  <style>
+    :root { color-scheme: dark; font-family: system-ui, sans-serif; }
+    body { margin: 0; background: #15171a; color: #f4f5f6; }
+    header { padding: 18px max(24px, calc((100vw - 900px) / 2)); background: #0d6efd; }
+    h1 { margin: 0; font-size: 1.25rem; font-weight: 600; }
+    main { max-width: 900px; margin: 32px auto; padding: 0 24px; display: flex; gap: 12px; }
+    button, .status { border: 0; border-radius: 6px; padding: 11px 16px; color: white; font-size: .95rem; }
+    button { background: #dc3545; cursor: pointer; }
+    button:disabled { background: #52606d; cursor: default; }
+    .status { background: #0d6efd; }
+  </style>
+  <script src="https://unpkg.com/pcm-player"></script>
+</head>
+<body>
+  <header><h1>Bumble Unicast Server</h1></header>
+  <main>
+    <button id="connect-audio">Connect Audio</button>
+    <span class="status" id="ws-status">WebSocket Connecting…</span>
+  </main>
+  <script>
+    let player = null;
+    const button = document.getElementById('connect-audio');
+    const status = document.getElementById('ws-status');
+    const socket = new WebSocket(`ws://${window.location.host}/channel`);
+    socket.binaryType = 'arraybuffer';
+    socket.onmessage = message => {
+      if (typeof message.data === 'string') {
+        const event = JSON.parse(message.data);
+        if (event.type === 'format' && player === null) {
+          button.dataset.channels = event.params.channels;
+          button.dataset.sampleRate = event.params.sample_rate;
+        }
+      } else if (player !== null) {
+        player.feed(message.data);
+      }
+    };
+    socket.onopen = () => status.textContent = 'WebSocket Connected';
+    socket.onclose = () => status.textContent = 'WebSocket Disconnected';
+    button.onclick = () => {
+      player = new PCMPlayer({
+        inputCodec: 'Int16',
+        channels: Number(button.dataset.channels || 2),
+        sampleRate: Number(button.dataset.sampleRate || 48000),
+        flushTime: 10,
+      });
+      button.disabled = true;
+      button.textContent = 'Audio Connected';
+    };
+  </script>
+</body>
+</html>

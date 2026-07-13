@@ -2909,10 +2909,17 @@ fn is_request(pdu: &AttPdu) -> bool {
     matches!(
         pdu,
         AttPdu::ExchangeMtuRequest { .. }
+            | AttPdu::FindInformationRequest { .. }
+            | AttPdu::FindByTypeValueRequest { .. }
             | AttPdu::ReadRequest { .. }
+            | AttPdu::ReadBlobRequest { .. }
+            | AttPdu::ReadMultipleRequest { .. }
             | AttPdu::ReadByTypeRequest { .. }
             | AttPdu::ReadByGroupTypeRequest { .. }
+            | AttPdu::ReadMultipleVariableRequest { .. }
             | AttPdu::WriteRequest { .. }
+            | AttPdu::PrepareWriteRequest { .. }
+            | AttPdu::ExecuteWriteRequest { .. }
     )
 }
 

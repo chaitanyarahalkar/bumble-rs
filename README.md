@@ -238,6 +238,7 @@ size, to convey remaining surface.
 | `apps/player/player.py` | `bumble-player` (`bumble-transport`) | ✅ | Runnable Classic A2DP source with the complete upstream `discover`, `inquire`, `pair`, and `play` command surface. It publishes the source SDP record, persists SSP link keys, discovers sink endpoints, configures SBC/AAC/vendor Opus, opens and controls AVDTP streams, paces RTP media with controller backpressure, and serves AVRCP over incoming AVCTP. |
 | `apps/speaker/speaker.py` | `bumble-speaker` (`bumble-transport`) | ✅ | Runnable Classic A2DP sink with the complete upstream codec, sampling-frequency, bitrate, VBR, discovery, output, UI, peer, device-config, and transport surface. It accepts incoming Classic connections or initiates authenticated/encrypted ones, publishes the sink SDP record, negotiates SBC/AAC/vendor Opus through AVDTP, extracts received RTP audio to files or `ffplay`, and serves the live browser UI over HTTP/WebSocket. |
 | `apps/console.py` | `bumble-console` (`bumble-transport`) | ✅ | Runnable scriptable interactive LE console over external controllers. It preserves the upstream scan/filter/RSSI, advertising, connect/disconnect, parameter, encryption, MTU, PHY, GATT discovery/read/write/subscription, local-write, status-view, and exit command grammar. The Python fullscreen widgets become terminal views while live controller events remain continuously pumped. |
+| `apps/lea_unicast/app.py` | `bumble-lea-unicast` (`bumble-transport`) | ✅ | Runnable LE Audio unicast sink/source over external controllers with the upstream UI-port, device-config, transport, and WAVE-input CLI. It publishes GAP, PACS, and ASCS, advertises the unicast-server announcement, negotiates sink/source ASEs, accepts and binds CIS links, decodes received LC3 to the browser UI, and resamples/encodes looping WAVE PCM into source ISO SDUs. |
 | `apps/pair.py` | `bumble-pair` (`bumble-transport`) | ✅ | Runnable LE, Classic, and simultaneous dual-mode listener paths over external controllers with the complete upstream option surface. LE supports direct address/name connection or configurable advertising, Legacy/SC pairing, and OOB data. Classic supports inquiry/name resolution, incoming/outgoing ACL setup, PIN and Secure Simple Pairing delegates, stored link-key reuse, controller encryption, and best-effort SMP-over-BR/EDR CTKD for P-256 link keys. Both paths provide bond policy, JSON key persistence/printing, and linger behavior. |
 | `apps/scan.py` | `bumble-scan` (`bumble-transport`) | ✅ | Runnable external HCI scanner with upstream RSSI/passive/interval/window/PHY/duplicate/raw/IRK/key-store/device-config options, extended scanning with legacy fallback, typed legacy + extended report decoding, exact active/passive scan-response accumulation, labeled AD rendering, RSSI bars, and real RPA identity resolution. |
 | `apps/usb_probe.py` | `bumble-usb-probe` (`bumble-transport`) | ✅ | Runnable libusb device inventory with upstream `--verbose`, `--hci-only`, manufacturer, and product filters; device/interface-level Bluetooth HCI classification; stable index, VID/PID, duplicate, and serial transport names; string-descriptor error tolerance; and verbose configuration/interface/endpoint details including isochronous packet sizes. |
@@ -2870,6 +2871,34 @@ The upstream interactive LE console now runs over external controllers:
   across real HCI, ACL, L2CAP, and ATT; focused tests cover the CLI, complete
   command parser, PHY/value parsing, scan rendering, and selector behavior.
 
+## Slice 134 — what's here
+
+The upstream LE Audio unicast server now runs over external controllers:
+
+- `bumble-lea-unicast` preserves the upstream UI-port, device-config, HCI
+  transport, and WAVE-input CLI. Its default identity, random address, PACS
+  sink/source records, audio contexts and locations, ASE IDs, advertising
+  interval, and unicast-server announcement match the Python app.
+- The production loop binds the existing PACS and ASCS services to the live
+  ATT server, forwards control-point and ASE notifications, accepts only CIS
+  requests matching enabled ASE QoS, sets up both ISO directions exactly once,
+  and follows sink/source streaming state across disconnect and re-advertise.
+- `bumble-codecs` now provides safe owned LC3 encoder/decoder workers over the
+  pure-Rust codec. They preserve per-channel state, support mono/stereo and
+  multiple codec-frame blocks per SDU, and expose interleaved signed 16-bit PCM
+  without self-referential storage or leaked buffers.
+- Received sink SDUs are decoded to PCM and broadcast by the embedded
+  HTTP/WebSocket UI. Source media loops a 16-bit WAVE file, continuously
+  resamples and maps its channels to the negotiated format, encodes LC3, and
+  paces ISO SDUs from the negotiated QoS interval.
+- A live two-controller test drives the production GAP/PACS/ASCS database,
+  configures both ASEs over real ATT/L2CAP/ACL, establishes a CIS, routes an LC3
+  ISO SDU, and decodes it. Focused tests cover the CLI, exact PAC and
+  advertising contract, resampling/channel mapping, browser delivery, and LC3
+  worker buffer validation. The integration also closed a host gap so every
+  typed ATT request—not only the original discovery subset—is answered over a
+  live connection.
+
 ## Acceptance
 
 The port's contract is the upstream Python test suite, ported 1:1:
@@ -3019,10 +3048,11 @@ bumble-rs/
 │   ├── src/l2cap.rs           # paired control/interrupt Classic transport
 │   ├── tests/protocol.rs      # exact messages, callbacks, malformed inputs
 │   └── tests/l2cap.rs         # live host/device report flows
-├── bumble-codecs/             # slice-48 common media bitstreams/codecs
-│   ├── src/{lib,g722}.rs      # bit I/O, LATM/ADTS, and G.722 decoding
+├── bumble-codecs/             # slice-48 bitstreams + slice-134 LC3 media
+│   ├── src/{lib,g722,lc3}.rs  # bit I/O, LATM/ADTS, G.722, owned LC3 workers
 │   ├── tests/codecs.rs        # upstream fixture + length-boundary round trips
-│   └── tests/g722.rs          # upstream fixture PCM + state continuity
+│   ├── tests/g722.rs          # upstream fixture PCM + state continuity
+│   └── tests/lc3.rs           # stateful stereo/multiframe LC3 SDU round trips
 ├── bumble-audio/              # slice-98 portable PCM input and output
 │   ├── src/lib.rs             # formats, streams/files, WAVE, subprocesses
 │   └── tests/io.rs            # framing, looping, factories, worker delivery

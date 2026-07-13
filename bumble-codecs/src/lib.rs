@@ -1,6 +1,7 @@
 //! Common media bitstream codecs from `google/bumble`.
 
 pub mod g722;
+pub mod lc3;
 
 use core::fmt;
 

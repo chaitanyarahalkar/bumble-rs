@@ -14,6 +14,7 @@ description = "HCI packet framing and external transports for bumble-rs"
 [dependencies]
 bumble = { path = "../bumble" }
 bumble-a2dp = { path = "../bumble-a2dp" }
+bumble-audio = { path = "../bumble-audio" }
 bumble-att = { path = "../bumble-att" }
 bumble-avctp = { path = "../bumble-avctp" }
 bumble-avdtp = { path = "../bumble-avdtp" }

@@ -252,6 +252,111 @@ fn gatt_discovery_and_read_end_to_end() {
 }
 
 #[test]
+fn all_typed_att_requests_are_answered_over_host_transport() {
+    let mut link = LocalLink::new();
+    let central_id = link.add_controller(Controller::new("C", addr("00:00:00:00:00:01")));
+    let peripheral_id = link.add_controller(Controller::new("P", addr("00:00:00:00:00:02")));
+    let service_uuid = Uuid::from_16_bits(0x180A);
+    let server = GattServer::new(vec![Service {
+        uuid: service_uuid.clone(),
+        characteristics: vec![Characteristic {
+            uuid: Uuid::from_16_bits(0x2A00),
+            properties: 0x0A,
+            value: b"bumble-rs".to_vec(),
+        }],
+    }]);
+    let mut devices = [
+        Device::new(central_id),
+        Device::with_server(peripheral_id, server),
+    ];
+    connect(&mut link, central_id, peripheral_id);
+    pump(&mut link, &mut devices);
+
+    assert!(matches!(
+        request(
+            &mut link,
+            &mut devices,
+            0,
+            AttPdu::FindByTypeValueRequest {
+                starting_handle: 1,
+                ending_handle: u16::MAX,
+                attribute_type: Uuid::from_16_bits(GATT_PRIMARY_SERVICE_UUID),
+                attribute_value: service_uuid.to_bytes(false),
+            }
+        ),
+        AttPdu::FindByTypeValueResponse { .. }
+    ));
+    assert!(matches!(
+        request(
+            &mut link,
+            &mut devices,
+            0,
+            AttPdu::FindInformationRequest {
+                starting_handle: 1,
+                ending_handle: u16::MAX,
+            }
+        ),
+        AttPdu::FindInformationResponse { .. }
+    ));
+    assert!(matches!(
+        request(
+            &mut link,
+            &mut devices,
+            0,
+            AttPdu::ReadBlobRequest {
+                attribute_handle: 3,
+                value_offset: 2,
+            }
+        ),
+        AttPdu::ReadBlobResponse { .. }
+    ));
+    assert!(matches!(
+        request(
+            &mut link,
+            &mut devices,
+            0,
+            AttPdu::ReadMultipleRequest {
+                set_of_handles: vec![1, 3],
+            }
+        ),
+        AttPdu::ReadMultipleResponse { .. }
+    ));
+    assert!(matches!(
+        request(
+            &mut link,
+            &mut devices,
+            0,
+            AttPdu::ReadMultipleVariableRequest {
+                set_of_handles: vec![1, 3],
+            }
+        ),
+        AttPdu::ReadMultipleVariableResponse { .. }
+    ));
+    assert!(matches!(
+        request(
+            &mut link,
+            &mut devices,
+            0,
+            AttPdu::PrepareWriteRequest {
+                attribute_handle: 3,
+                value_offset: 0,
+                part_attribute_value: b"new".to_vec(),
+            }
+        ),
+        AttPdu::PrepareWriteResponse { .. }
+    ));
+    assert_eq!(
+        request(
+            &mut link,
+            &mut devices,
+            0,
+            AttPdu::ExecuteWriteRequest { flags: 0x01 }
+        ),
+        AttPdu::ExecuteWriteResponse
+    );
+}
+
+#[test]
 fn server_notification_reaches_client() {
     let mut link = LocalLink::new();
     let central_id = link.add_controller(Controller::new("C", addr("00:00:00:00:00:01")));

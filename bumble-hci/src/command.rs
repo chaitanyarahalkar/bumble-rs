@@ -30,6 +30,13 @@ impl CodingFormat {
         vendor_specific_codec_id: 0,
     };
 
+    /// `CodecID::LC3` (0x06) with no company/vendor id.
+    pub const LC3: CodingFormat = CodingFormat {
+        coding_format: 0x06,
+        company_id: 0,
+        vendor_specific_codec_id: 0,
+    };
+
     pub fn to_bytes(self) -> [u8; 5] {
         let mut out = [0u8; 5];
         out[0] = self.coding_format;
