@@ -1,0 +1,15 @@
+[package]
+name = "bumble-transport"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "HCI packet framing and external transports for bumble-rs"
+
+[dependencies]
+bumble-hci = { path = "../bumble-hci" }

@@ -21,6 +21,7 @@ members = [
     "bumble-avrcp",
     "bumble-hid",
     "bumble-codecs",
+    "bumble-transport",
 ]
 resolver = "2"
 

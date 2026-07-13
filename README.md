@@ -89,7 +89,8 @@ crate whose behavior is verified against the upstream Python.
 | 72. Multi-connection LE pairing manager | `bumble-smp`, `bumble-host` | ✅ concurrent + live manager green |
 | 73. Encrypted SMP-over-BR/EDR CTKD orchestration | `bumble-smp`, `bumble-controller`, `bumble-host` | ✅ h6/h7 + CID 0x0007 green |
 | 74. High-level LE advertise, scan, connect, and disconnect API | `bumble-host` | ✅ no raw-HCI lifecycle green |
-| 75+. Remaining modules… | — | planned |
+| 75. H4 framing and file/TCP/UDP/Unix transports | `bumble-transport` | ✅ fragmented streams + socket loopbacks green |
+| 76+. Remaining modules… | — | planned |
 
 The LE lifecycle is now complete end-to-end through library APIs: **connect →
 discover → read/write → notify → disconnect** between two virtual devices — and
@@ -169,7 +170,7 @@ size, to convey remaining surface.
 ### Transports & drivers
 | Upstream | Rust crate | Status | Notes |
 |---|---|---|---|
-| `transport/*` — USB, UART/serial, TCP, WebSocket, UDP, PTY, android-netsim, vhci, … | — | ⬜ | The link is in-process only; no real transports (so no talking to real hardware or netsim yet). |
+| `transport/*` — USB, UART/serial, TCP, WebSocket, UDP, PTY, android-netsim, vhci, … | `bumble-transport` | 🟡 | Incremental H4 framing accepts fragmented/coalesced streams and vendor packet layouts. Blocking file/PTY, TCP client/server, connected UDP, and Unix client/server endpoints are live. Deferred: transport-spec dispatch, serial/USB, WebSocket, PTY spawning, VHCI, netsim, and platform-specific endpoints. |
 | `drivers/*` — Intel, Realtek | — | ⬜ | Vendor controller firmware/init. |
 
 ### Classic Bluetooth (BR/EDR)
@@ -1716,6 +1717,27 @@ HCI commands directly:
 The larger remaining device work is extended/periodic advertising,
 multi-connection ownership, and higher-level profile/listener conveniences.
 
+## Slice 75 — what's here
+
+External controllers can now exchange typed HCI packets with the Rust stack:
+
+- `PacketFramer` implements upstream Bumble's H4 length-table behavior for
+  command, ACL, synchronous, event, and ISO packets. It accepts arbitrary input
+  fragmentation, emits coalesced packets in order, and supports registered
+  vendor packet layouts.
+- `PacketSource` and `PacketSink` provide the synchronous transport boundary;
+  `H4Transport<T>` adapts any blocking `Read`/`Write` stream and distinguishes a
+  clean EOF from a truncated packet.
+- `FileTransport`, TCP client/server, connected UDP, and Unix-domain socket
+  client/server endpoints use the same typed contract. UDP preserves Bumble's
+  parser behavior, including multiple packets in one datagram.
+- Acceptance tests use actual loopback sockets and a temporary file, in
+  addition to testing every split point in a coalesced five-packet stream that
+  covers every standard H4 packet type.
+
+The remaining transport work is transport-spec parsing plus serial, USB,
+WebSocket, PTY-spawn, VHCI, netsim, and other platform-specific endpoints.
+
 ## Acceptance
 
 The port's contract is the upstream Python test suite, ported 1:1:
@@ -1861,6 +1883,9 @@ bumble-rs/
 ├── bumble-codecs/             # slice-48 common media bitstreams/codecs
 │   ├── src/lib.rs             # bit I/O + MPEG-4 LATM AAC and ADTS conversion
 │   └── tests/codecs.rs        # upstream fixture + length-boundary round trips
+├── bumble-transport/          # slice-75 external HCI transports
+│   ├── src/{lib,common,file,tcp,udp,unix}.rs # H4 framing + blocking endpoints
+│   └── tests/transports.rs    # fragmentation, EOF, and real loopback coverage
 └── docs/superpowers/          # design specs + implementation plans
 ```
 
