@@ -44,6 +44,10 @@ pub use client::{
 
 /// GATT Primary Service declaration attribute type.
 pub const GATT_PRIMARY_SERVICE_UUID: u16 = 0x2800;
+/// GATT Secondary Service declaration attribute type.
+pub const GATT_SECONDARY_SERVICE_UUID: u16 = 0x2801;
+/// GATT Include declaration attribute type.
+pub const GATT_INCLUDE_UUID: u16 = 0x2802;
 /// GATT Characteristic declaration attribute type.
 pub const GATT_CHARACTERISTIC_UUID: u16 = 0x2803;
 /// GATT Client Characteristic Configuration descriptor (CCCD) attribute type.
@@ -51,11 +55,27 @@ pub const GATT_CLIENT_CHARACTERISTIC_CONFIGURATION_UUID: u16 = 0x2902;
 
 /// Characteristic property bits (Vol 3, Part G - 3.3.1.1).
 pub mod properties {
+    pub const BROADCAST: u8 = 0x01;
     pub const READ: u8 = 0x02;
     pub const WRITE_WITHOUT_RESPONSE: u8 = 0x04;
     pub const WRITE: u8 = 0x08;
     pub const NOTIFY: u8 = 0x10;
     pub const INDICATE: u8 = 0x20;
+    pub const AUTHENTICATED_SIGNED_WRITES: u8 = 0x40;
+    pub const EXTENDED_PROPERTIES: u8 = 0x80;
+}
+
+/// Attribute access and security requirement bits, matching
+/// `bumble.att.Attribute.Permissions`.
+pub mod permissions {
+    pub const READABLE: u8 = 0x01;
+    pub const WRITEABLE: u8 = 0x02;
+    pub const READ_REQUIRES_ENCRYPTION: u8 = 0x04;
+    pub const WRITE_REQUIRES_ENCRYPTION: u8 = 0x08;
+    pub const READ_REQUIRES_AUTHENTICATION: u8 = 0x10;
+    pub const WRITE_REQUIRES_AUTHENTICATION: u8 = 0x20;
+    pub const READ_REQUIRES_AUTHORIZATION: u8 = 0x40;
+    pub const WRITE_REQUIRES_AUTHORIZATION: u8 = 0x80;
 }
 
 /// Something that answers ATT requests. Lets the host layer hold any server
@@ -84,6 +104,16 @@ pub const ATT_REQUEST_NOT_SUPPORTED_ERROR: u8 = 0x06;
 pub const ATT_INVALID_OFFSET_ERROR: u8 = 0x07;
 /// ATT error: the request fields are invalid for this opcode.
 pub const ATT_INVALID_PDU_ERROR: u8 = 0x04;
+/// ATT error: this attribute does not permit reads.
+pub const ATT_READ_NOT_PERMITTED_ERROR: u8 = 0x02;
+/// ATT error: this attribute does not permit writes.
+pub const ATT_WRITE_NOT_PERMITTED_ERROR: u8 = 0x03;
+/// ATT error: the connection is not authenticated.
+pub const ATT_INSUFFICIENT_AUTHENTICATION_ERROR: u8 = 0x05;
+/// ATT error: the client is not authorized.
+pub const ATT_INSUFFICIENT_AUTHORIZATION_ERROR: u8 = 0x08;
+/// ATT error: the connection is not encrypted.
+pub const ATT_INSUFFICIENT_ENCRYPTION_ERROR: u8 = 0x0F;
 
 /// The default ATT MTU (Vol 3, Part F - 3.2.8).
 pub const ATT_DEFAULT_MTU: u16 = 23;
@@ -314,6 +344,63 @@ pub struct Service {
     pub characteristics: Vec<Characteristic>,
 }
 
+/// Security state associated with the ATT bearer handling a request.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct AccessContext {
+    pub encrypted: bool,
+    pub authenticated: bool,
+    pub authorized: bool,
+}
+
+/// A descriptor in the complete GATT database-definition API.
+#[derive(Clone, Debug)]
+pub struct DescriptorDefinition {
+    pub uuid: Uuid,
+    pub permissions: u8,
+    pub value: Vec<u8>,
+}
+
+/// A characteristic in the complete GATT database-definition API.
+#[derive(Clone, Debug)]
+pub struct CharacteristicDefinition {
+    pub uuid: Uuid,
+    pub properties: u8,
+    pub permissions: u8,
+    pub value: Vec<u8>,
+    pub descriptors: Vec<DescriptorDefinition>,
+}
+
+/// A primary or secondary service. Included services are indices into the
+/// complete definitions slice passed to [`GattServer::from_definitions`].
+#[derive(Clone, Debug)]
+pub struct ServiceDefinition {
+    pub uuid: Uuid,
+    pub primary: bool,
+    pub included_services: Vec<usize>,
+    pub characteristics: Vec<CharacteristicDefinition>,
+}
+
+/// An invalid GATT database definition.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DatabaseError {
+    InvalidIncludedService { service: usize, included: usize },
+    TooManyAttributes,
+}
+
+impl core::fmt::Display for DatabaseError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::InvalidIncludedService { service, included } => write!(
+                f,
+                "service {service} includes missing service index {included}"
+            ),
+            Self::TooManyAttributes => f.write_str("GATT database exceeds 65535 attributes"),
+        }
+    }
+}
+
+impl std::error::Error for DatabaseError {}
+
 /// One entry in the flat attribute database a [`GattServer`] builds from its
 /// services.
 #[derive(Clone, Debug)]
@@ -323,6 +410,7 @@ struct Attribute {
     /// For a service declaration, the last handle of the service group;
     /// otherwise the attribute's own handle.
     end_group_handle: u16,
+    permissions: u8,
     value: Vec<u8>,
 }
 
@@ -345,19 +433,126 @@ impl GattServer {
     /// Service declaration, then per characteristic a declaration followed by
     /// its value attribute.
     pub fn new(services: Vec<Service>) -> GattServer {
-        let mut attributes: Vec<Attribute> = Vec::new();
-        let mut handle: u16 = 1;
+        let definitions = services
+            .into_iter()
+            .map(|service| ServiceDefinition {
+                uuid: service.uuid,
+                primary: true,
+                included_services: Vec::new(),
+                characteristics: service
+                    .characteristics
+                    .into_iter()
+                    .map(|characteristic| {
+                        CharacteristicDefinition {
+                            uuid: characteristic.uuid,
+                            properties: characteristic.properties,
+                            // The original compact API predates permissions and
+                            // accepted both operations. Keep that behavior;
+                            // explicit definitions opt into enforcement.
+                            permissions: permissions::READABLE | permissions::WRITEABLE,
+                            value: characteristic.value,
+                            descriptors: Vec::new(),
+                        }
+                    })
+                    .collect(),
+            })
+            .collect();
+        Self::from_definitions(definitions).expect("legacy GATT database fits in handle space")
+    }
 
-        for service in services {
-            let service_index = attributes.len();
-            let service_handle = handle;
-            handle += 1;
+    /// Build a complete GATT database with secondary services, include
+    /// declarations, arbitrary descriptors, and explicit access permissions.
+    pub fn from_definitions(services: Vec<ServiceDefinition>) -> Result<GattServer, DatabaseError> {
+        #[derive(Clone, Copy)]
+        struct Layout {
+            start: u16,
+            end: u16,
+        }
+
+        let mut layouts = Vec::with_capacity(services.len());
+        let mut next_handle = 1usize;
+        for service in &services {
+            let mut count = 1usize + service.included_services.len();
+            for characteristic in &service.characteristics {
+                count = count
+                    .checked_add(2 + characteristic.descriptors.len())
+                    .ok_or(DatabaseError::TooManyAttributes)?;
+                let has_cccd = characteristic.descriptors.iter().any(|descriptor| {
+                    descriptor.uuid
+                        == Uuid::from_16_bits(GATT_CLIENT_CHARACTERISTIC_CONFIGURATION_UUID)
+                });
+                if characteristic.properties & (properties::NOTIFY | properties::INDICATE) != 0
+                    && !has_cccd
+                {
+                    count = count
+                        .checked_add(1)
+                        .ok_or(DatabaseError::TooManyAttributes)?;
+                }
+            }
+            let end = next_handle
+                .checked_add(count - 1)
+                .ok_or(DatabaseError::TooManyAttributes)?;
+            if end > u16::MAX as usize {
+                return Err(DatabaseError::TooManyAttributes);
+            }
+            layouts.push(Layout {
+                start: next_handle as u16,
+                end: end as u16,
+            });
+            next_handle = end + 1;
+        }
+
+        for (service_index, service) in services.iter().enumerate() {
+            for &included in &service.included_services {
+                if included >= services.len() {
+                    return Err(DatabaseError::InvalidIncludedService {
+                        service: service_index,
+                        included,
+                    });
+                }
+            }
+        }
+        let service_uuids: Vec<Uuid> = services
+            .iter()
+            .map(|service| service.uuid.clone())
+            .collect();
+
+        let mut attributes: Vec<Attribute> = Vec::new();
+        let mut handle = 1u32;
+
+        for (service_index, service) in services.into_iter().enumerate() {
+            let service_layout = layouts[service_index];
             attributes.push(Attribute {
-                handle: service_handle,
-                type_uuid: Uuid::from_16_bits(GATT_PRIMARY_SERVICE_UUID),
-                end_group_handle: service_handle,
+                handle: handle as u16,
+                type_uuid: Uuid::from_16_bits(if service.primary {
+                    GATT_PRIMARY_SERVICE_UUID
+                } else {
+                    GATT_SECONDARY_SERVICE_UUID
+                }),
+                end_group_handle: service_layout.end,
+                permissions: permissions::READABLE,
                 value: service.uuid.to_bytes(false),
             });
+            handle += 1;
+
+            for included_index in service.included_services {
+                let included_layout = layouts[included_index];
+                let mut value = Vec::with_capacity(6);
+                value.extend_from_slice(&included_layout.start.to_le_bytes());
+                value.extend_from_slice(&included_layout.end.to_le_bytes());
+                let included_uuid = service_uuids[included_index].to_bytes(false);
+                if included_uuid.len() == 2 {
+                    value.extend_from_slice(&included_uuid);
+                }
+                attributes.push(Attribute {
+                    handle: handle as u16,
+                    type_uuid: Uuid::from_16_bits(GATT_INCLUDE_UUID),
+                    end_group_handle: handle as u16,
+                    permissions: permissions::READABLE,
+                    value,
+                });
+                handle += 1;
+            }
 
             for ch in service.characteristics {
                 let decl_handle = handle;
@@ -367,46 +562,64 @@ impl GattServer {
 
                 let mut declaration = Vec::with_capacity(3 + 16);
                 declaration.push(ch.properties);
-                declaration.extend_from_slice(&value_handle.to_le_bytes());
+                declaration.extend_from_slice(&(value_handle as u16).to_le_bytes());
                 declaration.extend_from_slice(&ch.uuid.to_bytes(false));
                 attributes.push(Attribute {
-                    handle: decl_handle,
+                    handle: decl_handle as u16,
                     type_uuid: Uuid::from_16_bits(GATT_CHARACTERISTIC_UUID),
-                    end_group_handle: decl_handle,
+                    end_group_handle: decl_handle as u16,
+                    permissions: permissions::READABLE,
                     value: declaration,
                 });
                 attributes.push(Attribute {
-                    handle: value_handle,
+                    handle: value_handle as u16,
                     type_uuid: ch.uuid.clone(),
-                    end_group_handle: value_handle,
+                    end_group_handle: value_handle as u16,
+                    permissions: ch.permissions,
                     value: ch.value,
                 });
 
+                let has_cccd = ch.descriptors.iter().any(|descriptor| {
+                    descriptor.uuid
+                        == Uuid::from_16_bits(GATT_CLIENT_CHARACTERISTIC_CONFIGURATION_UUID)
+                });
+                for descriptor in ch.descriptors {
+                    let descriptor_handle = handle;
+                    handle += 1;
+                    attributes.push(Attribute {
+                        handle: descriptor_handle as u16,
+                        type_uuid: descriptor.uuid,
+                        end_group_handle: descriptor_handle as u16,
+                        permissions: descriptor.permissions,
+                        value: descriptor.value,
+                    });
+                }
+
                 // A notify/indicate characteristic gets a Client Characteristic
                 // Configuration descriptor, initialised to "disabled".
-                if ch.properties & (properties::NOTIFY | properties::INDICATE) != 0 {
+                if ch.properties & (properties::NOTIFY | properties::INDICATE) != 0 && !has_cccd {
                     let cccd_handle = handle;
                     handle += 1;
                     attributes.push(Attribute {
-                        handle: cccd_handle,
+                        handle: cccd_handle as u16,
                         type_uuid: Uuid::from_16_bits(
                             GATT_CLIENT_CHARACTERISTIC_CONFIGURATION_UUID,
                         ),
-                        end_group_handle: cccd_handle,
+                        end_group_handle: cccd_handle as u16,
+                        permissions: permissions::READABLE | permissions::WRITEABLE,
                         value: vec![0x00, 0x00],
                     });
                 }
             }
-
-            attributes[service_index].end_group_handle = handle - 1;
+            debug_assert_eq!((handle - 1) as u16, service_layout.end);
         }
 
-        GattServer {
+        Ok(GattServer {
             attributes,
             mtu: ATT_DEFAULT_MTU,
             negotiated_mtu: ATT_DEFAULT_MTU,
             prepared_writes: Vec::new(),
-        }
+        })
     }
 
     fn find(&self, handle: u16) -> Option<&Attribute> {
@@ -423,6 +636,12 @@ impl GattServer {
 
     /// Turn an incoming ATT request into a response.
     pub fn on_request(&mut self, request: &AttPdu) -> AttPdu {
+        self.on_request_with_context(request, AccessContext::default())
+    }
+
+    /// Turn an incoming ATT request into a response using the security state
+    /// associated with its bearer.
+    pub fn on_request_with_context(&mut self, request: &AttPdu, context: AccessContext) -> AttPdu {
         match request {
             AttPdu::ExchangeMtuRequest { client_rx_mtu } => {
                 self.negotiated_mtu = (*client_rx_mtu).min(self.mtu).max(ATT_DEFAULT_MTU);
@@ -431,10 +650,13 @@ impl GattServer {
                 }
             }
             AttPdu::ReadRequest { attribute_handle } => match self.find(*attribute_handle) {
-                Some(a) => AttPdu::ReadResponse {
-                    // A Read Response carries at most MTU-1 bytes; longer
-                    // values are fetched with Read Blob.
-                    attribute_value: truncate(&a.value, (self.negotiated_mtu - 1) as usize),
+                Some(a) => match check_read_access(a.permissions, context) {
+                    Ok(()) => AttPdu::ReadResponse {
+                        // A Read Response carries at most MTU-1 bytes; longer
+                        // values are fetched with Read Blob.
+                        attribute_value: truncate(&a.value, (self.negotiated_mtu - 1) as usize),
+                    },
+                    Err(code) => error(codes::ATT_READ_REQUEST, *attribute_handle, code),
                 },
                 None => error(
                     codes::ATT_READ_REQUEST,
@@ -447,6 +669,9 @@ impl GattServer {
                 value_offset,
             } => match self.find(*attribute_handle) {
                 Some(a) => {
+                    if let Err(code) = check_read_access(a.permissions, context) {
+                        return error(codes::ATT_READ_BLOB_REQUEST, *attribute_handle, code);
+                    }
                     let offset = *value_offset as usize;
                     if offset > a.value.len() {
                         error(
@@ -468,19 +693,24 @@ impl GattServer {
                 ),
             },
             AttPdu::ReadMultipleRequest { set_of_handles } => {
-                self.read_multiple(set_of_handles, false)
+                self.read_multiple(set_of_handles, false, context)
             }
             AttPdu::ReadMultipleVariableRequest { set_of_handles } => {
-                self.read_multiple(set_of_handles, true)
+                self.read_multiple(set_of_handles, true, context)
             }
             AttPdu::WriteRequest {
                 attribute_handle,
                 attribute_value,
-            } => match self.find_mut(*attribute_handle) {
-                Some(a) => {
-                    a.value = attribute_value.clone();
-                    AttPdu::WriteResponse
-                }
+            } => match self.find(*attribute_handle) {
+                Some(a) => match check_write_access(a.permissions, context) {
+                    Ok(()) => {
+                        self.find_mut(*attribute_handle)
+                            .expect("attribute was just found")
+                            .value = attribute_value.clone();
+                        AttPdu::WriteResponse
+                    }
+                    Err(code) => error(codes::ATT_WRITE_REQUEST, *attribute_handle, code),
+                },
                 None => error(
                     codes::ATT_WRITE_REQUEST,
                     *attribute_handle,
@@ -491,12 +721,17 @@ impl GattServer {
                 starting_handle,
                 ending_handle,
                 attribute_group_type,
-            } => self.read_by_group_type(*starting_handle, *ending_handle, attribute_group_type),
+            } => self.read_by_group_type(
+                *starting_handle,
+                *ending_handle,
+                attribute_group_type,
+                context,
+            ),
             AttPdu::ReadByTypeRequest {
                 starting_handle,
                 ending_handle,
                 attribute_type,
-            } => self.read_by_type(*starting_handle, *ending_handle, attribute_type),
+            } => self.read_by_type(*starting_handle, *ending_handle, attribute_type, context),
             AttPdu::FindInformationRequest {
                 starting_handle,
                 ending_handle,
@@ -511,14 +746,19 @@ impl GattServer {
                 *ending_handle,
                 attribute_type,
                 attribute_value,
+                context,
             ),
             AttPdu::WriteCommand {
                 attribute_handle,
                 attribute_value,
             } => {
                 // A command has no response; apply it best-effort.
-                if let Some(a) = self.find_mut(*attribute_handle) {
-                    a.value = attribute_value.clone();
+                if let Some(a) = self.find(*attribute_handle) {
+                    if check_write_access(a.permissions, context).is_ok() {
+                        self.find_mut(*attribute_handle)
+                            .expect("attribute was just found")
+                            .value = attribute_value.clone();
+                    }
                 }
                 // Callers ignore the returned PDU for commands; surface a no-op.
                 AttPdu::HandleValueConfirmation
@@ -529,32 +769,34 @@ impl GattServer {
                 attribute_handle,
                 value_offset,
                 part_attribute_value,
-            } => {
-                if self.find(*attribute_handle).is_none() {
-                    error(
-                        codes::ATT_PREPARE_WRITE_REQUEST,
-                        *attribute_handle,
-                        ATT_ATTRIBUTE_NOT_FOUND_ERROR,
-                    )
-                } else {
-                    self.prepared_writes.push((
-                        *attribute_handle,
-                        *value_offset,
-                        part_attribute_value.clone(),
-                    ));
-                    AttPdu::PrepareWriteResponse {
-                        attribute_handle: *attribute_handle,
-                        value_offset: *value_offset,
-                        part_attribute_value: part_attribute_value.clone(),
+            } => match self.find(*attribute_handle) {
+                None => error(
+                    codes::ATT_PREPARE_WRITE_REQUEST,
+                    *attribute_handle,
+                    ATT_ATTRIBUTE_NOT_FOUND_ERROR,
+                ),
+                Some(attribute) => match check_write_access(attribute.permissions, context) {
+                    Err(code) => error(codes::ATT_PREPARE_WRITE_REQUEST, *attribute_handle, code),
+                    Ok(()) => {
+                        self.prepared_writes.push((
+                            *attribute_handle,
+                            *value_offset,
+                            part_attribute_value.clone(),
+                        ));
+                        AttPdu::PrepareWriteResponse {
+                            attribute_handle: *attribute_handle,
+                            value_offset: *value_offset,
+                            part_attribute_value: part_attribute_value.clone(),
+                        }
                     }
-                }
-            }
-            AttPdu::ExecuteWriteRequest { flags } => self.execute_writes(*flags),
+                },
+            },
+            AttPdu::ExecuteWriteRequest { flags } => self.execute_writes(*flags, context),
             other => error(other.op_code(), 0, ATT_REQUEST_NOT_SUPPORTED_ERROR),
         }
     }
 
-    fn read_multiple(&self, handles: &[u16], variable: bool) -> AttPdu {
+    fn read_multiple(&self, handles: &[u16], variable: bool, context: AccessContext) -> AttPdu {
         let mut remaining = usize::from(self.negotiated_mtu - 1);
         if variable {
             let mut tuples = Vec::new();
@@ -566,6 +808,9 @@ impl GattServer {
                         ATT_ATTRIBUTE_NOT_FOUND_ERROR,
                     );
                 };
+                if let Err(code) = check_read_access(attribute.permissions, context) {
+                    return error(codes::ATT_READ_MULTIPLE_VARIABLE_REQUEST, *handle, code);
+                }
                 let part = truncate(
                     &attribute.value,
                     usize::from(self.negotiated_mtu - 3).min(251),
@@ -589,6 +834,9 @@ impl GattServer {
                         ATT_ATTRIBUTE_NOT_FOUND_ERROR,
                     );
                 };
+                if let Err(code) = check_read_access(attribute.permissions, context) {
+                    return error(codes::ATT_READ_MULTIPLE_REQUEST, *handle, code);
+                }
                 let part = truncate(
                     &attribute.value,
                     usize::from(self.negotiated_mtu - 1).min(251),
@@ -605,7 +853,7 @@ impl GattServer {
         }
     }
 
-    fn execute_writes(&mut self, flags: u8) -> AttPdu {
+    fn execute_writes(&mut self, flags: u8, context: AccessContext) -> AttPdu {
         if flags == 0 {
             self.prepared_writes.clear();
             return AttPdu::ExecuteWriteResponse;
@@ -620,6 +868,16 @@ impl GattServer {
             .map(|attribute| (attribute.handle, attribute.value.clone()))
             .collect();
         for (handle, offset, part) in &prepared_writes {
+            let Some(attribute) = self.find(*handle) else {
+                return error(
+                    codes::ATT_EXECUTE_WRITE_REQUEST,
+                    *handle,
+                    ATT_ATTRIBUTE_NOT_FOUND_ERROR,
+                );
+            };
+            if let Err(code) = check_write_access(attribute.permissions, context) {
+                return error(codes::ATT_EXECUTE_WRITE_REQUEST, *handle, code);
+            }
             let Some(value) = staged.get_mut(handle) else {
                 return error(
                     codes::ATT_EXECUTE_WRITE_REQUEST,
@@ -706,6 +964,7 @@ impl GattServer {
         end: u16,
         attribute_type: &Uuid,
         attribute_value: &[u8],
+        context: AccessContext,
     ) -> AttPdu {
         let mut list = Vec::new();
         for a in self.attributes.iter().filter(|a| {
@@ -714,6 +973,9 @@ impl GattServer {
                 && a.type_uuid == *attribute_type
                 && a.value == attribute_value
         }) {
+            if let Err(code) = check_read_access(a.permissions, context) {
+                return error(codes::ATT_FIND_BY_TYPE_VALUE_REQUEST, a.handle, code);
+            }
             list.extend_from_slice(&a.handle.to_le_bytes());
             list.extend_from_slice(&a.end_group_handle.to_le_bytes());
         }
@@ -729,7 +991,13 @@ impl GattServer {
         }
     }
 
-    fn read_by_group_type(&self, start: u16, end: u16, group_type: &Uuid) -> AttPdu {
+    fn read_by_group_type(
+        &self,
+        start: u16,
+        end: u16,
+        group_type: &Uuid,
+        context: AccessContext,
+    ) -> AttPdu {
         // Grouping attributes (services) in range with the matching type.
         let matches: Vec<&Attribute> = self
             .attributes
@@ -743,11 +1011,17 @@ impl GattServer {
                 ATT_ATTRIBUTE_NOT_FOUND_ERROR,
             );
         };
+        if let Err(code) = check_read_access(first.permissions, context) {
+            return error(codes::ATT_READ_BY_GROUP_TYPE_REQUEST, first.handle, code);
+        }
 
         // A response groups only entries whose value has the same length.
         let value_len = first.value.len();
         let mut adl = Vec::new();
         for a in matches.iter().take_while(|a| a.value.len() == value_len) {
+            if let Err(code) = check_read_access(a.permissions, context) {
+                return error(codes::ATT_READ_BY_GROUP_TYPE_REQUEST, a.handle, code);
+            }
             adl.extend_from_slice(&a.handle.to_le_bytes());
             adl.extend_from_slice(&a.end_group_handle.to_le_bytes());
             adl.extend_from_slice(&a.value);
@@ -758,7 +1032,13 @@ impl GattServer {
         }
     }
 
-    fn read_by_type(&self, start: u16, end: u16, attribute_type: &Uuid) -> AttPdu {
+    fn read_by_type(
+        &self,
+        start: u16,
+        end: u16,
+        attribute_type: &Uuid,
+        context: AccessContext,
+    ) -> AttPdu {
         let matches: Vec<&Attribute> = self
             .attributes
             .iter()
@@ -771,10 +1051,16 @@ impl GattServer {
                 ATT_ATTRIBUTE_NOT_FOUND_ERROR,
             );
         };
+        if let Err(code) = check_read_access(first.permissions, context) {
+            return error(codes::ATT_READ_BY_TYPE_REQUEST, first.handle, code);
+        }
 
         let value_len = first.value.len();
         let mut adl = Vec::new();
         for a in matches.iter().take_while(|a| a.value.len() == value_len) {
+            if let Err(code) = check_read_access(a.permissions, context) {
+                return error(codes::ATT_READ_BY_TYPE_REQUEST, a.handle, code);
+            }
             adl.extend_from_slice(&a.handle.to_le_bytes());
             adl.extend_from_slice(&a.value);
         }
@@ -783,6 +1069,52 @@ impl GattServer {
             attribute_data_list: adl,
         }
     }
+}
+
+fn check_read_access(attribute_permissions: u8, context: AccessContext) -> Result<(), u8> {
+    let read_bits = permissions::READABLE
+        | permissions::READ_REQUIRES_ENCRYPTION
+        | permissions::READ_REQUIRES_AUTHENTICATION
+        | permissions::READ_REQUIRES_AUTHORIZATION;
+    if attribute_permissions & read_bits == 0 {
+        return Err(ATT_READ_NOT_PERMITTED_ERROR);
+    }
+    if attribute_permissions & permissions::READ_REQUIRES_ENCRYPTION != 0 && !context.encrypted {
+        return Err(ATT_INSUFFICIENT_ENCRYPTION_ERROR);
+    }
+    if attribute_permissions & permissions::READ_REQUIRES_AUTHENTICATION != 0
+        && !context.authenticated
+    {
+        return Err(ATT_INSUFFICIENT_AUTHENTICATION_ERROR);
+    }
+    if attribute_permissions & permissions::READ_REQUIRES_AUTHORIZATION != 0 && !context.authorized
+    {
+        return Err(ATT_INSUFFICIENT_AUTHORIZATION_ERROR);
+    }
+    Ok(())
+}
+
+fn check_write_access(attribute_permissions: u8, context: AccessContext) -> Result<(), u8> {
+    let write_bits = permissions::WRITEABLE
+        | permissions::WRITE_REQUIRES_ENCRYPTION
+        | permissions::WRITE_REQUIRES_AUTHENTICATION
+        | permissions::WRITE_REQUIRES_AUTHORIZATION;
+    if attribute_permissions & write_bits == 0 {
+        return Err(ATT_WRITE_NOT_PERMITTED_ERROR);
+    }
+    if attribute_permissions & permissions::WRITE_REQUIRES_ENCRYPTION != 0 && !context.encrypted {
+        return Err(ATT_INSUFFICIENT_ENCRYPTION_ERROR);
+    }
+    if attribute_permissions & permissions::WRITE_REQUIRES_AUTHENTICATION != 0
+        && !context.authenticated
+    {
+        return Err(ATT_INSUFFICIENT_AUTHENTICATION_ERROR);
+    }
+    if attribute_permissions & permissions::WRITE_REQUIRES_AUTHORIZATION != 0 && !context.authorized
+    {
+        return Err(ATT_INSUFFICIENT_AUTHORIZATION_ERROR);
+    }
+    Ok(())
 }
 
 #[cfg(test)]

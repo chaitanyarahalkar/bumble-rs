@@ -66,7 +66,8 @@ crate whose behavior is verified against the upstream Python.
 | 49. Complete ATT wire PDU catalog | `bumble-att` | ✅ all upstream subclasses typed |
 | 50. GATT multiple reads and atomic queued writes | `bumble-gatt` | ✅ fixed/variable + prepare/execute green |
 | 51. Pairing key JSON/memory stores and resolving-list extraction | `bumble` | ✅ atomic persistence green |
-| 52+. Remaining modules… | — | planned |
+| 52. Complete GATT database definitions and access security | `bumble-gatt` | ✅ include/secondary/descriptor/permission green |
+| 53+. Remaining modules… | — | planned |
 
 The LE lifecycle is now complete end-to-end through library APIs: **connect →
 discover → read/write → notify → disconnect** between two virtual devices — and
@@ -133,7 +134,7 @@ size, to convey remaining surface.
 | Upstream (LOC) | Rust crate | Status | Notes |
 |---|---|---|---|
 | `att.py` (1.1k) | `bumble-att` | ✅ | Complete typed catalog for every upstream `ATT_PDU` subclass: discovery, MTU, Read/Blob/Multiple/Multiple Variable/By Type/By Group, Write/Command/Signed, Prepare/Execute Write, notifications/indications, and confirmation. All added forms are Python-oracle pinned; variable tuples and handle sets add safe truncation/shape checks. |
-| `gatt.py` (0.6k), `gatt_server.py` (1.2k) | `bumble-gatt` | 🟡 | Attribute DB, service/characteristic model, primary discovery, read/write/notify, Find_Information/Find_By_Type_Value, CCCDs, MTU-sized Read/Blob, fixed + variable Read Multiple, and atomic Prepare/Execute Write with cancel/rollback. Signed writes are deliberately ignored until a connection CSRK/counter can authenticate them. Deferred: included services, permission/security enforcement, dynamic accessors. |
+| `gatt.py` (0.6k), `gatt_server.py` (1.2k) | `bumble-gatt` | 🟡 | Attribute DB, primary/secondary services, include declarations, characteristic descriptors, automatic CCCDs, explicit access/security permissions, primary discovery, read/write/notify, Find_Information/Find_By_Type_Value, MTU-sized Read/Blob, fixed + variable Read Multiple, and atomic Prepare/Execute Write with cancel/rollback. Signed writes are deliberately ignored until a connection CSRK/counter can authenticate them. Deferred: dynamic value accessors and the async bearer/event layer. |
 | `gatt_client.py` (1.2k), `gatt_adapters.py` (0.4k) | `bumble-gatt` | 🟡 | **`GattClient` (slice 18)**: service / characteristic / descriptor discovery, reads (with long-read via Read_Blob), writes (with and without response), and notify/indicate subscriptions (CCCD write + notification/indication handling), over an `AttTransport`. Verified by a two-party client↔server integration test. Deferred (matching the synchronous port): the async bearer, `gatt_adapters` typed-value proxies, and event listeners. |
 
 ### Security (SMP + crypto)
@@ -1165,6 +1166,28 @@ Bonded-peer key persistence now completes upstream `keys.py`:
   invalid hex, bad peer addresses, and filesystem errors remain typed failures.
 
 The next slice returns to the remaining GATT service/access model gaps.
+
+## Slice 52 — what's here
+
+The GATT database can now represent the complete static upstream service model:
+
+- `ServiceDefinition` selects primary or secondary declaration type and emits
+  Include declarations referencing any service in the same database. Include
+  values carry start/end handles and a UUID only for 16-bit Bluetooth UUIDs.
+- `CharacteristicDefinition` accepts explicit permissions and an arbitrary
+  ordered descriptor list. Notify/indicate characteristics still receive an
+  automatic CCCD unless the caller supplied one.
+- `AccessContext` carries bearer encryption, authentication, and authorization
+  state. Direct/blob/multiple/by-type reads, writes/commands, and queued writes
+  share the same permission checks and ATT error codes.
+- Security-only permission flags imply access, matching upstream callers that
+  specify `READ_REQUIRES_AUTHENTICATION` without a redundant `READABLE` bit.
+  The compact pre-permission `GattServer::new` API retains its original
+  permissive read/write behavior for compatibility.
+
+The remaining GATT model gap is dynamic read/write value accessors; after that,
+work continues through the larger controller, L2CAP, SMP, profile, and transport
+surfaces.
 
 ## Acceptance
 
