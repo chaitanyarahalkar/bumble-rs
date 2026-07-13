@@ -15,6 +15,7 @@ pub mod device_information_service;
 pub mod gap;
 pub mod gatt_service;
 pub mod heart_rate_service;
+pub mod mcp;
 pub mod vcs;
 pub mod vocs;
 

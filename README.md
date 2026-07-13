@@ -102,7 +102,8 @@ crate whose behavior is verified against the upstream Python.
 | 85. Foundational GAP/GATT/Battery/Device Info/Heart Rate profiles | `bumble-profiles` | ✅ live service/proxy + database hash green |
 | 86. ASHA hearing-aid streaming and Coordinated Set Identification | `bumble-profiles` | ✅ control/state + CSIS crypto/live encrypted GATT green |
 | 87. Volume Control, Volume Offset Control, and Audio Input Control | `bumble-profiles` / `bumble-gatt` | ✅ encrypted control matrices + included-service discovery green |
-| 88+. Remaining modules… | — | planned |
+| 88. Media Control and Generic Media Control | `bumble-profiles` | ✅ full model/proxy catalog + live notification handshake green |
+| 89+. Remaining modules… | — | planned |
 
 The LE lifecycle is now complete end-to-end through library APIs: **connect →
 discover → read/write → notify → disconnect** between two virtual devices — and
@@ -204,7 +205,7 @@ size, to convey remaining surface.
 ### Profiles & apps
 | Upstream | Rust crate | Status | Notes |
 |---|---|---|---|
-| `profiles/*` — GAP, Battery, Device Info, Heart Rate, ASHA, LE Audio (BAP/PACS/ASCS/…), HAP, CSIP, … (24 modules) | `bumble-profiles` | 🟡 | Ten modules are live: foundational GAP/GATT/Battery/Device Information/Heart Rate, ASHA/CSIP, and the VCS/VOCS/AICS volume-input family. They cover discovery proxies, dynamic callbacks, typed values, CCCDs, encrypted control points, included secondary services, the upstream database-hash vector, hearing-aid state/audio ingress, and CSIS crypto/RSI/SIRK handling. Deferred: the remaining 14 media, hearing, LE Audio, telephony, and notification modules. |
+| `profiles/*` — GAP, Battery, Device Info, Heart Rate, ASHA, LE Audio (BAP/PACS/ASCS/…), HAP, CSIP, … (23 modules) | `bumble-profiles` | 🟡 | Eleven modules are live: foundational GAP/GATT/Battery/Device Information/Heart Rate, ASHA/CSIP, VCS/VOCS/AICS, and MCP/GMCS (one upstream module). They cover discovery proxies, dynamic callbacks, typed values, CCCDs, encrypted control points, included secondary services, media notifications, the upstream database-hash vector, hearing-aid state/audio ingress, and CSIS crypto/RSI/SIRK handling. Deferred: the remaining 12 media, hearing, LE Audio, telephony, and notification modules. |
 | `bridge.py`, `pandora/`, apps | — | ⬜ | Test harnesses / apps — out of scope. |
 
 ### Roughly where that leaves things
@@ -2019,6 +2020,26 @@ The Volume Control profile family now composes through real encrypted ATT:
   including mixed 16-bit and 128-bit service UUIDs. A live VCS test discovers
   its included VOCS and AICS records and constructs both proxies from them.
 
+## Slice 88 — what's here
+
+Media Control and Generic Media Control now run over the live GATT client/server:
+
+- The complete open playing-order, media-state, control-opcode, result,
+  supported-opcode, search-item, and object-type catalogs are present. The
+  48-bit Object ID and seven-byte Group Object models reject malformed or
+  overflowing values and round-trip byte-exactly.
+- MCS and GMCS publish the same nine server characteristics as Bumble with
+  encrypted access and automatic notification CCCDs. Control writes enqueue
+  the upstream `[opcode, SUCCESS]` response for delivery as a real GATT
+  notification.
+- The proxy recognizes all 22 standard optional MCP characteristics, subscribes
+  to the six event-bearing values, and decodes control responses, state, track
+  change/title, duration, and position into typed synchronous events. Tests
+  cover subscription caching, opcode correlation, malformed values, and the
+  full write-to-notification handshake.
+- The inventory denominator is corrected from 24 to the 23 actual Python
+  modules in `bumble/profiles` (excluding `__init__.py`).
+
 ## Acceptance
 
 The port's contract is the upstream Python test suite, ported 1:1:
@@ -2183,11 +2204,12 @@ bumble-rs/
 │   ├── tests/intel.rs         # exact wire, parser, lookup, full cold-start flow
 │   ├── tests/rtk.rs           # epatch failures, matrix, wrap, full download flow
 │   └── tests/selection.rs     # forced/unknown/automatic driver selection
-├── bumble-profiles/           # slices 85-87 standard GATT profile services
-│   ├── src/{gap,gatt_service,battery_service,device_information_service,heart_rate_service,asha,csip,vcs,vocs,aics}.rs
+├── bumble-profiles/           # slices 85-88 standard GATT profile services
+│   ├── src/{gap,gatt_service,battery_service,device_information_service,heart_rate_service,asha,csip,vcs,vocs,aics,mcp}.rs
 │   ├── tests/foundational_services.rs # live typed proxy/control/hash coverage
 │   ├── tests/hearing_profiles.rs # ASHA state + CSIS vectors/encrypted reads
-│   └── tests/volume_controls.rs # encrypted VCS/VOCS/AICS control matrices
+│   ├── tests/volume_controls.rs # encrypted VCS/VOCS/AICS control matrices
+│   └── tests/media_control.rs # typed MCS events + GMCS control handshake
 └── docs/superpowers/          # design specs + implementation plans
 ```
 
