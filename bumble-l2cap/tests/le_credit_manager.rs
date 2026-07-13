@@ -76,6 +76,15 @@ fn connects_transfers_bidirectionally_replenishes_and_disconnects() {
     pump(&mut client, &mut server);
     assert!(client.channel(client_cid).is_none());
     assert!(server.channel(server_cid).is_none());
+
+    let reused_cid = client
+        .connect(psm, LeCreditBasedChannelSpec::default())
+        .unwrap();
+    assert_eq!(reused_cid, client_cid);
+    assert_eq!(client.connection_result(reused_cid), None);
+    pump(&mut client, &mut server);
+    assert_eq!(client.connection_result(reused_cid), Some(0));
+    assert!(client.channel(reused_cid).is_some());
 }
 
 #[test]

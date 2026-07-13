@@ -18,6 +18,7 @@ bumble-gatt = { path = "../bumble-gatt" }
 bumble-hci = { path = "../bumble-hci" }
 bumble-controller = { path = "../bumble-controller" }
 bumble-host = { path = "../bumble-host" }
+bumble-l2cap = { path = "../bumble-l2cap" }
 bumble-profiles = { path = "../bumble-profiles" }
 bumble-smp = { path = "../bumble-smp" }
 prost = "0.13.5"

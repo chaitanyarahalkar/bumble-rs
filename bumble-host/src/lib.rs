@@ -1908,6 +1908,30 @@ impl Device {
         self.flush_le_credit_manager(link, connection_handle)
     }
 
+    /// Apply or release application-level receive backpressure on an LE
+    /// credit-based channel. Releasing backpressure flushes any newly restored
+    /// credits immediately.
+    pub fn set_le_credit_reading_paused(
+        &mut self,
+        link: &mut LocalLink,
+        connection_handle: u16,
+        source_cid: u16,
+        paused: bool,
+    ) -> bumble_l2cap::Result<()> {
+        self.le_credit_manager_mut(connection_handle)?
+            .set_reading_paused(source_cid, paused)?;
+        self.flush_le_credit_manager(link, connection_handle)
+    }
+
+    /// Whether both the channel framing queue and the controller ACL queue are
+    /// drained for this connection. Stream bridges use this to avoid reading
+    /// unbounded data ahead of controller flow control.
+    pub fn le_credit_output_is_drained(&self, connection_handle: u16, source_cid: u16) -> bool {
+        self.le_credit_channel(connection_handle, source_cid)
+            .is_some_and(LeCreditBasedChannel::is_drained)
+            && self.acl_packet_queue.is_drained(connection_handle)
+    }
+
     pub fn take_le_credit_sdus(&mut self, connection_handle: u16, source_cid: u16) -> Vec<Vec<u8>> {
         let Some(channel) = self
             .le_credit_managers

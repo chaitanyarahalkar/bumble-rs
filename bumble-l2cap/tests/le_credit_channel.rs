@@ -92,6 +92,28 @@ fn reassembles_inbound_sdus_and_replenishes_credits_at_threshold() {
 }
 
 #[test]
+fn paused_reading_withholds_credits_until_the_sink_resumes() {
+    let mut channel = make_channel(1);
+    channel.pause_reading().unwrap();
+    assert!(channel.is_reading_paused());
+    for value in 0..4 {
+        channel.receive_pdu(&[1, 0, value]).unwrap();
+    }
+    assert_eq!(channel.peer_credits, 0);
+    assert!(channel.poll_credit_grant().is_none());
+    assert!(channel.receive_pdu(&[1, 0, 4]).is_err());
+
+    channel.resume_reading().unwrap();
+    assert!(!channel.is_reading_paused());
+    assert_eq!(channel.peer_credits, 4);
+    assert_eq!(channel.poll_credit_grant(), Some(4));
+    assert_eq!(
+        std::iter::from_fn(|| channel.pop_received()).collect::<Vec<_>>(),
+        vec![vec![0], vec![1], vec![2], vec![3]]
+    );
+}
+
+#[test]
 fn rejects_credit_mps_mtu_and_sdu_overflow_violations() {
     let mut channel = make_channel(u16::MAX);
     assert!(channel.add_credits(1).is_err());

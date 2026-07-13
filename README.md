@@ -232,6 +232,7 @@ size, to convey remaining surface.
 | `apps/hci_bridge.py` | `bumble-hci-bridge` (`bumble-transport`) | ✅ | Runnable full-duplex host/controller bridge with upstream direct-opcode and OGF:OCF success short circuits. Independent read/write halves cover every external transport: file, raw HCI socket, serial, TCP, UDP, USB, VHCI, PTY, Unix, WebSocket, Android emulator, and Android netsim. |
 | `apps/gatt_dump.py` | `bumble-gatt-dump` (`bumble-transport`) | ✅ | Runnable external-controller GATT dump in initiator or advertising/listener mode, with address-or-active-name resolution, device-config local address selection, complete service/characteristic/descriptor and all-attribute discovery, per-attribute reads, bounded transport/procedure errors, and real `--encrypt` LE Secure Connections pairing. |
 | `apps/device_info.py` | `bumble-device-info` (`bumble-transport`) | ✅ | Runnable external-controller device inspection in initiator or advertising/listener mode, with address-or-active-name resolution, optional real LE encryption, complete service/characteristic discovery, and typed GAP, Device Information, Battery, TMAP, PACS, and VCS reads. Profile-specific protocol errors are reported without suppressing later sections. |
+| `apps/l2cap_bridge.py` | `bumble-l2cap-bridge` (`bumble-transport`) | ✅ | Runnable LE credit-based L2CAP-to-TCP bridge with the full upstream client/server, device-config, transport, PSM, credit, MTU/MPS, TCP host, and TCP port surface. The client accepts repeated local TCP connections over one LE ACL; the server accepts CoC channels and opens remote TCP connections. Both directions honor controller flow control and withhold CoC receive credits under TCP backpressure. |
 | `apps/pair.py` | `bumble-pair` (`bumble-transport`) | ✅ | Runnable LE, Classic, and simultaneous dual-mode listener paths over external controllers with the complete upstream option surface. LE supports direct address/name connection or configurable advertising, Legacy/SC pairing, and OOB data. Classic supports inquiry/name resolution, incoming/outgoing ACL setup, PIN and Secure Simple Pairing delegates, stored link-key reuse, controller encryption, and best-effort SMP-over-BR/EDR CTKD for P-256 link keys. Both paths provide bond policy, JSON key persistence/printing, and linger behavior. |
 | `apps/scan.py` | `bumble-scan` (`bumble-transport`) | ✅ | Runnable external HCI scanner with upstream RSSI/passive/interval/window/PHY/duplicate/raw/IRK/key-store/device-config options, extended scanning with legacy fallback, typed legacy + extended report decoding, exact active/passive scan-response accumulation, labeled AD rendering, RSSI bars, and real RPA identity resolution. |
 | `apps/usb_probe.py` | `bumble-usb-probe` (`bumble-transport`) | ✅ | Runnable libusb device inventory with upstream `--verbose`, `--hci-only`, manufacturer, and product filters; device/interface-level Bluetooth HCI classification; stable index, VID/PID, duplicate, and serial transport names; string-descriptor error tolerance; and verbose configuration/interface/endpoint details including isochronous packet sizes. |
@@ -2733,6 +2734,23 @@ controller:
   malformed service does not hide later information. An encrypted in-memory
   server test exercises all six profile sections, including dynamic Battery and
   VCS values, while an unencrypted test pins the error-continuation behavior.
+
+## Slice 128 — what's here
+
+The LE credit-based L2CAP/TCP bridge now runs over external controllers:
+
+- `bumble-l2cap-bridge` implements the upstream group CLI and both modes. The
+  server advertises, accepts the configured PSM, and opens one remote TCP stream
+  per incoming CoC channel; the client connects to the configured peer and
+  opens one CoC channel per accepted local TCP stream.
+- Nonblocking TCP pipes preserve channel boundaries while supporting partial
+  writes, repeated client connections, simultaneous channels, clean EOF and
+  disconnect propagation, bounded HCI waits, and surfaced signaling errors.
+- LE CoC channels can now pause and resume receive-credit grants. TCP-bound
+  buffering therefore remains bounded by the negotiated credit window, while
+  TCP-to-CoC reads wait for both channel framing and controller ACL queues to
+  drain. A live two-controller plus loopback-TCP test verifies both directions;
+  the lower-level test pins credit withholding and restoration.
 
 ## Acceptance
 

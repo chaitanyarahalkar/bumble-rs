@@ -107,6 +107,7 @@ pub struct LeCreditBasedChannel {
     input_sdu_length: Option<usize>,
     received_sdus: VecDeque<Vec<u8>>,
     pending_credit_grants: VecDeque<u16>,
+    reading_paused: bool,
 }
 
 impl LeCreditBasedChannel {
@@ -150,6 +151,7 @@ impl LeCreditBasedChannel {
             input_sdu_length: None,
             received_sdus: VecDeque::new(),
             pending_credit_grants: VecDeque::new(),
+            reading_paused: false,
         })
     }
 
@@ -187,13 +189,7 @@ impl LeCreditBasedChannel {
             ));
         }
         self.peer_credits -= 1;
-        if self.peer_credits <= self.peer_credit_threshold {
-            let grant = self.peer_max_credits - self.peer_credits;
-            if grant != 0 {
-                self.pending_credit_grants.push_back(grant);
-                self.peer_credits = self.peer_max_credits;
-            }
-        }
+        self.replenish_peer_credits();
 
         self.input_sdu.extend_from_slice(pdu);
         if self.input_sdu_length.is_none() && self.input_sdu.len() >= 2 {
@@ -238,6 +234,28 @@ impl LeCreditBasedChannel {
 
     pub fn is_drained(&self) -> bool {
         self.output_stream.is_empty() && self.output_sdu.is_empty() && self.outbound_pdus.is_empty()
+    }
+
+    /// Stop granting new receive credits while retaining the credits already
+    /// advertised to the peer. This bounds buffering at the current credit
+    /// window while an application-level sink applies backpressure.
+    pub fn pause_reading(&mut self) -> Result<()> {
+        self.ensure_connected()?;
+        self.reading_paused = true;
+        Ok(())
+    }
+
+    /// Resume receive-credit replenishment and immediately restore the local
+    /// window when it has crossed the normal grant threshold.
+    pub fn resume_reading(&mut self) -> Result<()> {
+        self.ensure_connected()?;
+        self.reading_paused = false;
+        self.replenish_peer_credits();
+        Ok(())
+    }
+
+    pub fn is_reading_paused(&self) -> bool {
+        self.reading_paused
     }
 
     pub fn disconnect(&mut self) -> Result<()> {
@@ -289,6 +307,17 @@ impl LeCreditBasedChannel {
             self.outbound_pdus
                 .push_back(self.output_sdu.drain(..fragment_length).collect());
             self.credits -= 1;
+        }
+    }
+
+    fn replenish_peer_credits(&mut self) {
+        if self.reading_paused || self.peer_credits > self.peer_credit_threshold {
+            return;
+        }
+        let grant = self.peer_max_credits - self.peer_credits;
+        if grant != 0 {
+            self.pending_credit_grants.push_back(grant);
+            self.peer_credits = self.peer_max_credits;
         }
     }
 
@@ -383,6 +412,7 @@ impl LeCreditChannelManager {
         spec.validate()?;
         spec.psm = Some(psm);
         let source_cid = self.allocate_cid()?;
+        self.connection_results.remove(&source_cid);
         let identifier = self.next_identifier();
         self.pending.insert(
             identifier,
@@ -422,6 +452,9 @@ impl LeCreditChannelManager {
         spec.validate()?;
         spec.psm = Some(psm);
         let source_cids = self.allocate_cids(count)?;
+        for source_cid in &source_cids {
+            self.connection_results.remove(source_cid);
+        }
         let identifier = self.next_identifier();
         self.pending_enhanced.insert(
             identifier,
@@ -544,6 +577,19 @@ impl LeCreditChannelManager {
             .get_mut(&source_cid)
             .ok_or_else(|| Error::InvalidPacket(format!("unknown LE CID {source_cid:#06x}")))?
             .write(data)?;
+        self.flush_channel(source_cid)
+    }
+
+    pub fn set_reading_paused(&mut self, source_cid: u16, paused: bool) -> Result<()> {
+        let channel = self
+            .channels
+            .get_mut(&source_cid)
+            .ok_or_else(|| Error::InvalidPacket(format!("unknown LE CID {source_cid:#06x}")))?;
+        if paused {
+            channel.pause_reading()?;
+        } else {
+            channel.resume_reading()?;
+        }
         self.flush_channel(source_cid)
     }
 
