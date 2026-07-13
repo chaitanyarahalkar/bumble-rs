@@ -200,7 +200,7 @@ size, to convey remaining surface.
 ### Transports & drivers
 | Upstream | Rust crate | Status | Notes |
 |---|---|---|---|
-| `transport/*` — USB, UART/serial, TCP, WebSocket, UDP, PTY, android-netsim, vhci, … | `bumble-transport` | 🟡 | Incremental H4 framing accepts fragmented/coalesced streams and vendor packet layouts. Bumble transport-name/metadata dispatch opens file, serial/UART with RTS/CTS, raw PTY, TCP, UDP, Unix, WebSocket, Linux VHCI/raw HCI user-channel sockets, libusb Bluetooth-controller endpoints, Android emulator gRPC, and Android netsim host/controller packet streams. The typed HCI bridge pumps both directions with packet replacement, sender short-circuit responses, and trace hooks; BTSnoop/PCAP writers can wrap any bidirectional transport. USB covers discovery, class/forced interface selection, commands, events, ACL, and outgoing ISO-over-bulk compatibility. Deferred: USB SCO/isochronous input, DSR/DTR flow control (not exposed by the current `serialport` backend), and narrower platform-specific endpoints. |
+| `transport/*` — USB, UART/serial, TCP, WebSocket, UDP, PTY, android-netsim, vhci, … | `bumble-transport` | 🟡 | Incremental H4 framing accepts fragmented/coalesced streams and vendor packet layouts. Bumble transport-name/metadata dispatch opens file, serial/UART with RTS/CTS, raw PTY, TCP, UDP, Unix, WebSocket, Linux VHCI/raw HCI user-channel sockets, libusb Bluetooth-controller endpoints, Android emulator gRPC, and Android netsim host/controller packet streams. The typed HCI bridge pumps both directions with packet replacement, sender short-circuit responses, and trace hooks; BTSnoop/PCAP writers can wrap any bidirectional transport, and the bounded BTSnoop reader handles H1/H4 captures, timestamps, drops, and truncation. USB covers discovery, class/forced interface selection, commands, events, ACL, and outgoing ISO-over-bulk compatibility. Deferred: USB SCO/isochronous input, DSR/DTR flow control (not exposed by the current `serialport` backend), and narrower platform-specific endpoints. |
 | `drivers/*` — Intel, Realtek | `bumble-drivers` | ✅ | Both upstream driver modules and the RTK-before-Intel selector are ported behind a transport-neutral host contract. Intel covers open version TLVs, RSA/ECDSA SFI secure send, boot/reset vendor events, and DDC priority. Realtek covers all upstream USB IDs and 13 controller descriptors, epatch extension/table parsing, ROM patch choice, config append, download-index wrap/end markers, reset retry, and firmware lookup. The legacy 8723A download remains the same explicit no-op as upstream Bumble. |
 
 ### Classic Bluetooth (BR/EDR)
@@ -225,7 +225,8 @@ size, to convey remaining surface.
 |---|---|---|---|
 | `profiles/*` — all 23 modules | `bumble-profiles` | ✅ | All upstream profile modules are live: GAP/GATT/Battery/Device Information/Heart Rate, ASHA/HAP/CSIP, VCS/VOCS/AICS, MCP/GMCS, LE Audio metadata plus BAP/PACS/ASCS/BASS/CAP/TMAP/GMAP/PBP, and AMS/ANCS. Services, typed proxies, control/state runtimes, assigned-number and vendor UUID catalogs, strict wire models, encryption requirements, notifications/indications, and included-service discovery are covered by live tests. |
 | `bridge.py` (0.1k) | `bumble-transport::HciBridge` | ✅ | Separate host/controller sources and sinks, directional single-packet pumping, typed replacement filters, responses short-circuited to the sender, post-filter directional tracing, EOF reporting, and transport-error propagation. |
-| `pandora/`, apps | — | ⬜ | Conformance harnesses and command-line applications; still unported. |
+| `apps/show.py` | `bumble-show` (`bumble-transport`) | ✅ | Runnable H4/BTSnoop capture decoder with upstream `--format` and repeatable Android/Zephyr `--vendor` options, typed HCI parsing, direction/timestamp output, and explicit truncated-record reporting. Rust vendor codecs are statically linked rather than dynamically registered. |
+| `pandora/`, remaining apps | — | ⬜ | Conformance harnesses and the remaining command-line applications; still unported. |
 
 ### Roughly where that leaves things
 
@@ -2349,6 +2350,23 @@ Upstream's HCI capture surface is now a real Rust library capability:
 - `SnoopingTransport` records controller-to-host reads and host-to-controller
   writes without altering packets. Tests pin exact writer bytes and both wrapper
   directions.
+
+## Slice 107 — what's here
+
+Capture inspection now completes the first runnable upstream application:
+
+- `BtSnoopReader` validates BTSnoop headers, supports upstream's H1 and H4 data
+  links, bounds record allocations, preserves flags/drop counts/timestamps, and
+  reconstructs H1 packet types. Truncated records remain inspectable but are
+  never passed to typed HCI decoding.
+- The `bumble-show` binary reads raw H4 streams through the production framer or
+  BTSnoop records through the new reader, then prints typed HCI packets with
+  direction and microsecond timestamps. It accepts the upstream format and
+  repeatable Android/Zephyr vendor options; those catalogs are statically linked
+  in Rust.
+- Exact reader round trips cover both directions, Unix timestamp conversion,
+  H1 reconstruction, drops, truncation, bad headers, and unsupported links.
+  Binary tests exercise both input formats end to end.
 
 ## Acceptance
 

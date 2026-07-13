@@ -1,7 +1,7 @@
 use crate::{Error, PacketSink, PacketSource, Result};
 use bumble_hci::{HciPacket, HCI_COMMAND_PACKET, HCI_EVENT_PACKET};
 use std::fs::{File, OpenOptions};
-use std::io::{BufWriter, Write};
+use std::io::{BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -30,6 +30,157 @@ pub enum SnoopDataLinkType {
     H4 = 1002,
     HciBscp = 1003,
     H5 = 1004,
+}
+
+impl TryFrom<u32> for SnoopDataLinkType {
+    type Error = Error;
+
+    fn try_from(value: u32) -> Result<Self> {
+        match value {
+            1001 => Ok(Self::H1),
+            1002 => Ok(Self::H4),
+            1003 => Ok(Self::HciBscp),
+            1004 => Ok(Self::H5),
+            _ => Err(Error::InvalidSpec(format!(
+                "unsupported BTSnoop data link type {value}"
+            ))),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BtSnoopRecord {
+    pub original_length: u32,
+    pub included_length: u32,
+    pub packet_flags: u32,
+    pub cumulative_drops: u32,
+    pub timestamp: u64,
+    packet_bytes: Vec<u8>,
+}
+
+impl BtSnoopRecord {
+    pub fn direction(&self) -> SnoopDirection {
+        if self.packet_flags & 1 == 0 {
+            SnoopDirection::HostToController
+        } else {
+            SnoopDirection::ControllerToHost
+        }
+    }
+
+    pub fn is_truncated(&self) -> bool {
+        self.original_length != self.included_length
+    }
+
+    pub fn packet_bytes(&self) -> &[u8] {
+        &self.packet_bytes
+    }
+
+    pub fn packet(&self) -> Result<Option<HciPacket>> {
+        if self.is_truncated() {
+            return Ok(None);
+        }
+        Ok(Some(HciPacket::from_bytes(&self.packet_bytes)?))
+    }
+
+    pub fn unix_timestamp_micros(&self) -> Result<u64> {
+        self.timestamp
+            .checked_sub(BTSNOOP_UNIX_EPOCH_DELTA)
+            .ok_or_else(|| Error::InvalidSpec("BTSnoop timestamp predates the Unix epoch".into()))
+    }
+
+    pub fn system_time(&self) -> Result<SystemTime> {
+        UNIX_EPOCH
+            .checked_add(std::time::Duration::from_micros(
+                self.unix_timestamp_micros()?,
+            ))
+            .ok_or_else(|| Error::InvalidSpec("BTSnoop timestamp is out of range".into()))
+    }
+}
+
+pub struct BtSnoopReader<R> {
+    input: R,
+    version: u32,
+    data_link_type: SnoopDataLinkType,
+}
+
+impl<R: Read> BtSnoopReader<R> {
+    pub fn new(mut input: R) -> Result<Self> {
+        let mut header = [0u8; 16];
+        input.read_exact(&mut header)?;
+        if &header[..8] != BTSNOOP_IDENTIFICATION_PATTERN {
+            return Err(Error::InvalidSpec(
+                "not a valid BTSnoop file: unexpected identification pattern".into(),
+            ));
+        }
+        let version = u32::from_be_bytes(header[8..12].try_into().expect("fixed slice"));
+        let data_link_type = u32::from_be_bytes(header[12..16].try_into().expect("fixed slice"));
+        let data_link_type = SnoopDataLinkType::try_from(data_link_type)?;
+        if !matches!(
+            data_link_type,
+            SnoopDataLinkType::H1 | SnoopDataLinkType::H4
+        ) {
+            return Err(Error::Unsupported(format!(
+                "BTSnoop data link type {}",
+                data_link_type as u32
+            )));
+        }
+        Ok(Self {
+            input,
+            version,
+            data_link_type,
+        })
+    }
+
+    pub fn version(&self) -> u32 {
+        self.version
+    }
+
+    pub fn data_link_type(&self) -> SnoopDataLinkType {
+        self.data_link_type
+    }
+
+    pub fn read_record(&mut self) -> Result<Option<BtSnoopRecord>> {
+        let mut header = [0u8; 24];
+        if self.input.read(&mut header[..1])? == 0 {
+            return Ok(None);
+        }
+        self.input.read_exact(&mut header[1..])?;
+
+        let original_length = u32::from_be_bytes(header[0..4].try_into().expect("fixed slice"));
+        let included_length = u32::from_be_bytes(header[4..8].try_into().expect("fixed slice"));
+        let packet_flags = u32::from_be_bytes(header[8..12].try_into().expect("fixed slice"));
+        let cumulative_drops = u32::from_be_bytes(header[12..16].try_into().expect("fixed slice"));
+        let timestamp = u64::from_be_bytes(header[16..24].try_into().expect("fixed slice"));
+        let included_length_usize =
+            usize::try_from(included_length).map_err(|_| Error::PacketTooLarge(usize::MAX))?;
+        if included_length_usize > crate::MAX_HCI_PACKET_SIZE {
+            return Err(Error::PacketTooLarge(included_length_usize));
+        }
+        let mut packet_bytes = vec![0u8; included_length_usize];
+        self.input.read_exact(&mut packet_bytes)?;
+
+        if self.data_link_type == SnoopDataLinkType::H1 {
+            let packet_type = match (packet_flags & 1 != 0, packet_flags & 2 != 0) {
+                (true, true) => HCI_EVENT_PACKET,
+                (false, true) => HCI_COMMAND_PACKET,
+                _ => bumble_hci::HCI_ACL_DATA_PACKET,
+            };
+            packet_bytes.insert(0, packet_type);
+        }
+
+        Ok(Some(BtSnoopRecord {
+            original_length,
+            included_length,
+            packet_flags,
+            cumulative_drops,
+            timestamp,
+            packet_bytes,
+        }))
+    }
+
+    pub fn into_inner(self) -> R {
+        self.input
+    }
 }
 
 pub trait Snooper {

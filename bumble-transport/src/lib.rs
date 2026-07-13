@@ -52,8 +52,8 @@ pub use hci_socket::{
 pub use pty::PtyTransport;
 pub use serial::{SerialConfig, SerialTransport, DEFAULT_POST_OPEN_DELAY, DEFAULT_SERIAL_SPEED};
 pub use snoop::{
-    BtSnooper, FileSnooper, PcapSnooper, SnoopDataLinkType, SnoopDirection, Snooper, SnooperFormat,
-    SnooperIoType, SnooperSpec, SnoopingTransport,
+    BtSnoopReader, BtSnoopRecord, BtSnooper, FileSnooper, PcapSnooper, SnoopDataLinkType,
+    SnoopDirection, Snooper, SnooperFormat, SnooperIoType, SnooperSpec, SnoopingTransport,
 };
 pub use tcp::{TcpServer, TcpTransport};
 pub use udp::UdpTransport;
