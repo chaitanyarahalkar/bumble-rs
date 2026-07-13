@@ -1,5 +1,5 @@
 use bumble::{Address, AddressType};
-use bumble_smp::{resolvable_private_address, AddressResolver};
+use bumble_smp::{resolvable_private_address, verify_resolvable_private_address, AddressResolver};
 
 fn address(value: &str, address_type: AddressType) -> Address {
     Address::parse(value, address_type).unwrap()
@@ -17,6 +17,8 @@ fn address_resolver_matches_the_upstream_ah_vector() {
     let rpa = resolvable_private_address(&irk, [0x94, 0x81, 0x70]);
     assert!(rpa.is_resolvable());
     assert_eq!(&rpa.address_bytes()[..3], &[0xAA, 0xFB, 0x0D]);
+    assert!(verify_resolvable_private_address(&irk, &rpa));
+    assert!(!verify_resolvable_private_address(&[0; 16], &rpa));
 
     let resolver = AddressResolver::new(vec![(irk.to_vec(), identity.clone())]);
     assert!(resolver.can_resolve_to(&identity));
@@ -38,4 +40,8 @@ fn wrong_irk_non_rpa_and_invalid_key_do_not_resolve() {
         resolver.resolve(&address("C4:F2:17:1A:1D:BB", AddressType::RANDOM_DEVICE)),
         None
     );
+    assert!(!verify_resolvable_private_address(
+        &[9; 16],
+        &address("C4:F2:17:1A:1D:BB", AddressType::RANDOM_DEVICE)
+    ));
 }

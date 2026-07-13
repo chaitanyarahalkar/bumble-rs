@@ -63,7 +63,8 @@ pub use pairing::{
     PairingDelegate, PairingMethod, PairingMethodSelection,
 };
 pub use privacy::{
-    generate_resolvable_private_address, resolvable_private_address, AddressResolver,
+    generate_resolvable_private_address, resolvable_private_address,
+    verify_resolvable_private_address, AddressResolver,
 };
 pub use sc_session::{ScPairingOutcome, ScPairingSession, ScPairingState};
 pub use security::{

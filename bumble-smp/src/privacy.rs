@@ -60,3 +60,13 @@ pub fn generate_resolvable_private_address(irk: &[u8; 16]) -> Address {
     let random = random_128();
     resolvable_private_address(irk, random[..3].try_into().expect("three-byte slice"))
 }
+
+/// Return whether `address` is a resolvable private address generated with
+/// `irk`, matching Bumble's `verify_rpa_with_irk` helper.
+pub fn verify_resolvable_private_address(irk: &[u8; 16], address: &Address) -> bool {
+    if !address.is_resolvable() {
+        return false;
+    }
+    let bytes = address.address_bytes();
+    ah(irk, &bytes[3..]).as_slice() == &bytes[..3]
+}

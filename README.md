@@ -195,7 +195,7 @@ size, to convey remaining surface.
 | Upstream (LOC) | Rust crate | Status | Notes |
 |---|---|---|---|
 | `crypto/` | `bumble-crypto` | ✅ | All SMP **symmetric** security functions — `e`, AES-CMAC, `c1`, `s1`, `f4`/`f5`/`f6`, `g2`, `h6`/`h7`, `ah` — spec/RFC-4493 vector-verified, plus **P-256 `EccKey`** (slice 19: keygen, `from_private_key_bytes`, public-key coordinates, ECDH) oracle-pinned to upstream. Deferred: none of the crypto primitives. |
-| `smp.py` (2.0k), `pairing.py` (0.3k) | `bumble-smp` | ✅ | Complete PDU codec and synchronous protocol behavior: Legacy and SC sessions cover every association model through encryption; responder-first phase 3 retains LTK/IRK/CSRK/Link Key material and counters; h6/h7 CTKD runs over LE and encrypted BR/EDR; bonds drive Security Request reconnect, privacy resolution, and signed ATT; and the handle-keyed manager owns concurrent session lifecycle. Keypress Notification is codec-complete, matching upstream Bumble whose live session leaves `keypress = False`. |
+| `smp.py` (2.0k), `pairing.py` (0.3k) | `bumble-smp` | ✅ | Complete PDU codec and synchronous protocol behavior: Legacy and SC sessions cover every association model through encryption; responder-first phase 3 retains LTK/IRK/CSRK/Link Key material and counters; h6/h7 CTKD runs over LE and encrypted BR/EDR; bonds drive Security Request reconnect, privacy resolution, and signed ATT; and the handle-keyed manager owns concurrent session lifecycle. RPA generation and direct IRK verification are public helpers. Keypress Notification is codec-complete, matching upstream Bumble whose live session leaves `keypress = False`. |
 
 ### Transports & drivers
 | Upstream | Rust crate | Status | Notes |
@@ -226,6 +226,7 @@ size, to convey remaining surface.
 | `profiles/*` — all 23 modules | `bumble-profiles` | ✅ | All upstream profile modules are live: GAP/GATT/Battery/Device Information/Heart Rate, ASHA/HAP/CSIP, VCS/VOCS/AICS, MCP/GMCS, LE Audio metadata plus BAP/PACS/ASCS/BASS/CAP/TMAP/GMAP/PBP, and AMS/ANCS. Services, typed proxies, control/state runtimes, assigned-number and vendor UUID catalogs, strict wire models, encryption requirements, notifications/indications, and included-service discovery are covered by live tests. |
 | `bridge.py` (0.1k) | `bumble-transport::HciBridge` | ✅ | Separate host/controller sources and sinks, directional single-packet pumping, typed replacement filters, responses short-circuited to the sender, post-filter directional tracing, EOF reporting, and transport-error propagation. |
 | `apps/show.py` | `bumble-show` (`bumble-transport`) | ✅ | Runnable H4/BTSnoop capture decoder with upstream `--format` and repeatable Android/Zephyr `--vendor` options, typed HCI parsing, direction/timestamp output, and explicit truncated-record reporting. Rust vendor codecs are statically linked rather than dynamically registered. |
+| `apps/ble_rpa_tool.py` | `bumble-rpa-tool` (`bumble-smp`) | ✅ | Runnable `gen-irk`, `gen-rpa`, and `verify-rpa` commands backed by the OS RNG and the real SMP `ah` primitive. Flexible Python-style hex input, address validation, colored verification results, and malformed/extra argument errors are covered. |
 | `pandora/`, remaining apps | — | ⬜ | Conformance harnesses and the remaining command-line applications; still unported. |
 
 ### Roughly where that leaves things
@@ -2367,6 +2368,21 @@ Capture inspection now completes the first runnable upstream application:
 - Exact reader round trips cover both directions, Unix timestamp conversion,
   H1 reconstruction, drops, truncation, bad headers, and unsupported links.
   Binary tests exercise both input formats end to end.
+
+## Slice 108 — what's here
+
+The upstream BLE RPA command-line utility is now runnable in Rust:
+
+- `bumble-rpa-tool gen-irk` produces a fresh 128-bit IRK from the operating
+  system RNG; `gen-rpa` creates an RPA from that IRK; and `verify-rpa` checks an
+  IRK/address pair with the SMP `ah` primitive and upstream-compatible colored
+  results.
+- `verify_resolvable_private_address` is a public library helper and rejects
+  non-resolvable addresses before comparing the generated hash. The existing
+  address resolver and the CLI share this same privacy implementation.
+- Tests cover the upstream `ah` vector, correct/wrong keys, non-RPAs, all three
+  commands, Python-style whitespace-tolerant hex, generated-value round trips,
+  and malformed keys, addresses, commands, and arity.
 
 ## Acceptance
 
