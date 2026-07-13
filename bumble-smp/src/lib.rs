@@ -31,13 +31,14 @@
 //! distribution, Bumble-compatible bond assembly, and key-store persistence.
 //! [`security_request_action`] adds CT2-aware stored-bond evaluation for
 //! Security Request reconnects. [`AddressResolver`] and the RPA helpers add
-//! host-side privacy resolution. Deferred: the automatic multi-connection
-//! pairing manager and signed-data counters.
+//! host-side privacy resolution. [`PairingManager`] owns concurrent LE sessions
+//! by connection handle. Deferred: live SMP-over-BR/EDR CTKD orchestration.
 
 use bumble::Address;
 use core::fmt;
 
 pub mod distribution;
+pub mod manager;
 pub mod pairing;
 pub mod privacy;
 pub mod sc_session;
@@ -47,6 +48,7 @@ pub mod session;
 pub use distribution::{
     KeyDistributionConfig, KeyDistributionSession, KeyDistributionState, LocalKeyMaterial,
 };
+pub use manager::{ManagedPairingState, PairingConnection, PairingDelegateFactory, PairingManager};
 pub use pairing::{
     derive_link_key, derive_ltk, select_pairing_method, select_pairing_method_with_oob,
     AcceptAllDelegate, AuthReq, IdentityAddressType, IoCapability, KeyDistribution, OobConfig,

@@ -195,6 +195,7 @@ pub fn select_pairing_method_with_oob(
     }
 }
 
+#[derive(Clone)]
 pub struct OobContext {
     pub ecc_key: EccKey,
     pub r: [u8; 16],
@@ -362,6 +363,7 @@ pub enum IdentityAddressType {
     Random,
 }
 
+#[derive(Clone)]
 pub struct PairingConfig {
     pub secure_connections: bool,
     pub ct2: bool,
@@ -372,6 +374,7 @@ pub struct PairingConfig {
     pub oob: Option<OobConfig>,
 }
 
+#[derive(Clone)]
 pub struct OobConfig {
     pub our_context: Option<OobContext>,
     pub peer_data: Option<OobSharedData>,

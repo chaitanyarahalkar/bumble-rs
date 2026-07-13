@@ -1,4 +1,4 @@
-use bumble::keys::{Key, PairingKeys};
+use bumble::keys::{Key, KeyStore, MemoryKeyStore, PairingKeys};
 use bumble::{Address, AddressType};
 use bumble_controller::{Controller, LocalLink};
 use bumble_crypto::EccKey;
@@ -6,8 +6,9 @@ use bumble_hci::Command;
 use bumble_host::{pump, Device};
 use bumble_smp::{
     security_request, security_request_action, AcceptAllDelegate, AuthReq, IoCapability,
-    KeyDistribution, LegacyPairingSession, PairingCapabilities, PairingConfig, PairingRole,
-    PairingState, ScPairingSession, ScPairingState, SecurityRequestAction, SmpPdu, SMP_CID,
+    KeyDistribution, LegacyPairingSession, ManagedPairingState, PairingCapabilities, PairingConfig,
+    PairingConnection, PairingManager, PairingRole, PairingState, ScPairingSession, ScPairingState,
+    SecurityRequestAction, SmpPdu, SMP_CID,
 };
 
 fn address(value: &str) -> Address {
@@ -128,6 +129,37 @@ fn drive_sc_sessions(
         }
     }
     panic!("host-backed SC sessions did not quiesce");
+}
+
+fn drive_managers(
+    link: &mut LocalLink,
+    devices: &mut [Device; 2],
+    managers: &mut [PairingManager; 2],
+) {
+    for _ in 0..200 {
+        let mut progress = false;
+        for index in 0..2 {
+            for (handle, pdu) in managers[index].drain_outbound() {
+                assert_eq!(Some(handle), devices[index].connection_handle());
+                assert!(devices[index].send_l2cap(link, SMP_CID, &pdu.to_bytes()));
+                progress = true;
+            }
+        }
+        pump(link, devices);
+        for index in 0..2 {
+            let handle = devices[index].connection_handle().unwrap();
+            for payload in devices[index].take_l2cap(SMP_CID) {
+                managers[index]
+                    .receive(handle, SmpPdu::from_bytes(&payload).unwrap())
+                    .unwrap();
+                progress = true;
+            }
+        }
+        if !progress {
+            return;
+        }
+    }
+    panic!("host-backed pairing managers did not quiesce");
 }
 
 #[test]
@@ -278,4 +310,70 @@ fn security_request_reuses_a_satisfactory_persisted_bond() {
     pump(&mut link, &mut devices);
     assert!(devices[0].is_encrypted());
     assert!(devices[1].is_encrypted());
+}
+
+#[test]
+fn pairing_manager_owns_live_session_encryption_distribution_and_bonding() {
+    let mut link = LocalLink::new();
+    let central = link.add_controller(Controller::new("C", address("00:00:00:00:00:01")));
+    let peripheral = link.add_controller(Controller::new("P", address("00:00:00:00:00:02")));
+    let mut devices = [Device::new(central), Device::new(peripheral)];
+    connect(&mut link, central, peripheral);
+    pump(&mut link, &mut devices);
+    let handle = devices[0].connection_handle().unwrap();
+    assert_eq!(devices[1].connection_handle(), Some(handle));
+
+    let manager_config = PairingConfig {
+        secure_connections: true,
+        ..config()
+    };
+    let new_manager = || {
+        PairingManager::new(
+            manager_config.clone(),
+            Box::new(|_, _| Box::new(AcceptAllDelegate)),
+        )
+    };
+    let initiator_address = address("C4:F2:17:1A:1D:AA");
+    let responder_address = address("C4:F2:17:1A:1D:BB");
+    let mut managers = [new_manager(), new_manager()];
+    managers[0]
+        .register_connection(PairingConnection {
+            handle,
+            role: PairingRole::Initiator,
+            local_address: initiator_address.clone(),
+            peer_address: responder_address.clone(),
+        })
+        .unwrap();
+    managers[1]
+        .register_connection(PairingConnection {
+            handle,
+            role: PairingRole::Responder,
+            local_address: responder_address,
+            peer_address: initiator_address,
+        })
+        .unwrap();
+    managers[0].pair(handle).unwrap();
+    drive_managers(&mut link, &mut devices, &mut managers);
+    assert_eq!(
+        managers[0].state(handle),
+        Some(ManagedPairingState::SecureConnections(
+            ScPairingState::WaitEncryption
+        ))
+    );
+    let ltk = managers[0].encryption_key(handle).unwrap();
+    assert_eq!(managers[1].encryption_key(handle), Some(ltk));
+    assert!(devices[0].enable_encryption(&mut link, ltk));
+    pump(&mut link, &mut devices);
+    managers[0].mark_encrypted(handle).unwrap();
+    managers[1].mark_encrypted(handle).unwrap();
+    drive_managers(&mut link, &mut devices, &mut managers);
+    assert_eq!(
+        managers[0].state(handle),
+        Some(ManagedPairingState::SecureConnections(
+            ScPairingState::Complete
+        ))
+    );
+    let mut store = MemoryKeyStore::new();
+    assert!(managers[0].store_bond(handle, &mut store).unwrap());
+    assert_eq!(store.get_all().unwrap().len(), 1);
 }

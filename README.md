@@ -86,7 +86,8 @@ crate whose behavior is verified against the upstream Python.
 | 69. CT2 negotiation and bonded Security Request reconnect | `bumble-smp`, `bumble-host` | ✅ h7 + live reuse green |
 | 70. IRK address resolution and controller privacy offload | `bumble-smp`, `bumble-controller`, `bumble-host` | ✅ identity→RPA reconnect green |
 | 71. CSRK authenticated ATT signed writes and persistent counters | `bumble-att`, `bumble-gatt`, `bumble-host` | ✅ CMAC/replay/restart green |
-| 72+. Remaining modules… | — | planned |
+| 72. Multi-connection LE pairing manager | `bumble-smp`, `bumble-host` | ✅ concurrent + live manager green |
+| 73+. Remaining modules… | — | planned |
 
 The LE lifecycle is now complete end-to-end through library APIs: **connect →
 discover → read/write → notify → disconnect** between two virtual devices — and
@@ -161,7 +162,7 @@ size, to convey remaining surface.
 | Upstream (LOC) | Rust crate | Status | Notes |
 |---|---|---|---|
 | `crypto/` | `bumble-crypto` | ✅ | All SMP **symmetric** security functions — `e`, AES-CMAC, `c1`, `s1`, `f4`/`f5`/`f6`, `g2`, `h6`/`h7`, `ah` — spec/RFC-4493 vector-verified, plus **P-256 `EccKey`** (slice 19: keygen, `from_private_key_bytes`, public-key coordinates, ECDH) oracle-pinned to upstream. Deferred: none of the crypto primitives. |
-| `smp.py` (2.0k), `pairing.py` (0.3k) | `bumble-smp` | 🟡 | PDU codec (incl. all **LE Secure Connections** PDUs), live Legacy and SC sessions covering every association model through host/controller encryption, responder-first encrypted key distribution, SC LTK handling, peer/local signing keys with persistent counters, negotiated h6/h7 CTKD, memory/JSON bond persistence, Security Request evaluation/reconnect, and host-side RPA generation/resolution from stored IRKs. Also includes the complete method matrix, auth/key-distribution policy, and SC + Legacy OOB contexts/AD interchange. Deferred: automatic pairing-manager lifecycle. |
+| `smp.py` (2.0k), `pairing.py` (0.3k) | `bumble-smp` | 🟡 | PDU codec (incl. all **LE Secure Connections** PDUs), live Legacy and SC sessions covering every association model through host/controller encryption, responder-first encrypted key distribution, SC LTK handling, peer/local signing keys with persistent counters, negotiated h6/h7 CTKD, memory/JSON bond persistence, Security Request evaluation/reconnect, host-side RPA resolution, and a concurrent handle-keyed LE manager that owns session creation/lifecycle. Also includes the complete method matrix, auth/key-distribution policy, and SC + Legacy OOB contexts/AD interchange. Deferred: live SMP-over-BR/EDR CTKD orchestration. |
 
 ### Transports & drivers
 | Upstream | Rust crate | Status | Notes |
@@ -1647,8 +1648,29 @@ The signing keys distributed in phase 3 now protect real ATT traffic:
 - A live test sends accepted, replayed, and tampered signed writes through
   ATT/L2CAP/ACL and reads back only the last authenticated value.
 
-The remaining SMP architectural work is an automatic multi-connection pairing
-manager that owns session selection and bond lifecycle around these primitives.
+## Slice 72 — what's here
+
+The LE SMP pieces now run behind a connection-aware manager:
+
+- `PairingManager` registers role/address context by connection handle and owns
+  independent Legacy or SC sessions in a map. Initiators start explicitly;
+  responders are created automatically by an inbound Pairing Request.
+- Every outbound PDU retains its originating handle, so concurrent exchanges
+  can interleave without cross-session state. Security Requests are surfaced on
+  a separate queue because they are connection security policy, not pairing
+  session traffic.
+- Encryption keys, state/failure inspection, phase-3 advancement, completed
+  `PairingKeys`, key-store persistence, and disconnect cleanup are all exposed
+  at the manager boundary. Duplicate handles and invalid role/lifecycle actions
+  fail without disturbing other sessions.
+- A deterministic concurrency test completes two SC pairings at once, advances
+  both through encrypted key distribution, and stores two independent bonds.
+- A live host test uses only manager output/input around SMP/L2CAP/ACL, enables
+  controller encryption with the manager's LTK, finishes distribution, and
+  persists the resulting bond.
+
+The remaining SMP-specific behavior is live SMP-over-BR/EDR CTKD
+orchestration; the LE manager and its full pairing/bond lifecycle are present.
 
 ## Acceptance
 
