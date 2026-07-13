@@ -54,6 +54,8 @@ fn device_fragments_and_reassembles_large_l2cap_payloads() {
     let mut devices = [Device::new(central), Device::new(peripheral)];
     assert!(devices[0].set_acl_data_packet_length(8));
     assert!(devices[1].set_acl_data_packet_length(8));
+    assert!(devices[0].set_acl_max_in_flight(2));
+    assert!(devices[1].set_acl_max_in_flight(2));
     assert!(!devices[0].set_acl_data_packet_length(0));
     connect(&mut link, central, peripheral);
     pump(&mut link, &mut devices);
@@ -62,8 +64,10 @@ fn device_fragments_and_reassembles_large_l2cap_payloads() {
     assert!(devices[0].send_l2cap(&mut link, 0x0040, &payload));
     pump(&mut link, &mut devices);
     assert_eq!(devices[1].take_l2cap(0x0040), vec![payload.clone()]);
+    assert_eq!(devices[0].acl_packets_pending(), 0);
 
     assert!(devices[1].send_l2cap(&mut link, 0x0041, &payload));
     pump(&mut link, &mut devices);
     assert_eq!(devices[0].take_l2cap(0x0041), vec![payload]);
+    assert_eq!(devices[1].acl_packets_pending(), 0);
 }

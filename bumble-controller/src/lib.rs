@@ -1454,6 +1454,14 @@ impl Controller {
         self.host_queue.push(HciPacket::AclData(packet));
     }
 
+    fn complete_acl_packets(&mut self, connection_handle: u16, count: u16) {
+        self.host_queue
+            .push(HciPacket::Event(Event::NumberOfCompletedPackets {
+                connection_handles: vec![connection_handle],
+                num_completed_packets: vec![count],
+            }));
+    }
+
     fn deliver_synchronous(&mut self, connection_handle: u16, packet_status: u8, data: &[u8]) {
         let Ok(data_total_length) = u8::try_from(data.len()) else {
             return;
@@ -1700,6 +1708,7 @@ impl LocalLink {
                 connection_handle: handle,
                 ..packet
             });
+            self.controllers[from].complete_acl_packets(connection_handle, 1);
             true
         } else {
             false

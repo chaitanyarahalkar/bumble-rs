@@ -36,6 +36,9 @@ use bumble_hci::{
 };
 use bumble_l2cap::L2capPdu;
 
+mod data_queue;
+pub use data_queue::{DataPacketQueue, DataPacketQueueError};
+
 /// The fixed L2CAP channel id for the Attribute Protocol.
 pub const ATT_CID: u16 = 0x0004;
 
@@ -62,6 +65,7 @@ pub struct Device {
     l2cap_inbox: Vec<(u16, Vec<u8>)>,
     acl_data_packet_length: usize,
     acl_assemblers: BTreeMap<u16, AclDataPacketAssembler>,
+    acl_packet_queue: DataPacketQueue<AclDataPacket>,
 }
 
 impl Device {
@@ -79,6 +83,7 @@ impl Device {
             l2cap_inbox: Vec::new(),
             acl_data_packet_length: 27,
             acl_assemblers: BTreeMap::new(),
+            acl_packet_queue: DataPacketQueue::new(64).expect("nonzero ACL queue capacity"),
         }
     }
 
@@ -97,6 +102,7 @@ impl Device {
             l2cap_inbox: Vec::new(),
             acl_data_packet_length: 27,
             acl_assemblers: BTreeMap::new(),
+            acl_packet_queue: DataPacketQueue::new(64).expect("nonzero ACL queue capacity"),
         }
     }
 
@@ -203,6 +209,23 @@ impl Device {
         true
     }
 
+    /// Set the controller's total ACL packet window while no packets are
+    /// pending. This mirrors Read Buffer Size's packet-count field.
+    pub fn set_acl_max_in_flight(&mut self, count: usize) -> bool {
+        if self.acl_packet_queue.pending() != 0 {
+            return false;
+        }
+        let Ok(queue) = DataPacketQueue::new(count) else {
+            return false;
+        };
+        self.acl_packet_queue = queue;
+        true
+    }
+
+    pub fn acl_packets_pending(&self) -> usize {
+        self.acl_packet_queue.pending()
+    }
+
     /// Remove and return the ATT PDUs received so far that were not handled by
     /// the server (i.e. responses and notifications destined for a client).
     pub fn take_inbox(&mut self) -> Vec<AttPdu> {
@@ -231,9 +254,10 @@ impl Device {
         else {
             return false;
         };
-        fragments
-            .into_iter()
-            .all(|packet| link.send_acl_packet(self.controller_id, packet))
+        for packet in fragments {
+            self.acl_packet_queue.enqueue(packet, handle);
+        }
+        self.flush_acl_queue(link)
     }
 
     /// Send an ATT PDU to the peer on the ATT channel.
@@ -283,6 +307,7 @@ impl Device {
                     connection_handle, ..
                 }) => {
                     self.acl_assemblers.remove(&connection_handle);
+                    self.acl_packet_queue.flush(connection_handle);
                     if self.connection_handle == Some(connection_handle) {
                         self.connection_handle = None;
                     }
@@ -316,12 +341,38 @@ impl Device {
                         link_type,
                         air_mode,
                     }),
+                HciPacket::Event(Event::NumberOfCompletedPackets {
+                    connection_handles,
+                    num_completed_packets,
+                }) => {
+                    for (handle, count) in connection_handles
+                        .into_iter()
+                        .zip(num_completed_packets.into_iter())
+                    {
+                        let _ = self
+                            .acl_packet_queue
+                            .on_packets_completed(usize::from(count), handle);
+                    }
+                    self.flush_acl_queue(link);
+                }
                 HciPacket::AclData(acl) => self.on_acl(link, acl),
                 HciPacket::SyncData(packet) => self.synchronous_inbox.push(packet),
                 _ => {}
             }
         }
         true
+    }
+
+    fn flush_acl_queue(&mut self, link: &mut LocalLink) -> bool {
+        let mut success = true;
+        while let Some(packet) = self.acl_packet_queue.poll_ready() {
+            let handle = packet.connection_handle;
+            if !link.send_acl_packet(self.controller_id, packet) {
+                let _ = self.acl_packet_queue.on_packets_completed(1, handle);
+                success = false;
+            }
+        }
+        success
     }
 
     fn on_acl(&mut self, link: &mut LocalLink, acl: AclDataPacket) {
