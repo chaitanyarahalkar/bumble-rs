@@ -63,7 +63,8 @@ crate whose behavior is verified against the upstream Python.
 | 46. AVRCP controller/target SDP records and discovery | `bumble-avrcp` | ✅ SDP client/server green |
 | 47. HIDP host/device protocol and paired Classic L2CAP channels | `bumble-hid` | ✅ control + interrupt green |
 | 48. Common bitstreams and MPEG-4 LATM AAC-to-ADTS codec | `bumble-codecs` | ✅ upstream fixture green |
-| 49+. Remaining modules… | — | planned |
+| 49. Complete ATT wire PDU catalog | `bumble-att` | ✅ all upstream subclasses typed |
+| 50+. Remaining modules… | — | planned |
 
 The LE lifecycle is now complete end-to-end through library APIs: **connect →
 discover → read/write → notify → disconnect** between two virtual devices — and
@@ -129,7 +130,7 @@ size, to convey remaining surface.
 ### ATT / GATT
 | Upstream (LOC) | Rust crate | Status | Notes |
 |---|---|---|---|
-| `att.py` (1.1k) | `bumble-att` | 🟡 | PDUs incl. discovery (Read_By_Type/Group_Type, Find_Information, Find_By_Type_Value), reads (Read/Read_Blob), writes (Request/Command), and notifications/indications + confirmation — all oracle-pinned. Deferred: prepared/queued (Prepare/Execute), Read_Multiple, and signed writes. |
+| `att.py` (1.1k) | `bumble-att` | ✅ | Complete typed catalog for every upstream `ATT_PDU` subclass: discovery, MTU, Read/Blob/Multiple/Multiple Variable/By Type/By Group, Write/Command/Signed, Prepare/Execute Write, notifications/indications, and confirmation. All added forms are Python-oracle pinned; variable tuples and handle sets add safe truncation/shape checks. |
 | `gatt.py` (0.6k), `gatt_server.py` (1.2k) | `bumble-gatt` | 🟡 | Attribute DB, service/characteristic model, primary discovery, read/write/notify, plus Find_Information/Find_By_Type_Value discovery, a CCCD descriptor per notify/indicate characteristic, MTU-sized reads with Read_Blob, and server-initiated notify/indicate. Deferred: included services, prepared writes. |
 | `gatt_client.py` (1.2k), `gatt_adapters.py` (0.4k) | `bumble-gatt` | 🟡 | **`GattClient` (slice 18)**: service / characteristic / descriptor discovery, reads (with long-read via Read_Blob), writes (with and without response), and notify/indicate subscriptions (CCCD write + notification/indication handling), over an `AttTransport`. Verified by a two-party client↔server integration test. Deferred (matching the synchronous port): the async bearer, `gatt_adapters` typed-value proxies, and event listeners. |
 
@@ -1108,6 +1109,24 @@ Upstream `codecs.py` is now complete in `bumble-codecs`:
 The next work targets the remaining partial foundational protocols before the
 large GATT profile catalog.
 
+## Slice 49 — what's here
+
+The ATT wire catalog now represents every class registered by upstream:
+
+- Fixed and variable Read Multiple requests carry typed handle lists; their
+  responses preserve concatenated values or explicit little-endian
+  length/value tuples.
+- Signed Write Command retains its signed opcode bits and upstream's lossless
+  value/signature tail. Prepare Write request/response and Execute Write
+  request/response expose handle, offset, fragment, and flag fields.
+- Odd handle lists, truncated variable tuples, incomplete prepare fields, and
+  missing execute flags return errors rather than indexing past the packet.
+- All nine newly typed PDU forms are byte-for-byte pinned against Python Bumble,
+  including opcode, little-endian handles/offsets, and variable tuple lengths.
+
+Next, these completed codecs are wired into GATT server behavior for multiple
+reads and queued writes.
+
 ## Acceptance
 
 The port's contract is the upstream Python test suite, ported 1:1:
@@ -1159,7 +1178,8 @@ bumble-rs/
 │   └── tests/classic_channels.rs # two-party Classic channel lifecycle
 ├── bumble-att/                # slice-5 ATT protocol PDU codec crate
 │   ├── src/lib.rs
-│   └── tests/acceptance.rs    # ported gatt_test.py ATT cases (oracle-pinned)
+│   ├── tests/acceptance.rs    # ported gatt_test.py ATT cases (oracle-pinned)
+│   └── tests/complete_catalog.rs # slice-49 remaining upstream PDU forms
 ├── bumble-crypto/             # slice-6 SMP crypto toolbox + slice-19 P-256 ECC
 │   ├── src/lib.rs             # symmetric functions + EccKey (P-256 ECDH)
 │   ├── tests/vectors.rs       # ported smp_test.py spec/RFC vectors
