@@ -1,6 +1,6 @@
 use crate::{
-    Error, FileTransport, PacketSink, PacketSource, Result, SerialTransport, TcpServer,
-    TcpTransport, UdpTransport, VhciTransport, WebSocketServer, WebSocketTransport,
+    Error, FileTransport, PacketSink, PacketSource, Result, SerialTransport, SystemUsbTransport,
+    TcpServer, TcpTransport, UdpTransport, VhciTransport, WebSocketServer, WebSocketTransport,
 };
 use bumble_hci::HciPacket;
 use std::collections::BTreeMap;
@@ -88,6 +88,7 @@ pub enum ExternalTransport {
     Serial(SerialTransport),
     Tcp(TcpTransport),
     Udp(UdpTransport),
+    Usb(Box<SystemUsbTransport>),
     Vhci(VhciTransport<std::fs::File>),
     WebSocket(Box<WebSocketTransport>),
     #[cfg(unix)]
@@ -103,6 +104,7 @@ impl PacketSource for ExternalTransport {
             Self::Serial(transport) => transport.read_packet(),
             Self::Tcp(transport) => transport.read_packet(),
             Self::Udp(transport) => transport.read_packet(),
+            Self::Usb(transport) => transport.read_packet(),
             Self::Vhci(transport) => transport.read_packet(),
             Self::WebSocket(transport) => transport.read_packet(),
             #[cfg(unix)]
@@ -120,6 +122,7 @@ impl PacketSink for ExternalTransport {
             Self::Serial(transport) => transport.write_packet(packet),
             Self::Tcp(transport) => transport.write_packet(packet),
             Self::Udp(transport) => transport.write_packet(packet),
+            Self::Usb(transport) => transport.write_packet(packet),
             Self::Vhci(transport) => transport.write_packet(packet),
             Self::WebSocket(transport) => transport.write_packet(packet),
             #[cfg(unix)]
@@ -135,6 +138,7 @@ impl PacketSink for ExternalTransport {
             Self::Serial(transport) => transport.flush(),
             Self::Tcp(transport) => transport.flush(),
             Self::Udp(transport) => transport.flush(),
+            Self::Usb(transport) => transport.flush(),
             Self::Vhci(transport) => transport.flush(),
             Self::WebSocket(transport) => transport.flush(),
             #[cfg(unix)]
@@ -192,6 +196,9 @@ pub fn open_transport(name: &str) -> Result<OpenedTransport> {
                 .ok_or_else(|| Error::InvalidSpec("UDP parameters must be local,remote".into()))?;
             ExternalTransport::Udp(UdpTransport::bind(local, remote)?)
         }
+        "usb" | "pyusb" => ExternalTransport::Usb(Box::new(SystemUsbTransport::open(
+            spec.required_parameters()?,
+        )?)),
         "ws-client" => ExternalTransport::WebSocket(Box::new(WebSocketTransport::connect(
             spec.required_parameters()?,
         )?)),
@@ -224,8 +231,15 @@ pub fn open_transport(name: &str) -> Result<OpenedTransport> {
         }
         scheme => return Err(Error::Unsupported(format!("scheme {scheme}"))),
     };
+    let mut metadata = spec.metadata;
+    if let ExternalTransport::Usb(usb) = &transport {
+        metadata.insert("vendor_id".into(), format!("{:04x}", usb.vendor_id()));
+        metadata.insert("product_id".into(), format!("{:04x}", usb.product_id()));
+        metadata.insert("bus".into(), usb.bus().to_string());
+        metadata.insert("address".into(), usb.address().to_string());
+    }
     Ok(OpenedTransport {
         transport,
-        metadata: spec.metadata,
+        metadata,
     })
 }

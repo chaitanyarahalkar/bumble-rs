@@ -15,6 +15,7 @@ mod tcp;
 mod udp;
 #[cfg(unix)]
 mod unix;
+mod usb;
 mod vhci;
 mod websocket;
 
@@ -31,5 +32,9 @@ pub use tcp::{TcpServer, TcpTransport};
 pub use udp::UdpTransport;
 #[cfg(unix)]
 pub use unix::{UnixServer, UnixTransport};
+pub use usb::{
+    select_interface_layout, SystemUsbTransport, UsbEndpointInfo, UsbInterfaceInfo,
+    UsbInterfaceLayout, UsbIo, UsbSelector, UsbSpec, UsbTransferError, UsbTransport,
+};
 pub use vhci::{VhciTransport, HCI_BREDR, HCI_VENDOR_PACKET};
 pub use websocket::{WebSocketServer, WebSocketTransport};

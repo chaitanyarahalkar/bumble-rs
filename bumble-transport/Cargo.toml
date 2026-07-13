@@ -15,3 +15,4 @@ description = "HCI packet framing and external transports for bumble-rs"
 bumble-hci = { path = "../bumble-hci" }
 serialport = { version = "4.9.0", default-features = false }
 tungstenite = { version = "0.30.0", features = ["rustls-tls-native-roots"] }
+rusb = { version = "0.9.4", features = ["vendored"] }
