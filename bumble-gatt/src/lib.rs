@@ -28,8 +28,9 @@
 //! makes any [`AttRequestHandler`] usable as a transport, so a client and server
 //! talk directly in the crate's `client` integration test.
 //!
-//! Deferred: prepared/queued writes (Prepare/Execute), Read_Multiple, signed
-//! writes, and the full async bearer.
+//! Read Multiple/Variable, signed commands, and atomic Prepare/Execute queued
+//! writes are supported. The remaining architectural difference is the async
+//! bearer/event convenience layer.
 
 use std::collections::BTreeMap;
 
@@ -81,6 +82,8 @@ pub const ATT_ATTRIBUTE_NOT_FOUND_ERROR: u8 = 0x0A;
 pub const ATT_REQUEST_NOT_SUPPORTED_ERROR: u8 = 0x06;
 /// ATT error: the Read Blob offset is past the end of the attribute value.
 pub const ATT_INVALID_OFFSET_ERROR: u8 = 0x07;
+/// ATT error: the request fields are invalid for this opcode.
+pub const ATT_INVALID_PDU_ERROR: u8 = 0x04;
 
 /// The default ATT MTU (Vol 3, Part F - 3.2.8).
 pub const ATT_DEFAULT_MTU: u16 = 23;
@@ -90,6 +93,7 @@ pub const ATT_DEFAULT_MTU: u16 = 23;
 pub struct AttServer {
     attributes: BTreeMap<u16, Vec<u8>>,
     mtu: u16,
+    prepared_writes: Vec<(u16, u16, Vec<u8>)>,
 }
 
 impl Default for AttServer {
@@ -97,6 +101,7 @@ impl Default for AttServer {
         AttServer {
             attributes: BTreeMap::new(),
             mtu: ATT_DEFAULT_MTU,
+            prepared_writes: Vec::new(),
         }
     }
 }
@@ -116,6 +121,10 @@ impl AttServer {
         self.attributes.get(&handle).map(Vec::as_slice)
     }
 
+    pub fn prepared_write_count(&self) -> usize {
+        self.prepared_writes.len()
+    }
+
     /// Turn an incoming ATT request into the appropriate ATT response.
     pub fn on_request(&mut self, request: &AttPdu) -> AttPdu {
         match request {
@@ -133,6 +142,12 @@ impl AttServer {
                     ATT_ATTRIBUTE_NOT_FOUND_ERROR,
                 ),
             },
+            AttPdu::ReadMultipleRequest { set_of_handles } => {
+                self.read_multiple(set_of_handles, false)
+            }
+            AttPdu::ReadMultipleVariableRequest { set_of_handles } => {
+                self.read_multiple(set_of_handles, true)
+            }
             AttPdu::WriteRequest {
                 attribute_handle,
                 attribute_value,
@@ -148,8 +163,126 @@ impl AttServer {
                     )
                 }
             }
+            AttPdu::WriteCommand {
+                attribute_handle,
+                attribute_value,
+            } => {
+                if let Some(slot) = self.attributes.get_mut(attribute_handle) {
+                    *slot = attribute_value.clone();
+                }
+                AttPdu::HandleValueConfirmation
+            }
+            // Verification requires a signing counter and CSRK from the SMP
+            // security context. Never write the signature bytes as value data.
+            AttPdu::SignedWriteCommand { .. } => AttPdu::HandleValueConfirmation,
+            AttPdu::PrepareWriteRequest {
+                attribute_handle,
+                value_offset,
+                part_attribute_value,
+            } => {
+                if !self.attributes.contains_key(attribute_handle) {
+                    error(
+                        codes::ATT_PREPARE_WRITE_REQUEST,
+                        *attribute_handle,
+                        ATT_ATTRIBUTE_NOT_FOUND_ERROR,
+                    )
+                } else {
+                    self.prepared_writes.push((
+                        *attribute_handle,
+                        *value_offset,
+                        part_attribute_value.clone(),
+                    ));
+                    AttPdu::PrepareWriteResponse {
+                        attribute_handle: *attribute_handle,
+                        value_offset: *value_offset,
+                        part_attribute_value: part_attribute_value.clone(),
+                    }
+                }
+            }
+            AttPdu::ExecuteWriteRequest { flags } => self.execute_writes(*flags),
             other => error(other.op_code(), 0, ATT_REQUEST_NOT_SUPPORTED_ERROR),
         }
+    }
+
+    fn read_multiple(&self, handles: &[u16], variable: bool) -> AttPdu {
+        let mut remaining = usize::from(self.mtu - 1);
+        if variable {
+            let mut tuples = Vec::new();
+            for handle in handles {
+                let Some(value) = self.attributes.get(handle) else {
+                    return error(
+                        codes::ATT_READ_MULTIPLE_VARIABLE_REQUEST,
+                        *handle,
+                        ATT_ATTRIBUTE_NOT_FOUND_ERROR,
+                    );
+                };
+                let part = truncate(value, usize::from(self.mtu - 3).min(251));
+                if part.len() + 2 > remaining {
+                    break;
+                }
+                tuples.push((value.len().min(u16::MAX as usize) as u16, part));
+                remaining -= tuples.last().expect("tuple inserted").1.len() + 2;
+            }
+            AttPdu::ReadMultipleVariableResponse {
+                length_value_tuples: tuples,
+            }
+        } else {
+            let mut values = Vec::new();
+            for handle in handles {
+                let Some(value) = self.attributes.get(handle) else {
+                    return error(
+                        codes::ATT_READ_MULTIPLE_REQUEST,
+                        *handle,
+                        ATT_ATTRIBUTE_NOT_FOUND_ERROR,
+                    );
+                };
+                let part = truncate(value, usize::from(self.mtu - 1).min(251));
+                if part.len() > remaining {
+                    break;
+                }
+                remaining -= part.len();
+                values.extend_from_slice(&part);
+            }
+            AttPdu::ReadMultipleResponse {
+                set_of_values: values,
+            }
+        }
+    }
+
+    fn execute_writes(&mut self, flags: u8) -> AttPdu {
+        if flags == 0 {
+            self.prepared_writes.clear();
+            return AttPdu::ExecuteWriteResponse;
+        }
+        if flags != 1 {
+            return error(codes::ATT_EXECUTE_WRITE_REQUEST, 0, ATT_INVALID_PDU_ERROR);
+        }
+        let prepared_writes = core::mem::take(&mut self.prepared_writes);
+        let mut staged = self.attributes.clone();
+        for (handle, offset, part) in &prepared_writes {
+            let Some(value) = staged.get_mut(handle) else {
+                return error(
+                    codes::ATT_EXECUTE_WRITE_REQUEST,
+                    *handle,
+                    ATT_ATTRIBUTE_NOT_FOUND_ERROR,
+                );
+            };
+            let offset = usize::from(*offset);
+            if offset > value.len() {
+                return error(
+                    codes::ATT_EXECUTE_WRITE_REQUEST,
+                    *handle,
+                    ATT_INVALID_OFFSET_ERROR,
+                );
+            }
+            let end = offset + part.len();
+            if end > value.len() {
+                value.resize(end, 0);
+            }
+            value[offset..end].copy_from_slice(part);
+        }
+        self.attributes = staged;
+        AttPdu::ExecuteWriteResponse
     }
 }
 
@@ -203,6 +336,7 @@ pub struct GattServer {
     mtu: u16,
     /// The negotiated MTU (min of both peers), used to size read responses.
     negotiated_mtu: u16,
+    prepared_writes: Vec<(u16, u16, Vec<u8>)>,
 }
 
 impl GattServer {
@@ -271,6 +405,7 @@ impl GattServer {
             attributes,
             mtu: ATT_DEFAULT_MTU,
             negotiated_mtu: ATT_DEFAULT_MTU,
+            prepared_writes: Vec::new(),
         }
     }
 
@@ -280,6 +415,10 @@ impl GattServer {
 
     fn find_mut(&mut self, handle: u16) -> Option<&mut Attribute> {
         self.attributes.iter_mut().find(|a| a.handle == handle)
+    }
+
+    pub fn prepared_write_count(&self) -> usize {
+        self.prepared_writes.len()
     }
 
     /// Turn an incoming ATT request into a response.
@@ -328,6 +467,12 @@ impl GattServer {
                     ATT_ATTRIBUTE_NOT_FOUND_ERROR,
                 ),
             },
+            AttPdu::ReadMultipleRequest { set_of_handles } => {
+                self.read_multiple(set_of_handles, false)
+            }
+            AttPdu::ReadMultipleVariableRequest { set_of_handles } => {
+                self.read_multiple(set_of_handles, true)
+            }
             AttPdu::WriteRequest {
                 attribute_handle,
                 attribute_value,
@@ -378,8 +523,130 @@ impl GattServer {
                 // Callers ignore the returned PDU for commands; surface a no-op.
                 AttPdu::HandleValueConfirmation
             }
+            // Verification requires the connection's CSRK/signing counter.
+            AttPdu::SignedWriteCommand { .. } => AttPdu::HandleValueConfirmation,
+            AttPdu::PrepareWriteRequest {
+                attribute_handle,
+                value_offset,
+                part_attribute_value,
+            } => {
+                if self.find(*attribute_handle).is_none() {
+                    error(
+                        codes::ATT_PREPARE_WRITE_REQUEST,
+                        *attribute_handle,
+                        ATT_ATTRIBUTE_NOT_FOUND_ERROR,
+                    )
+                } else {
+                    self.prepared_writes.push((
+                        *attribute_handle,
+                        *value_offset,
+                        part_attribute_value.clone(),
+                    ));
+                    AttPdu::PrepareWriteResponse {
+                        attribute_handle: *attribute_handle,
+                        value_offset: *value_offset,
+                        part_attribute_value: part_attribute_value.clone(),
+                    }
+                }
+            }
+            AttPdu::ExecuteWriteRequest { flags } => self.execute_writes(*flags),
             other => error(other.op_code(), 0, ATT_REQUEST_NOT_SUPPORTED_ERROR),
         }
+    }
+
+    fn read_multiple(&self, handles: &[u16], variable: bool) -> AttPdu {
+        let mut remaining = usize::from(self.negotiated_mtu - 1);
+        if variable {
+            let mut tuples = Vec::new();
+            for handle in handles {
+                let Some(attribute) = self.find(*handle) else {
+                    return error(
+                        codes::ATT_READ_MULTIPLE_VARIABLE_REQUEST,
+                        *handle,
+                        ATT_ATTRIBUTE_NOT_FOUND_ERROR,
+                    );
+                };
+                let part = truncate(
+                    &attribute.value,
+                    usize::from(self.negotiated_mtu - 3).min(251),
+                );
+                if part.len() + 2 > remaining {
+                    break;
+                }
+                remaining -= part.len() + 2;
+                tuples.push((attribute.value.len().min(u16::MAX as usize) as u16, part));
+            }
+            AttPdu::ReadMultipleVariableResponse {
+                length_value_tuples: tuples,
+            }
+        } else {
+            let mut values = Vec::new();
+            for handle in handles {
+                let Some(attribute) = self.find(*handle) else {
+                    return error(
+                        codes::ATT_READ_MULTIPLE_REQUEST,
+                        *handle,
+                        ATT_ATTRIBUTE_NOT_FOUND_ERROR,
+                    );
+                };
+                let part = truncate(
+                    &attribute.value,
+                    usize::from(self.negotiated_mtu - 1).min(251),
+                );
+                if part.len() > remaining {
+                    break;
+                }
+                remaining -= part.len();
+                values.extend_from_slice(&part);
+            }
+            AttPdu::ReadMultipleResponse {
+                set_of_values: values,
+            }
+        }
+    }
+
+    fn execute_writes(&mut self, flags: u8) -> AttPdu {
+        if flags == 0 {
+            self.prepared_writes.clear();
+            return AttPdu::ExecuteWriteResponse;
+        }
+        if flags != 1 {
+            return error(codes::ATT_EXECUTE_WRITE_REQUEST, 0, ATT_INVALID_PDU_ERROR);
+        }
+        let prepared_writes = core::mem::take(&mut self.prepared_writes);
+        let mut staged: BTreeMap<u16, Vec<u8>> = self
+            .attributes
+            .iter()
+            .map(|attribute| (attribute.handle, attribute.value.clone()))
+            .collect();
+        for (handle, offset, part) in &prepared_writes {
+            let Some(value) = staged.get_mut(handle) else {
+                return error(
+                    codes::ATT_EXECUTE_WRITE_REQUEST,
+                    *handle,
+                    ATT_ATTRIBUTE_NOT_FOUND_ERROR,
+                );
+            };
+            let offset = usize::from(*offset);
+            if offset > value.len() {
+                return error(
+                    codes::ATT_EXECUTE_WRITE_REQUEST,
+                    *handle,
+                    ATT_INVALID_OFFSET_ERROR,
+                );
+            }
+            let end = offset + part.len();
+            if end > value.len() {
+                value.resize(end, 0);
+            }
+            value[offset..end].copy_from_slice(part);
+        }
+        for attribute in &mut self.attributes {
+            if let Some(value) = staged.remove(&attribute.handle) {
+                attribute.value = value;
+            }
+        }
+        AttPdu::ExecuteWriteResponse
     }
 
     /// Build a server-initiated Handle Value Notification for `value_handle`.

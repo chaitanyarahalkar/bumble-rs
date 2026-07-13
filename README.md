@@ -64,7 +64,8 @@ crate whose behavior is verified against the upstream Python.
 | 47. HIDP host/device protocol and paired Classic L2CAP channels | `bumble-hid` | ✅ control + interrupt green |
 | 48. Common bitstreams and MPEG-4 LATM AAC-to-ADTS codec | `bumble-codecs` | ✅ upstream fixture green |
 | 49. Complete ATT wire PDU catalog | `bumble-att` | ✅ all upstream subclasses typed |
-| 50+. Remaining modules… | — | planned |
+| 50. GATT multiple reads and atomic queued writes | `bumble-gatt` | ✅ fixed/variable + prepare/execute green |
+| 51+. Remaining modules… | — | planned |
 
 The LE lifecycle is now complete end-to-end through library APIs: **connect →
 discover → read/write → notify → disconnect** between two virtual devices — and
@@ -131,7 +132,7 @@ size, to convey remaining surface.
 | Upstream (LOC) | Rust crate | Status | Notes |
 |---|---|---|---|
 | `att.py` (1.1k) | `bumble-att` | ✅ | Complete typed catalog for every upstream `ATT_PDU` subclass: discovery, MTU, Read/Blob/Multiple/Multiple Variable/By Type/By Group, Write/Command/Signed, Prepare/Execute Write, notifications/indications, and confirmation. All added forms are Python-oracle pinned; variable tuples and handle sets add safe truncation/shape checks. |
-| `gatt.py` (0.6k), `gatt_server.py` (1.2k) | `bumble-gatt` | 🟡 | Attribute DB, service/characteristic model, primary discovery, read/write/notify, plus Find_Information/Find_By_Type_Value discovery, a CCCD descriptor per notify/indicate characteristic, MTU-sized reads with Read_Blob, and server-initiated notify/indicate. Deferred: included services, prepared writes. |
+| `gatt.py` (0.6k), `gatt_server.py` (1.2k) | `bumble-gatt` | 🟡 | Attribute DB, service/characteristic model, primary discovery, read/write/notify, Find_Information/Find_By_Type_Value, CCCDs, MTU-sized Read/Blob, fixed + variable Read Multiple, and atomic Prepare/Execute Write with cancel/rollback. Signed writes are deliberately ignored until a connection CSRK/counter can authenticate them. Deferred: included services, permission/security enforcement, dynamic accessors. |
 | `gatt_client.py` (1.2k), `gatt_adapters.py` (0.4k) | `bumble-gatt` | 🟡 | **`GattClient` (slice 18)**: service / characteristic / descriptor discovery, reads (with long-read via Read_Blob), writes (with and without response), and notify/indicate subscriptions (CCCD write + notification/indication handling), over an `AttTransport`. Verified by a two-party client↔server integration test. Deferred (matching the synchronous port): the async bearer, `gatt_adapters` typed-value proxies, and event listeners. |
 
 ### Security (SMP + crypto)
@@ -1127,6 +1128,25 @@ The ATT wire catalog now represents every class registered by upstream:
 Next, these completed codecs are wired into GATT server behavior for multiple
 reads and queued writes.
 
+## Slice 50 — what's here
+
+Both Rust attribute servers now execute the newly completed ATT requests:
+
+- Fixed Read Multiple concatenates values in requested-handle order while
+  respecting the negotiated MTU. Variable Read Multiple emits bounded
+  little-endian length/value tuples and retains each full value's declared
+  length when its transmitted part is truncated.
+- A missing handle aborts either request with an error naming the exact failing
+  handle, matching upstream's server behavior.
+- Prepare Write echoes and queues each handle/offset/fragment without mutating
+  the database. Execute flag `0x01` stages every fragment and commits atomically;
+  `0x00` cancels. Invalid offsets roll back the whole transaction.
+- Write Command remains best-effort. Signed Write Command is intentionally a
+  no-op until SMP supplies the connection CSRK and signing counter, preventing
+  unauthenticated signature bytes from corrupting an attribute value.
+
+Next work continues closing GATT's service model and access/security semantics.
+
 ## Acceptance
 
 The port's contract is the upstream Python test suite, ported 1:1:
@@ -1188,7 +1208,8 @@ bumble-rs/
 │   ├── src/lib.rs             # AttServer, GattServer
 │   ├── src/client.rs         # GattClient (slice 18)
 │   ├── tests/end_to_end.rs   # attribute write/read across the full stack
-│   └── tests/client.rs       # two-party client↔server discovery/read/write/subscribe
+│   ├── tests/client.rs       # two-party client↔server discovery/read/write/subscribe
+│   └── tests/queued_writes.rs # slice-50 multiple reads + atomic queue
 ├── bumble-host/               # slice-10 Host/Device glue crate
 │   ├── src/lib.rs
 │   ├── tests/gatt_over_host.rs # full LE lifecycle via the Device API
