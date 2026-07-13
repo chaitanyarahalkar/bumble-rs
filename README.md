@@ -92,7 +92,8 @@ crate whose behavior is verified against the upstream Python.
 | 75. H4 framing and file/TCP/UDP/Unix transports | `bumble-transport` | ✅ fragmented streams + socket loopbacks green |
 | 76. Transport-spec dispatch, serial, and raw PTY endpoints | `bumble-transport` | ✅ metadata + PTY loopback green |
 | 77. WebSocket client/server HCI transport | `bumble-transport` | ✅ binary/coalesced loopback green |
-| 78+. Remaining modules… | — | planned |
+| 78. Linux VHCI bootstrap and H4 transport | `bumble-transport` | ✅ config/index handshake green |
+| 79+. Remaining modules… | — | planned |
 
 The LE lifecycle is now complete end-to-end through library APIs: **connect →
 discover → read/write → notify → disconnect** between two virtual devices — and
@@ -172,7 +173,7 @@ size, to convey remaining surface.
 ### Transports & drivers
 | Upstream | Rust crate | Status | Notes |
 |---|---|---|---|
-| `transport/*` — USB, UART/serial, TCP, WebSocket, UDP, PTY, android-netsim, vhci, … | `bumble-transport` | 🟡 | Incremental H4 framing accepts fragmented/coalesced streams and vendor packet layouts. Bumble transport-name/metadata dispatch opens file, serial/UART with RTS/CTS, raw PTY, TCP, UDP, Unix, and WebSocket client/server endpoints; WebSocket clients support `ws://` and `wss://`. Deferred: DSR/DTR flow control, USB, VHCI/HCI sockets, netsim, and other platform-specific endpoints. |
+| `transport/*` — USB, UART/serial, TCP, WebSocket, UDP, PTY, android-netsim, vhci, … | `bumble-transport` | 🟡 | Incremental H4 framing accepts fragmented/coalesced streams and vendor packet layouts. Bumble transport-name/metadata dispatch opens file, serial/UART with RTS/CTS, raw PTY, TCP, UDP, Unix, WebSocket, and Linux VHCI endpoints; WebSocket clients support `ws://` and `wss://`. Deferred: DSR/DTR flow control, USB, raw HCI sockets, netsim, and other platform-specific endpoints. |
 | `drivers/*` — Intel, Realtek | — | ⬜ | Vendor controller firmware/init. |
 
 ### Classic Bluetooth (BR/EDR)
@@ -1782,6 +1783,24 @@ HCI can now cross Bumble's WebSocket transport boundary:
 The remaining external-controller transports are USB, VHCI/HCI sockets,
 Android emulator/netsim, and narrower platform integrations.
 
+## Slice 78 — what's here
+
+The Linux virtual-controller device protocol now has a real transport:
+
+- `VhciTransport::open` uses `/dev/vhci` by default or an explicit path from a
+  `vhci:` transport name.
+- Initialization writes Bumble's `[HCI_VENDOR_PACKET, HCI_BREDR]` controller
+  configuration, consumes the four-byte vendor response, and exposes its
+  big-endian HCI adapter index before switching to normal H4 framing.
+- Malformed non-vendor bootstrap replies fail explicitly rather than entering
+  the standard packet parser in a corrupted state.
+- A bidirectional stream test acts as the kernel endpoint, verifies the exact
+  bootstrap bytes and adapter index, then carries an event and command across
+  the initialized transport.
+
+USB and Linux raw HCI sockets remain the direct-hardware transport gaps; Android
+emulator/netsim and narrower platform endpoints follow those foundations.
+
 ## Acceptance
 
 The port's contract is the upstream Python test suite, ported 1:1:
@@ -1927,11 +1946,12 @@ bumble-rs/
 ├── bumble-codecs/             # slice-48 common media bitstreams/codecs
 │   ├── src/lib.rs             # bit I/O + MPEG-4 LATM AAC and ADTS conversion
 │   └── tests/codecs.rs        # upstream fixture + length-boundary round trips
-├── bumble-transport/          # slices 75-77 external HCI transports
-│   ├── src/{lib,common,dispatch,file,serial,pty,tcp,udp,unix,websocket}.rs
+├── bumble-transport/          # slices 75-78 external HCI transports
+│   ├── src/{lib,common,dispatch,file,serial,pty,tcp,udp,unix,websocket,vhci}.rs
 │   ├── tests/transports.rs    # fragmentation, EOF, and socket loopbacks
 │   ├── tests/specs.rs         # dispatch, serial config, and raw PTY coverage
-│   └── tests/websocket.rs     # binary framing + client/server handshake
+│   ├── tests/websocket.rs     # binary framing + client/server handshake
+│   └── tests/vhci.rs          # virtual-controller bootstrap + H4 exchange
 └── docs/superpowers/          # design specs + implementation plans
 ```
 

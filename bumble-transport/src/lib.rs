@@ -15,6 +15,7 @@ mod tcp;
 mod udp;
 #[cfg(unix)]
 mod unix;
+mod vhci;
 mod websocket;
 
 pub use common::{
@@ -30,4 +31,5 @@ pub use tcp::{TcpServer, TcpTransport};
 pub use udp::UdpTransport;
 #[cfg(unix)]
 pub use unix::{UnixServer, UnixTransport};
+pub use vhci::{VhciTransport, HCI_BREDR, HCI_VENDOR_PACKET};
 pub use websocket::{WebSocketServer, WebSocketTransport};

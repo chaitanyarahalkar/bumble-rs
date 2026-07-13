@@ -1,6 +1,6 @@
 use crate::{
     Error, FileTransport, PacketSink, PacketSource, Result, SerialTransport, TcpServer,
-    TcpTransport, UdpTransport, WebSocketServer, WebSocketTransport,
+    TcpTransport, UdpTransport, VhciTransport, WebSocketServer, WebSocketTransport,
 };
 use bumble_hci::HciPacket;
 use std::collections::BTreeMap;
@@ -88,6 +88,7 @@ pub enum ExternalTransport {
     Serial(SerialTransport),
     Tcp(TcpTransport),
     Udp(UdpTransport),
+    Vhci(VhciTransport<std::fs::File>),
     WebSocket(Box<WebSocketTransport>),
     #[cfg(unix)]
     Pty(PtyTransport),
@@ -102,6 +103,7 @@ impl PacketSource for ExternalTransport {
             Self::Serial(transport) => transport.read_packet(),
             Self::Tcp(transport) => transport.read_packet(),
             Self::Udp(transport) => transport.read_packet(),
+            Self::Vhci(transport) => transport.read_packet(),
             Self::WebSocket(transport) => transport.read_packet(),
             #[cfg(unix)]
             Self::Pty(transport) => transport.read_packet(),
@@ -118,6 +120,7 @@ impl PacketSink for ExternalTransport {
             Self::Serial(transport) => transport.write_packet(packet),
             Self::Tcp(transport) => transport.write_packet(packet),
             Self::Udp(transport) => transport.write_packet(packet),
+            Self::Vhci(transport) => transport.write_packet(packet),
             Self::WebSocket(transport) => transport.write_packet(packet),
             #[cfg(unix)]
             Self::Pty(transport) => transport.write_packet(packet),
@@ -132,6 +135,7 @@ impl PacketSink for ExternalTransport {
             Self::Serial(transport) => transport.flush(),
             Self::Tcp(transport) => transport.flush(),
             Self::Udp(transport) => transport.flush(),
+            Self::Vhci(transport) => transport.flush(),
             Self::WebSocket(transport) => transport.flush(),
             #[cfg(unix)]
             Self::Pty(transport) => transport.flush(),
@@ -199,6 +203,12 @@ pub fn open_transport(name: &str) -> Result<OpenedTransport> {
                 .unwrap_or_else(|| parameters.to_owned());
             ExternalTransport::WebSocket(Box::new(WebSocketServer::bind(address)?.accept()?))
         }
+        "vhci" => ExternalTransport::Vhci(VhciTransport::open(
+            spec.parameters
+                .as_deref()
+                .filter(|parameters| !parameters.is_empty())
+                .unwrap_or("/dev/vhci"),
+        )?),
         #[cfg(unix)]
         "pty" => {
             let link = spec.parameters.as_deref().filter(|value| !value.is_empty());
