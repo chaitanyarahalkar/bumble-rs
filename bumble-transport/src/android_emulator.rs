@@ -107,6 +107,10 @@ impl AndroidEmulatorPacket {
         &self.payload
     }
 
+    pub fn into_parts(self) -> (u8, Vec<u8>) {
+        (self.packet_type, self.payload)
+    }
+
     pub fn from_hci(packet: &HciPacket) -> Self {
         let bytes = packet.to_bytes();
         Self {

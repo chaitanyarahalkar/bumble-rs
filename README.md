@@ -96,7 +96,8 @@ crate whose behavior is verified against the upstream Python.
 | 79. USB HCI discovery and command/event/ACL transport | `bumble-transport` | ✅ libusb backend + transfer mock green |
 | 80. Linux raw HCI user-channel socket transport | `bumble-transport` | ✅ Linux target check + packet-I/O mock green |
 | 81. Android emulator host/controller gRPC transport | `bumble-transport` | ✅ real bidirectional gRPC loopback green |
-| 82+. Remaining modules… | — | planned |
+| 82. Android netsim host/controller packet-stream transport | `bumble-transport` | ✅ startup/INI/lease + live gRPC green |
+| 83+. Remaining modules… | — | planned |
 
 The LE lifecycle is now complete end-to-end through library APIs: **connect →
 discover → read/write → notify → disconnect** between two virtual devices — and
@@ -176,7 +177,7 @@ size, to convey remaining surface.
 ### Transports & drivers
 | Upstream | Rust crate | Status | Notes |
 |---|---|---|---|
-| `transport/*` — USB, UART/serial, TCP, WebSocket, UDP, PTY, android-netsim, vhci, … | `bumble-transport` | 🟡 | Incremental H4 framing accepts fragmented/coalesced streams and vendor packet layouts. Bumble transport-name/metadata dispatch opens file, serial/UART with RTS/CTS, raw PTY, TCP, UDP, Unix, WebSocket, Linux VHCI/raw HCI user-channel sockets, libusb Bluetooth-controller endpoints, and Android emulator host/controller gRPC streams. USB covers discovery, class/forced interface selection, commands, events, ACL, and outgoing ISO-over-bulk compatibility. Deferred: USB SCO/isochronous input, DSR/DTR flow control, Android netsim, and other platform-specific endpoints. |
+| `transport/*` — USB, UART/serial, TCP, WebSocket, UDP, PTY, android-netsim, vhci, … | `bumble-transport` | 🟡 | Incremental H4 framing accepts fragmented/coalesced streams and vendor packet layouts. Bumble transport-name/metadata dispatch opens file, serial/UART with RTS/CTS, raw PTY, TCP, UDP, Unix, WebSocket, Linux VHCI/raw HCI user-channel sockets, libusb Bluetooth-controller endpoints, Android emulator gRPC, and Android netsim host/controller packet streams. USB covers discovery, class/forced interface selection, commands, events, ACL, and outgoing ISO-over-bulk compatibility. Deferred: USB SCO/isochronous input, DSR/DTR flow control, and narrower platform-specific endpoints. |
 | `drivers/*` — Intel, Realtek | — | ⬜ | Vendor controller firmware/init. |
 
 ### Classic Bluetooth (BR/EDR)
@@ -1879,6 +1880,35 @@ The standalone Android emulator's two HCI-facing gRPC services are now live:
 Android netsim remains the next emulator transport; it uses a distinct startup
 and packet-streaming protocol rather than these emulator services.
 
+## Slice 82 — what's here
+
+Android netsim's separate `PacketStreamer` protocol now works in both roles:
+
+- `AndroidNetsimSpec` accepts the upstream empty/INI form, explicit IPv4/IPv6
+  `<host>:<port>` endpoints, `mode=host|controller`, `instance`, `name`, and
+  `variant` options. Platform-specific `netsim[_n].ini` discovery reads the
+  exact `grpc.port` key; controller publication uses create-new semantics so an
+  existing simulator registration is never overwritten.
+- The protobuf subset preserves the used `netsim.common`, `netsim.startup`, and
+  `netsim.packet` package names, message fields, oneof tags, enum values, and
+  `/netsim.packet.PacketStreamer/StreamPackets` RPC path. Exact request,
+  response, HCI, and error bytes are pinned in tests.
+- Host mode sends `ChipInfo` before HCI traffic, including Bluetooth kind,
+  Bumble identity, build/architecture, and variant fields. Remote error and raw
+  packet responses remain distinct from typed HCI packets.
+- Controller mode is a real tonic server with an exclusive device lease. It
+  rejects unsupported chip kinds and concurrent devices, releases leases on
+  disconnect, drops output when no device is attached like upstream, and
+  force-cancels active streams during local shutdown to avoid a blocking drop.
+- `android-netsim:` dispatch exports resolved mode/host/port metadata. A live
+  test starts an ephemeral controller, discovers its published INI port when
+  available, exchanges command/event packets with a host, rejects a second
+  host as `Device busy`, and shuts down the controller before its client.
+
+The main upstream transport catalog is now represented. Remaining transport
+work is the explicitly narrower USB SCO/isochronous input and serial DSR/DTR
+paths plus platform-specific integrations outside this catalog.
+
 ## Acceptance
 
 The port's contract is the upstream Python test suite, ported 1:1:
@@ -2024,11 +2054,12 @@ bumble-rs/
 ├── bumble-codecs/             # slice-48 common media bitstreams/codecs
 │   ├── src/lib.rs             # bit I/O + MPEG-4 LATM AAC and ADTS conversion
 │   └── tests/codecs.rs        # upstream fixture + length-boundary round trips
-├── bumble-transport/          # slices 75-81 external HCI transports
+├── bumble-transport/          # slices 75-82 external HCI transports
 │   ├── build.rs               # vendored-protoc Android gRPC generation
-│   ├── proto/android_emulator.proto # emulator HCI services and packet wire format
-│   ├── src/{android_emulator,lib,common,dispatch,file,hci_socket,serial,pty,tcp,udp,usb,unix,websocket,vhci}.rs
+│   ├── proto/{android_emulator,netsim_common,netsim_startup,netsim_packet_streamer}.proto
+│   ├── src/{android_emulator,android_netsim,lib,common,dispatch,file,hci_socket,serial,pty,tcp,udp,usb,unix,websocket,vhci}.rs
 │   ├── tests/android_emulator.rs # packet mapping + real host/controller gRPC loopback
+│   ├── tests/android_netsim.rs # startup, INI, wire tags, live lease/packet stream
 │   ├── tests/hci_socket.rs    # selectors, Linux ABI, framing, and I/O failures
 │   ├── tests/transports.rs    # fragmentation, EOF, and socket loopbacks
 │   ├── tests/specs.rs         # dispatch, serial config, and raw PTY coverage

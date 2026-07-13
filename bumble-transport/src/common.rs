@@ -21,6 +21,7 @@ pub enum Error {
     InvalidPacketType(u8),
     InvalidLayout,
     InvalidSpec(String),
+    Remote(String),
     Unsupported(String),
     PacketTooLarge(usize),
     TruncatedPacket(usize),
@@ -41,6 +42,7 @@ impl fmt::Display for Error {
             }
             Self::InvalidLayout => write!(formatter, "invalid HCI packet layout"),
             Self::InvalidSpec(message) => write!(formatter, "invalid transport spec: {message}"),
+            Self::Remote(message) => write!(formatter, "remote transport error: {message}"),
             Self::Unsupported(feature) => write!(formatter, "unsupported transport: {feature}"),
             Self::PacketTooLarge(size) => write!(formatter, "HCI packet is too large: {size}"),
             Self::TruncatedPacket(size) => {

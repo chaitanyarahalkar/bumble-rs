@@ -1,0 +1,39 @@
+syntax = "proto3";
+
+package netsim.packet;
+
+import "netsim_startup.proto";
+
+message HCIPacket {
+  enum PacketType {
+    HCI_PACKET_UNSPECIFIED = 0;
+    COMMAND = 1;
+    ACL = 2;
+    SCO = 3;
+    EVENT = 4;
+    ISO = 5;
+  }
+
+  PacketType packet_type = 1;
+  bytes packet = 2;
+}
+
+message PacketRequest {
+  oneof request_type {
+    netsim.startup.ChipInfo initial_info = 1;
+    HCIPacket hci_packet = 2;
+    bytes packet = 3;
+  }
+}
+
+message PacketResponse {
+  oneof response_type {
+    string error = 1;
+    HCIPacket hci_packet = 2;
+    bytes packet = 3;
+  }
+}
+
+service PacketStreamer {
+  rpc StreamPackets(stream PacketRequest) returns (stream PacketResponse);
+}

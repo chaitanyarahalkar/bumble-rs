@@ -1,0 +1,11 @@
+syntax = "proto3";
+
+package netsim.common;
+
+enum ChipKind {
+  UNSPECIFIED = 0;
+  BLUETOOTH = 1;
+  WIFI = 2;
+  UWB = 3;
+  BLUETOOTH_BEACON = 4;
+}

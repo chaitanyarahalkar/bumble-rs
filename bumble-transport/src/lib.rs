@@ -6,6 +6,7 @@
 //! File, TCP, UDP, and Unix-domain socket endpoints build on that common layer.
 
 mod android_emulator;
+mod android_netsim;
 mod common;
 mod dispatch;
 mod file;
@@ -25,6 +26,14 @@ pub use android_emulator::{
     android_emulator_proto, AndroidEmulatorIo, AndroidEmulatorMode, AndroidEmulatorPacket,
     AndroidEmulatorSpec, AndroidEmulatorTransport, GrpcAndroidEmulatorIo,
     SystemAndroidEmulatorTransport, DEFAULT_ANDROID_EMULATOR_ADDRESS,
+};
+pub use android_netsim::{
+    android_netsim_proto, default_netsim_ini_dir, find_netsim_grpc_port, find_netsim_grpc_port_in,
+    netsim_ini_file_name, AndroidNetsimIo, AndroidNetsimMode, AndroidNetsimPacket,
+    AndroidNetsimSpec, AndroidNetsimTransport, GrpcAndroidNetsimControllerIo,
+    GrpcAndroidNetsimHostIo, SystemAndroidNetsimIo, SystemAndroidNetsimTransport,
+    DEFAULT_ANDROID_NETSIM_MANUFACTURER, DEFAULT_ANDROID_NETSIM_NAME,
+    DEFAULT_ANDROID_NETSIM_VARIANT,
 };
 pub use common::{
     Error, H4Transport, PacketFramer, PacketLayout, PacketSink, PacketSource, Result,

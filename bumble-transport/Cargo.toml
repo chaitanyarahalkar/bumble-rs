@@ -17,16 +17,13 @@ prost = "0.13.5"
 serialport = { version = "4.9.0", default-features = false }
 tokio = { version = "1.45.1", features = ["macros", "rt", "sync"] }
 tokio-stream = { version = "0.1.17", features = ["net"] }
-tonic = { version = "0.13.1", default-features = false, features = ["codegen", "prost", "transport"] }
+tonic = { version = "0.13.1", default-features = false, features = ["codegen", "prost", "router", "transport"] }
 tungstenite = { version = "0.30.0", features = ["rustls-tls-native-roots"] }
 rusb = { version = "0.9.4", features = ["vendored"] }
 
 [build-dependencies]
 protoc-bin-vendored = "3.2.0"
 tonic-build = "0.13.1"
-
-[dev-dependencies]
-tonic = { version = "0.13.1", default-features = false, features = ["router"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 libc = "0.2.186"

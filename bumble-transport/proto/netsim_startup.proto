@@ -1,0 +1,32 @@
+syntax = "proto3";
+
+package netsim.startup;
+
+import "netsim_common.proto";
+
+message ChipInfo {
+  string name = 1;
+  Chip chip = 2;
+  DeviceInfo device_info = 3;
+}
+
+message DeviceInfo {
+  string name = 1;
+  string kind = 2;
+  string version = 3;
+  string sdk_version = 4;
+  string build_id = 5;
+  string variant = 6;
+  string arch = 7;
+}
+
+message Chip {
+  netsim.common.ChipKind kind = 1;
+  string id = 2;
+  string manufacturer = 3;
+  string product_name = 4;
+  int32 fd_in = 5;
+  int32 fd_out = 6;
+  bool loopback = 7;
+  string address = 9;
+}
