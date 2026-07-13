@@ -55,7 +55,7 @@ pub use hci_socket::{
     HciSocketAddress, HciSocketIo, HciSocketSpec, HciSocketTransport, RawHciSocket,
     SystemHciSocketTransport, HCI_CHANNEL_USER,
 };
-pub use host::{ExternalHost, ExternalHostActivity, ExternalHostState};
+pub use host::{ExternalControllerInfo, ExternalHost, ExternalHostActivity, ExternalHostState};
 #[cfg(unix)]
 pub use pty::PtyTransport;
 pub use serial::{SerialConfig, SerialTransport, DEFAULT_POST_OPEN_DELAY, DEFAULT_SERIAL_SPEED};

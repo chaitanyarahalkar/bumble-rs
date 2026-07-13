@@ -137,6 +137,10 @@ impl<T> DataPacketQueue<T> {
         self.in_flight
     }
 
+    pub fn max_in_flight(&self) -> usize {
+        self.max_in_flight
+    }
+
     pub fn connection_in_flight(&self, connection_handle: u16) -> usize {
         self.per_connection_in_flight
             .get(&connection_handle)

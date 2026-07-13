@@ -1525,6 +1525,14 @@ impl Device {
         self.acl_packet_queue.pending()
     }
 
+    pub fn acl_data_packet_length(&self) -> usize {
+        self.acl_data_packet_length
+    }
+
+    pub fn acl_max_in_flight(&self) -> usize {
+        self.acl_packet_queue.max_in_flight()
+    }
+
     /// Remove and return the ATT PDUs received so far that were not handled by
     /// the server (i.e. responses and notifications destined for a client).
     pub fn take_inbox(&mut self) -> Vec<AttPdu> {
@@ -1842,6 +1850,30 @@ impl Device {
         )
     }
 
+    fn on_le_connection_complete(
+        &mut self,
+        connection_handle: u16,
+        role: u8,
+        peer_address: Address,
+    ) {
+        self.le_connections.insert(
+            connection_handle,
+            LeConnectionInfo {
+                connection_handle,
+                role,
+                peer_address,
+            },
+        );
+        let mut manager = LeCreditChannelManager::new();
+        for spec in self.le_credit_server_specs.values().copied() {
+            manager
+                .register_server(spec)
+                .expect("stored LE credit server spec is valid");
+        }
+        self.le_credit_managers.insert(connection_handle, manager);
+        self.select_connection(connection_handle);
+    }
+
     /// Drain and process this device's controller events. Returns `true` if any
     /// event was consumed (used by [`pump`] to detect quiescence).
     pub fn poll(&mut self, link: &mut LocalLink) -> bool {
@@ -1858,24 +1890,23 @@ impl Device {
                     role,
                     peer_address,
                     ..
-                })) => {
-                    self.le_connections.insert(
+                })) => self.on_le_connection_complete(connection_handle, role, peer_address),
+                HciPacket::Event(Event::LeMeta(
+                    LeMetaEvent::EnhancedConnectionComplete {
+                        status: 0,
                         connection_handle,
-                        LeConnectionInfo {
-                            connection_handle,
-                            role,
-                            peer_address,
-                        },
-                    );
-                    let mut manager = LeCreditChannelManager::new();
-                    for spec in self.le_credit_server_specs.values().copied() {
-                        manager
-                            .register_server(spec)
-                            .expect("stored LE credit server spec is valid");
+                        role,
+                        peer_address,
+                        ..
                     }
-                    self.le_credit_managers.insert(connection_handle, manager);
-                    self.select_connection(connection_handle);
-                }
+                    | LeMetaEvent::EnhancedConnectionCompleteV2 {
+                        status: 0,
+                        connection_handle,
+                        role,
+                        peer_address,
+                        ..
+                    },
+                )) => self.on_le_connection_complete(connection_handle, role, peer_address),
                 HciPacket::Event(Event::LeMeta(LeMetaEvent::AdvertisingReport { reports })) => {
                     self.advertising_reports.extend(reports);
                 }

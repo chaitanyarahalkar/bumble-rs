@@ -2615,6 +2615,25 @@ The host stack is no longer coupled to the in-process controller simulation:
   transition driven entirely through external HCI packets. This is the shared
   runtime foundation for the remaining device-facing command-line apps.
 
+## Slice 122 — what's here
+
+External hosts can now power on a controller with bounded, lossless command
+orchestration:
+
+- `ExternalHost::send_command` waits for the matching Command Complete or
+  Command Status under one deadline while retaining every interleaved event and
+  data packet for `Device`; EOF, read failure, write failure, non-success status,
+  malformed response type, and timeout remain distinct errors.
+- `ExternalHost::initialize_device` follows the upstream reset sequence for the
+  shared runtime: it reads the Supported Commands bitmap, installs required
+  Classic/LE event masks, selects V2 or V1 LE buffer discovery, falls back to
+  the shared Classic ACL pool when needed, and applies the resulting packet size
+  and in-flight window to `Device`.
+- `Device` now recognizes legacy, enhanced, and enhanced-V2 LE connection
+  completions from real controllers. Tests cover interleaved command traffic,
+  complete initialization and flow-control configuration, and an enhanced-event
+  external connection.
+
 ## Acceptance
 
 The port's contract is the upstream Python test suite, ported 1:1:
