@@ -100,7 +100,8 @@ crate whose behavior is verified against the upstream Python.
 | 83. Intel USB controller firmware driver | `bumble-drivers` | ✅ TLV/SFI/DDC + scripted cold start green |
 | 84. Realtek USB controller firmware driver and driver selection | `bumble-drivers` | ✅ epatch/probe/download + selector green |
 | 85. Foundational GAP/GATT/Battery/Device Info/Heart Rate profiles | `bumble-profiles` | ✅ live service/proxy + database hash green |
-| 86+. Remaining modules… | — | planned |
+| 86. ASHA hearing-aid streaming and Coordinated Set Identification | `bumble-profiles` | ✅ control/state + CSIS crypto/live encrypted GATT green |
+| 87+. Remaining modules… | — | planned |
 
 The LE lifecycle is now complete end-to-end through library APIs: **connect →
 discover → read/write → notify → disconnect** between two virtual devices — and
@@ -202,7 +203,7 @@ size, to convey remaining surface.
 ### Profiles & apps
 | Upstream | Rust crate | Status | Notes |
 |---|---|---|---|
-| `profiles/*` — GAP, Battery, Device Info, Heart Rate, ASHA, LE Audio (BAP/PACS/ASCS/…), HAP, CSIP, … (24 modules) | `bumble-profiles` | 🟡 | Foundational GAP, Generic Attribute, Battery, Device Information, and Heart Rate services are live with discovery proxies, dynamic callbacks, typed values, CCCDs, control-point errors, and the upstream database-hash vector. Deferred: the remaining media, hearing, LE Audio, telephony, and notification profiles. |
+| `profiles/*` — GAP, Battery, Device Info, Heart Rate, ASHA, LE Audio (BAP/PACS/ASCS/…), HAP, CSIP, … (24 modules) | `bumble-profiles` | 🟡 | Seven modules are live: foundational GAP/GATT/Battery/Device Information/Heart Rate plus ASHA and CSIP. They cover discovery proxies, dynamic callbacks, typed values, CCCDs, control points, the upstream database-hash vector, hearing-aid state/audio ingress, CSIS key derivation/encryption/RSI generation, and encrypted SIRK reads. Deferred: the remaining 17 media, hearing, LE Audio, telephony, and notification modules. |
 | `bridge.py`, `pandora/`, apps | — | ⬜ | Test harnesses / apps — out of scope. |
 
 ### Roughly where that leaves things
@@ -1983,6 +1984,23 @@ GATT server/client:
   zero-key AES-CMAC; the upstream `F1CA2D48ECF58BAC8A8830BBB9FBA990`
   database vector passes through live discovery and readback.
 
+## Slice 86 — what's here
+
+The first hearing profiles extend `bumble-profiles` with ASHA and CSIP:
+
+- ASHA exposes the exact 17-byte read-only properties payload, control/status/
+  volume/PSM characteristics, four-byte HiSyncId service advertising, live
+  START/STOP/STATUS and volume state transitions, discovery proxy, and an audio
+  ingress callback suitable for binding to an LE credit-based channel.
+- CSIP implements the Bluetooth `s1`, `k1`, `sef`/`sdf`, `sih`, and RSI
+  operations with the upstream cryptographic vectors. Its optional size, lock,
+  and rank characteristics enforce encrypted reads, while SIRKs can be served
+  plaintext or encrypted from a bearer-aware LTK/LinkKey callback and decoded
+  by the client proxy.
+- Live encrypted ATT tests cover both SIRK modes and every optional
+  characteristic; malformed key/random/value lengths and the RSI random-bit
+  requirements are checked without panics.
+
 ## Acceptance
 
 The port's contract is the upstream Python test suite, ported 1:1:
@@ -2147,9 +2165,10 @@ bumble-rs/
 │   ├── tests/intel.rs         # exact wire, parser, lookup, full cold-start flow
 │   ├── tests/rtk.rs           # epatch failures, matrix, wrap, full download flow
 │   └── tests/selection.rs     # forced/unknown/automatic driver selection
-├── bumble-profiles/           # slice-85 standard GATT profile services
-│   ├── src/{gap,gatt_service,battery_service,device_information_service,heart_rate_service}.rs
-│   └── tests/foundational_services.rs # live typed proxy/control/hash coverage
+├── bumble-profiles/           # slices 85-86 standard GATT profile services
+│   ├── src/{gap,gatt_service,battery_service,device_information_service,heart_rate_service,asha,csip}.rs
+│   ├── tests/foundational_services.rs # live typed proxy/control/hash coverage
+│   └── tests/hearing_profiles.rs # ASHA state + CSIS vectors/encrypted reads
 └── docs/superpowers/          # design specs + implementation plans
 ```
 

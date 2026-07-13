@@ -7,7 +7,9 @@ use bumble_gatt::{
 };
 use core::fmt;
 
+pub mod asha;
 pub mod battery_service;
+pub mod csip;
 pub mod device_information_service;
 pub mod gap;
 pub mod gatt_service;
