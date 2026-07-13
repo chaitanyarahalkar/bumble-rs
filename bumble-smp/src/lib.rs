@@ -25,13 +25,15 @@
 //! key-distribution policy, SC/Legacy OOB contexts and AD interchange, pairing
 //! configuration, and CTKD key derivation. [`LegacyPairingSession`] adds a live
 //! delegate-driven Legacy JustWorks/Passkey/OOB feature-confirm-random engine.
-//! Deferred: Secure Connections session orchestration, encrypted key
-//! distribution, and bonding storage.
+//! [`ScPairingSession`] adds live Secure Connections JustWorks and Numeric
+//! Comparison orchestration through DHKey checks. Deferred: SC Passkey/OOB,
+//! encrypted key distribution, and bonding storage.
 
 use bumble::Address;
 use core::fmt;
 
 pub mod pairing;
+pub mod sc_session;
 pub mod session;
 
 pub use pairing::{
@@ -40,6 +42,7 @@ pub use pairing::{
     OobContext, OobData, OobLegacyContext, OobSharedData, PairingCapabilities, PairingConfig,
     PairingDelegate, PairingMethod, PairingMethodSelection,
 };
+pub use sc_session::{ScPairingOutcome, ScPairingSession, ScPairingState};
 pub use session::{
     LegacyPairingOutcome, LegacyPairingSession, PairingFailureReason, PairingRole, PairingState,
 };

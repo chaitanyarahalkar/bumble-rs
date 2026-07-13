@@ -1,10 +1,11 @@
 use bumble::{Address, AddressType};
 use bumble_controller::{Controller, LocalLink};
+use bumble_crypto::EccKey;
 use bumble_hci::Command;
 use bumble_host::{pump, Device};
 use bumble_smp::{
     AcceptAllDelegate, IoCapability, KeyDistribution, LegacyPairingSession, PairingCapabilities,
-    PairingConfig, PairingRole, PairingState, SmpPdu, SMP_CID,
+    PairingConfig, PairingRole, PairingState, ScPairingSession, ScPairingState, SmpPdu, SMP_CID,
 };
 
 fn address(value: &str) -> Address {
@@ -97,6 +98,35 @@ fn drive_sessions(
     panic!("host-backed SMP sessions did not quiesce");
 }
 
+fn drive_sc_sessions(
+    link: &mut LocalLink,
+    devices: &mut [Device; 2],
+    sessions: &mut [ScPairingSession; 2],
+) {
+    for _ in 0..100 {
+        let mut progress = false;
+        for index in 0..2 {
+            for pdu in sessions[index].drain_outbound() {
+                assert!(devices[index].send_l2cap(link, SMP_CID, &pdu.to_bytes()));
+                progress = true;
+            }
+        }
+        pump(link, devices);
+        for index in 0..2 {
+            for bytes in devices[index].take_l2cap(SMP_CID) {
+                sessions[index]
+                    .process(SmpPdu::from_bytes(&bytes).unwrap())
+                    .unwrap();
+                progress = true;
+            }
+        }
+        if !progress {
+            return;
+        }
+    }
+    panic!("host-backed SC sessions did not quiesce");
+}
+
 #[test]
 fn live_legacy_session_derives_stk_and_enables_encryption_on_both_hosts() {
     let mut link = LocalLink::new();
@@ -149,4 +179,58 @@ fn live_legacy_session_derives_stk_and_enables_encryption_on_both_hosts() {
     pump(&mut link, &mut devices);
     assert!(!devices[0].is_encrypted());
     assert!(!devices[1].is_encrypted());
+}
+
+#[test]
+fn live_sc_session_derives_ltk_and_enables_encryption_on_both_hosts() {
+    let mut link = LocalLink::new();
+    let central = link.add_controller(Controller::new("C", address("00:00:00:00:00:01")));
+    let peripheral = link.add_controller(Controller::new("P", address("00:00:00:00:00:02")));
+    let mut devices = [Device::new(central), Device::new(peripheral)];
+    connect(&mut link, central, peripheral);
+    pump(&mut link, &mut devices);
+
+    let sc_config = || PairingConfig {
+        secure_connections: true,
+        ..config()
+    };
+    let initiator_address = address("C4:F2:17:1A:1D:AA");
+    let responder_address = address("C4:F2:17:1A:1D:BB");
+    let mut sessions = [
+        ScPairingSession::new(
+            PairingRole::Initiator,
+            sc_config(),
+            Box::new(AcceptAllDelegate),
+            initiator_address.clone(),
+            responder_address.clone(),
+            EccKey::from_private_key_bytes(&(1u8..=32).collect::<Vec<_>>()).unwrap(),
+            [0xA0; 16],
+        )
+        .unwrap(),
+        ScPairingSession::new(
+            PairingRole::Responder,
+            sc_config(),
+            Box::new(AcceptAllDelegate),
+            initiator_address,
+            responder_address,
+            EccKey::from_private_key_bytes(&(33u8..=64).collect::<Vec<_>>()).unwrap(),
+            [0xB0; 16],
+        )
+        .unwrap(),
+    ];
+    sessions[0].start().unwrap();
+    drive_sc_sessions(&mut link, &mut devices, &mut sessions);
+    assert_eq!(sessions[0].state(), ScPairingState::WaitEncryption);
+    assert_eq!(sessions[1].state(), ScPairingState::WaitEncryption);
+    let ltk = sessions[0].ltk().unwrap();
+    assert_eq!(Some(ltk), sessions[1].ltk());
+
+    assert!(devices[0].enable_encryption(&mut link, ltk));
+    pump(&mut link, &mut devices);
+    assert!(devices[0].is_encrypted());
+    assert!(devices[1].is_encrypted());
+    sessions[0].mark_encrypted().unwrap();
+    sessions[1].mark_encrypted().unwrap();
+    assert_eq!(sessions[0].state(), ScPairingState::Complete);
+    assert_eq!(sessions[1].state(), ScPairingState::Complete);
 }

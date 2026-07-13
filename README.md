@@ -80,7 +80,8 @@ crate whose behavior is verified against the upstream Python.
 | 63. Live Classic L2CAP ERTM negotiation and transport | `bumble-l2cap` | ✅ upstream MTU matrix + FCS green |
 | 64. SMP pairing policy, OOB data, and CTKD foundation | `bumble-smp` | ✅ method matrix + upstream vectors green |
 | 65. Live Legacy SMP session and host encryption transition | `bumble-smp`, `bumble-host` | ✅ JustWorks/passkey/OOB + failure paths green |
-| 66+. Remaining modules… | — | planned |
+| 66. Live SC JustWorks and Numeric Comparison session | `bumble-smp`, `bumble-host` | ✅ ECDH/confirm/DHKey-check/encryption green |
+| 67+. Remaining modules… | — | planned |
 
 The LE lifecycle is now complete end-to-end through library APIs: **connect →
 discover → read/write → notify → disconnect** between two virtual devices — and
@@ -155,7 +156,7 @@ size, to convey remaining surface.
 | Upstream (LOC) | Rust crate | Status | Notes |
 |---|---|---|---|
 | `crypto/` | `bumble-crypto` | ✅ | All SMP **symmetric** security functions — `e`, AES-CMAC, `c1`, `s1`, `f4`/`f5`/`f6`, `g2`, `h6`/`h7`, `ah` — spec/RFC-4493 vector-verified, plus **P-256 `EccKey`** (slice 19: keygen, `from_private_key_bytes`, public-key coordinates, ECDH) oracle-pinned to upstream. Deferred: none of the crypto primitives. |
-| `smp.py` (2.0k), `pairing.py` (0.3k) | `bumble-smp` | 🟡 | PDU codec (incl. all **LE Secure Connections** PDUs — public key, DHKey check, keypress, key-distribution), a live Legacy session for feature negotiation plus JustWorks/Passkey/OOB confirm/random exchange, host/controller STK encryption transition, SC JustWorks two-party derivation, the complete legacy/SC I/O-capability method matrix, auth/key-distribution policy, SC + Legacy OOB contexts and Advertising Data interchange, and h6/h7 CTKD. Deferred: live SC orchestration, encrypted key distribution, and bonding persistence. |
+| `smp.py` (2.0k), `pairing.py` (0.3k) | `bumble-smp` | 🟡 | PDU codec (incl. all **LE Secure Connections** PDUs), live Legacy JustWorks/Passkey/OOB, live SC JustWorks/Numeric Comparison through public-key validation, commitments, nonces, delegate approval, DHKey checks and host/controller encryption, the complete method matrix, auth/key-distribution policy, SC + Legacy OOB contexts/AD interchange, and h6/h7 CTKD. Deferred: live SC Passkey/OOB, encrypted key distribution, and bonding persistence. |
 
 ### Transports & drivers
 | Upstream | Rust crate | Status | Notes |
@@ -1505,6 +1506,30 @@ transcript:
   over-fragmented-ACL-to-LL-encryption path.
 
 The next slice brings the same live orchestration to Secure Connections.
+
+## Slice 66 — what's here
+
+Secure Connections JustWorks and Numeric Comparison now run as a real paired
+session:
+
+- `ScPairingSession` negotiates SC/bonding/key size/key distribution, exchanges
+  little-endian P-256 public keys, rejects a reflected or off-curve peer point,
+  and independently derives the shared ECDH secret on each endpoint.
+- The responder commits to `Nb` with `f4`, the initiator verifies that commitment
+  after nonce exchange, and both derive the same MacKey/LTK/6-digit value with
+  `f5`/`g2`. The negotiated encryption size truncates the LTK consistently.
+- JustWorks invokes automatic delegate confirmation; Numeric Comparison sends
+  the same six-digit number to both delegates. Rejection emits Confirm Value
+  Failed, matching Bumble's behavior.
+- Initiator `Ea` and responder `Eb` are computed independently with `f6` and
+  verified before either session exposes an encryption-ready LTK. Tampered
+  commitments and DHKey checks use their distinct failure reasons.
+- A host-backed test transports the whole exchange over SMP/L2CAP/fragmented
+  ACL, enables the resulting LTK through HCI/LL, and verifies Encryption Change
+  at both hosts. Unit tests also cover Numeric Comparison approval/rejection,
+  key-size truncation, invalid public keys, and commitment tampering.
+
+The next SC slice adds the 20-round Passkey protocol and OOB association model.
 
 ## Acceptance
 
