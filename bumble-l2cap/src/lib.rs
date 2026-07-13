@@ -13,17 +13,27 @@
 //! every upstream signaling control frame, and a synchronous Classic channel
 //! manager with a [`ControlFrame::Generic`] fallback for extension codes.
 //!
-//! Deferred to later slices: enhanced-retransmission control fields, LE
-//! credit-based channel runtime, and ACL fragmentation-and-reassembly logic.
+//! Deferred to later slices: enhanced-retransmission control fields, manager
+//! wiring for the LE credit-based channel engine, and ACL
+//! fragmentation-and-reassembly logic.
 
 use core::fmt;
 
 pub mod classic;
+pub mod le_credit;
 
 pub use classic::{
     ChannelManager, ClassicChannel, ClassicChannelSpec, ClassicChannelState,
     L2CAP_ACL_U_DYNAMIC_CID_RANGE_END, L2CAP_ACL_U_DYNAMIC_CID_RANGE_START, L2CAP_DEFAULT_MTU,
     L2CAP_MIN_BR_EDR_MTU, L2CAP_PSM_DYNAMIC_RANGE_END, L2CAP_PSM_DYNAMIC_RANGE_START,
+};
+pub use le_credit::{
+    LeCreditBasedChannel, LeCreditBasedChannelSpec, LeCreditBasedChannelState,
+    L2CAP_LE_CREDIT_BASED_CONNECTION_DEFAULT_INITIAL_CREDITS,
+    L2CAP_LE_CREDIT_BASED_CONNECTION_DEFAULT_MPS, L2CAP_LE_CREDIT_BASED_CONNECTION_DEFAULT_MTU,
+    L2CAP_LE_CREDIT_BASED_CONNECTION_MAX_CREDITS, L2CAP_LE_CREDIT_BASED_CONNECTION_MAX_MPS,
+    L2CAP_LE_CREDIT_BASED_CONNECTION_MAX_MTU, L2CAP_LE_CREDIT_BASED_CONNECTION_MIN_MPS,
+    L2CAP_LE_CREDIT_BASED_CONNECTION_MIN_MTU,
 };
 
 /// L2CAP signaling command codes (Vol 3, Part A - 4).

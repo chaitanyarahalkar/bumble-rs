@@ -71,7 +71,8 @@ crate whose behavior is verified against the upstream Python.
 | 54. Typed GATT characteristic and proxy adapters | `bumble-gatt` | ✅ upstream adapter vectors green |
 | 55. Complete Python 3.14 packed-value compatibility | `bumble-gatt` | ✅ native/half/complex oracle green |
 | 56. Complete L2CAP signaling control-frame catalog | `bumble-l2cap` | ✅ all upstream dataclasses typed |
-| 57+. Remaining modules… | — | planned |
+| 57. LE credit-based channel segmentation and credit engine | `bumble-l2cap` | ✅ MTU/MPS/credit/reassembly green |
+| 58+. Remaining modules… | — | planned |
 
 The LE lifecycle is now complete end-to-end through library APIs: **connect →
 discover → read/write → notify → disconnect** between two virtual devices — and
@@ -132,7 +133,7 @@ size, to convey remaining surface.
 ### L2CAP
 | Upstream (LOC) | Rust crate | Status | Notes |
 |---|---|---|---|
-| `l2cap.py` (3.1k) | `bumble-l2cap` | 🟡 | PDU + complete typed upstream signaling-frame catalog + FCS, plus a synchronous Classic connection-oriented `ChannelManager`: valid dynamic PSM/CID allocation, Connection/Configure/Disconnection signaling, MTU option negotiation, PSM refusal, bidirectional basic-mode SDUs, and deterministic server accept. Deferred: ACL fragmentation/reassembly, enhanced retransmission mode, and LE credit-based channel runtime. |
+| `l2cap.py` (3.1k) | `bumble-l2cap` | 🟡 | PDU + complete typed upstream signaling-frame catalog + FCS, plus a synchronous Classic connection-oriented `ChannelManager`: valid dynamic PSM/CID allocation, Connection/Configure/Disconnection signaling, MTU option negotiation, PSM refusal, bidirectional basic-mode SDUs, and deterministic server accept. Slice 57 adds the LE credit-based channel engine: validated MTU/MPS/credits, stream-to-SDU/K-frame segmentation, reassembly, replenishment, and violation handling. Deferred: manager-level LE CoC signaling/CID wiring, ACL fragmentation/reassembly, and enhanced retransmission mode. |
 
 ### ATT / GATT
 | Upstream (LOC) | Rust crate | Status | Notes |
@@ -1279,6 +1280,27 @@ upstream `l2cap.py`:
 
 The codec catalog is complete; the next L2CAP work is runtime behavior, starting
 with LE credit-based channel credit accounting and SDU segmentation/reassembly.
+
+## Slice 57 — what's here
+
+`LeCreditBasedChannel` now ports the data and credit machinery from upstream:
+
+- `LeCreditBasedChannelSpec` enforces the Bluetooth minimum/maximum MTU, MPS,
+  and nonzero-credit constraints. A connected channel records local/peer
+  parameters and computes ATT MTU as their minimum.
+- Writes form little-endian length-prefixed SDUs up to peer MTU, split them into
+  K-frames up to peer MPS, consume one credit per frame, and resume without
+  duplication when new credits arrive.
+- Inbound K-frames consume granted peer credits, assemble split length headers
+  and payloads, enforce local MPS/MTU and exact SDU length, and queue complete
+  SDUs. Credits replenish to the configured maximum when they reach upstream's
+  half-window threshold.
+- Credit addition overflow, traffic after exhaustion/disconnect, oversize PDUs,
+  oversize/overflowing SDUs, empty outbound writes, and invalid negotiation
+  parameters are typed errors. Disconnect flushes all partial state.
+
+The next slice wires this engine into LE signaling, deterministic CID/PSM
+allocation, server acceptance, data routing, and disconnect handling.
 
 ## Acceptance
 
