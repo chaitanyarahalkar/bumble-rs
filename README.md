@@ -73,7 +73,8 @@ crate whose behavior is verified against the upstream Python.
 | 56. Complete L2CAP signaling control-frame catalog | `bumble-l2cap` | ✅ all upstream dataclasses typed |
 | 57. LE credit-based channel segmentation and credit engine | `bumble-l2cap` | ✅ MTU/MPS/credit/reassembly green |
 | 58. Paired LE credit-based channel manager runtime | `bumble-l2cap` | ✅ connect/transfer/replenish/disconnect green |
-| 59+. Remaining modules… | — | planned |
+| 59. HCI ACL fragmentation and host reassembly | `bumble-hci`, `bumble-host` | ✅ buffer-boundary end-to-end green |
+| 60+. Remaining modules… | — | planned |
 
 The LE lifecycle is now complete end-to-end through library APIs: **connect →
 discover → read/write → notify → disconnect** between two virtual devices — and
@@ -123,18 +124,18 @@ size, to convey remaining surface.
 ### HCI, controller & link — 🟡 HCI codec complete (full catalog, oracle-pinned); controller/link behavior partial
 | Upstream (LOC) | Rust crate | Status | Notes |
 |---|---|---|---|
-| `hci.py` (8.3k) | `bumble-hci` | ✅ | **Full typed catalog: 196 command op codes + 81 event / LE-meta sub-event codes**, generated from upstream's declarative field specs by [`tools/hcigen`](bumble-hci/tools/hcigen/) and **byte-pinned against real Python Bumble** (320 oracle tests). Framing (Command/Event/ACL/SCO/ISO), `Command_Complete` with a typed `ReturnParameters` model, and the open-enum `Generic` tail for any future/vendor opcode (still lossless). Two phys-derived array commands and the two nested-report events are hand-written; everything else is generated. |
+| `hci.py` (8.3k) | `bumble-hci` | ✅ | **Full typed catalog: 196 command op codes + 81 event / LE-meta sub-event codes**, generated from upstream's declarative field specs by [`tools/hcigen`](bumble-hci/tools/hcigen/) and **byte-pinned against real Python Bumble** (320 oracle tests). Framing (Command/Event/ACL/SCO/ISO), `Command_Complete` with typed `ReturnParameters`, the open-enum `Generic` tail, and upstream-equivalent ACL/L2CAP fragmentation/reassembly with PB-flag, length, continuation, handle, and overflow validation. Two phys-derived array commands and the two nested-report events are hand-written; everything else is generated. |
 | `controller.py` (2.8k) | `bumble-controller` | 🟡 | **Full command surface**: every command upstream's `controller.py` handles (93, via the generated [`command_surface`](bumble-controller/src/command_surface.rs) table) gets a reply of the matching HCI shape — Command Complete + SUCCESS for config/set commands, Command Status for operations completing via a later event, and the spec-correct "Unknown HCI Command" for anything upstream also doesn't handle. **Functionally simulated**: LE advertising/scanning, connection establishment, ACL routing, disconnection, the read commands (`Read_BD_ADDR`/`Read_Local_Name`/`LE_Read_Buffer_Size`/`LE_Read_Local_Supported_Features`/`LE_Rand`), per-connection `LE_Set_Data_Length`/`LE_Set_PHY` (with follow-up meta events), and — via LL control-PDU exchange over the link — **encryption start** (`LE_Enable_Encryption` → `Encryption Change` on both sides), **remote-features** (`FeatureReq`/`FeatureRsp` → `LE_Read_Remote_Features_Complete`), and **CIS establishment** (LE Audio: `LE_Set_CIG_Parameters`/`LE_Create_CIS` → `LE CIS Request` → `LE_Accept_CIS_Request` → `LE CIS Established` on both sides). Also **classic (BR/EDR)**: ACL connection establishment (`Create_Connection` → `Connection Request` → `Accept_Connection_Request` → `Connection Complete`), `Remote_Name_Request`, `Read_Remote_Supported_Features`, and SCO/eSCO request/accept/reject/disconnect with HCI synchronous-data routing, via simplified LMP PDUs over the link. Other read commands are acknowledged SUCCESS **without a synthesized payload** (a documented stub, not a full read). A **behavioral simulation with placeholder values** (as upstream's `controller.py` also is) — *not* oracle-pinned like the HCI codec. Deferred (behavior, not codec): LTK verification, ISO data-path streaming, remote-version exchange, extended/periodic advertising, and classic auth/encryption/role-switch sub-flows. |
 | `link.py` (0.15k) | `bumble-controller` | 🟡 | In-process **synchronous** `LocalLink` with LL-control, simplified LMP, ACL, and SCO/eSCO routing. Deferred: serialized over-the-air PDUs and async scheduling. |
 | `ll.py` (0.2k) | `bumble-controller` | 🟡 | Advertising/connection PDUs modeled as in-process structs, not serialized LL PDUs. Control PDUs (`EncReq`, `FeatureReq`/`PeripheralFeatureReq`/`FeatureRsp`, `TerminateInd`) are exchanged between controllers via `LocalLink::pump_ll` to drive the encryption-start, remote-features, and CIS-establishment (`CisReq`/`CisRsp`/`CisInd`) flows. |
-| `host.py` (2.1k) | `bumble-host` | 🟡 | `Device` glue (ATT↔L2CAP↔ACL sequencing + pairing transport), plus Classic ACL and synchronous connection/request/data APIs. Not the full host feature set. |
+| `host.py` (2.1k) | `bumble-host` | 🟡 | `Device` glue (ATT↔L2CAP↔ACL sequencing + pairing transport), controller-buffer-sized outbound ACL fragmentation, per-connection inbound reassembly, plus Classic ACL and synchronous connection/request/data APIs. Deferred: packet-queue flow control, direct LE signaling-manager integration, and the broader host feature set. |
 | `device.py` (7.0k) | `bumble-host` | 🟡 | Minimal `Device`/`pump`; the high-level device API (advertising/scanning/connection orchestration, GATT client, listeners) is not ported. |
 | `lmp.py` (0.4k) | `bumble-controller::lmp` | 🟡 | Classic Link Manager Protocol PDUs modeled as in-process structs (`HostConnectionReq`/`Accepted`, `NameReq`/`NameRes`, `FeaturesReq`/`FeaturesRes`, synchronous request/accept/reject, `Detach`) driving the classic connection/name/features/SCO-eSCO flows via `LocalLink::pump_classic`. The role-switch / authentication / encryption LMP sub-dance is simplified away. |
 
 ### L2CAP
 | Upstream (LOC) | Rust crate | Status | Notes |
 |---|---|---|---|
-| `l2cap.py` (3.1k) | `bumble-l2cap` | 🟡 | PDU + complete typed upstream signaling-frame catalog + FCS, synchronous Classic connection-oriented channels, and a paired LE CoC runtime. Classic covers dynamic PSM/CID allocation, Connection/Configure/Disconnection, MTU negotiation/refusal, and bidirectional basic-mode SDUs. LE covers dynamic LE_PSM/CIDs, negotiation/refusal, MTU/MPS segmentation/reassembly, credit stalls/replenishment, accepted channels, bidirectional transfer, and disconnect cleanup. Deferred: ACL fragmentation/reassembly, enhanced retransmission mode, and enhanced credit-based multi-channel/reconfigure runtime. |
+| `l2cap.py` (3.1k) | `bumble-l2cap` | 🟡 | PDU + complete typed upstream signaling-frame catalog + FCS, synchronous Classic connection-oriented channels, and a paired LE CoC runtime. Classic covers dynamic PSM/CID allocation, Connection/Configure/Disconnection, MTU negotiation/refusal, and bidirectional basic-mode SDUs. LE covers dynamic LE_PSM/CIDs, negotiation/refusal, MTU/MPS segmentation/reassembly, credit stalls/replenishment, accepted channels, bidirectional transfer, and disconnect cleanup. HCI/host now fragment and reassemble complete L2CAP PDUs across ACL buffer boundaries. Deferred: enhanced retransmission mode and enhanced credit-based multi-channel/reconfigure runtime. |
 
 ### ATT / GATT
 | Upstream (LOC) | Rust crate | Status | Notes |
@@ -1323,6 +1324,28 @@ allocation, server acceptance, data routing, and disconnect handling.
 
 Remaining L2CAP runtime work is enhanced credit-based multi-channel/reconfigure,
 ERTM, and host-level ACL fragmentation/reassembly.
+
+## Slice 59 — what's here
+
+L2CAP PDUs now cross real HCI controller buffer boundaries:
+
+- `fragment_l2cap_pdu` validates the complete L2CAP length, splits at the
+  configured ACL payload size, marks the first non-flushable/flushable packet,
+  marks continuations, and sets each fragment's exact HCI length.
+- `AclDataPacketAssembler` tracks one connection's declared L2CAP size and
+  returns only complete PDUs. Continuations without starts, changed handles,
+  invalid PB flags, data-length mismatches, and L2CAP overflow are errors that
+  reset partial state.
+- `LocalLink::send_acl_packet` maps connection handles while preserving PB/BC
+  flags. `Device` fragments outbound L2CAP at the controller's configured size
+  (27 bytes by default), assembles inbound ACL per handle, and clears assembly
+  state on disconnect before ATT/raw-channel routing.
+- An end-to-end host test forces an 8-byte ACL payload limit and transfers
+  257-byte L2CAP payloads in both directions, yielding exactly one intact
+  receiver payload each way.
+
+The next transport-boundary gap is HCI ACL packet-queue flow control and Number
+Of Completed Packets accounting; L2CAP itself still needs enhanced modes.
 
 ## Acceptance
 

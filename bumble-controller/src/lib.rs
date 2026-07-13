@@ -1450,16 +1450,8 @@ impl Controller {
             }));
     }
 
-    /// Deliver received ACL data to the host as an HCI ACL Data packet on the
-    /// given connection handle.
-    fn deliver_acl(&mut self, connection_handle: u16, data: &[u8]) {
-        self.host_queue.push(HciPacket::AclData(AclDataPacket {
-            connection_handle,
-            pb_flag: 0,
-            bc_flag: 0,
-            data_total_length: data.len() as u16,
-            data: data.to_vec(),
-        }));
+    fn deliver_acl_packet(&mut self, packet: AclDataPacket) {
+        self.host_queue.push(HciPacket::AclData(packet));
     }
 
     fn deliver_synchronous(&mut self, connection_handle: u16, packet_status: u8, data: &[u8]) {
@@ -1669,6 +1661,22 @@ impl LocalLink {
     /// The controller treats the payload as opaque bytes (typically an L2CAP
     /// PDU); it does not parse it.
     pub fn send_acl_data(&mut self, from: usize, connection_handle: u16, data: &[u8]) -> bool {
+        self.send_acl_packet(
+            from,
+            AclDataPacket {
+                connection_handle,
+                pb_flag: 0,
+                bc_flag: 0,
+                data_total_length: data.len() as u16,
+                data: data.to_vec(),
+            },
+        )
+    }
+
+    /// Route one HCI ACL fragment while preserving its packet-boundary and
+    /// broadcast flags.
+    pub fn send_acl_packet(&mut self, from: usize, packet: AclDataPacket) -> bool {
+        let connection_handle = packet.connection_handle;
         // Resolve the sender's connection endpoints.
         let Some(conn) = self.controllers[from].connection_by_handle(connection_handle) else {
             return false;
@@ -1688,7 +1696,10 @@ impl LocalLink {
         });
 
         if let Some((i, handle)) = destination {
-            self.controllers[i].deliver_acl(handle, data);
+            self.controllers[i].deliver_acl_packet(AclDataPacket {
+                connection_handle: handle,
+                ..packet
+            });
             true
         } else {
             false

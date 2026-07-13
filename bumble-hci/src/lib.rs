@@ -35,7 +35,11 @@ pub use bumble::{Address, AddressType};
 pub use codes::*;
 pub use command::{CodingFormat, Command};
 pub use event::{AdvertisingReport, Event, ExtendedAdvertisingReport, LeMetaEvent};
-pub use packet::{AclDataPacket, CustomPacket, IsoDataPacket, SynchronousDataPacket};
+pub use packet::{
+    fragment_l2cap_pdu, AclDataPacket, AclDataPacketAssembler, CustomPacket, IsoDataPacket,
+    SynchronousDataPacket, HCI_ACL_PB_CONTINUATION, HCI_ACL_PB_FIRST_FLUSHABLE,
+    HCI_ACL_PB_FIRST_NON_FLUSHABLE,
+};
 pub use return_parameters::{map_null_terminated_utf8_string, ReturnParameters};
 
 use core::fmt;

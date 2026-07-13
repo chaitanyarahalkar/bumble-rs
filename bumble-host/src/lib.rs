@@ -19,17 +19,21 @@
 //!
 //! ## Scope
 //!
-//! ATT traffic over the fixed ATT CID only (including GATT discovery requests,
-//! which are just ATT requests answered by a server-role handler). Deferred:
-//! L2CAP fragmentation and reassembly across multiple ACL packets (each ATT PDU
-//! is assumed to fit one ACL packet), the LE signaling channel, and multiple
-//! simultaneous connections per device.
+//! ATT traffic over the fixed ATT CID plus raw fixed/dynamic L2CAP channels,
+//! with controller-buffer-sized ACL fragmentation/reassembly. Deferred: direct
+//! integration of the LE signaling manager and multiple simultaneous
+//! connections per device.
+
+use std::collections::BTreeMap;
 
 use bumble::Address;
 use bumble_att::AttPdu;
 use bumble_controller::LocalLink;
 use bumble_gatt::AttRequestHandler;
-use bumble_hci::{Command, Event, HciPacket, LeMetaEvent, SynchronousDataPacket};
+use bumble_hci::{
+    fragment_l2cap_pdu, AclDataPacket, AclDataPacketAssembler, Command, Event, HciPacket,
+    LeMetaEvent, SynchronousDataPacket,
+};
 use bumble_l2cap::L2capPdu;
 
 /// The fixed L2CAP channel id for the Attribute Protocol.
@@ -56,6 +60,8 @@ pub struct Device {
     inbox: Vec<AttPdu>,
     /// Received payloads on non-ATT L2CAP channels, as `(cid, payload)`.
     l2cap_inbox: Vec<(u16, Vec<u8>)>,
+    acl_data_packet_length: usize,
+    acl_assemblers: BTreeMap<u16, AclDataPacketAssembler>,
 }
 
 impl Device {
@@ -71,6 +77,8 @@ impl Device {
             synchronous_inbox: Vec::new(),
             inbox: Vec::new(),
             l2cap_inbox: Vec::new(),
+            acl_data_packet_length: 27,
+            acl_assemblers: BTreeMap::new(),
         }
     }
 
@@ -87,6 +95,8 @@ impl Device {
             synchronous_inbox: Vec::new(),
             inbox: Vec::new(),
             l2cap_inbox: Vec::new(),
+            acl_data_packet_length: 27,
+            acl_assemblers: BTreeMap::new(),
         }
     }
 
@@ -183,6 +193,16 @@ impl Device {
         self.server.is_some()
     }
 
+    /// Set the controller's maximum ACL data payload, normally learned from
+    /// Read Buffer Size / LE Read Buffer Size.
+    pub fn set_acl_data_packet_length(&mut self, length: usize) -> bool {
+        if length == 0 || length > u16::MAX as usize {
+            return false;
+        }
+        self.acl_data_packet_length = length;
+        true
+    }
+
     /// Remove and return the ATT PDUs received so far that were not handled by
     /// the server (i.e. responses and notifications destined for a client).
     pub fn take_inbox(&mut self) -> Vec<AttPdu> {
@@ -195,8 +215,25 @@ impl Device {
         let Some(handle) = self.connection_handle else {
             return false;
         };
+        self.send_l2cap_on_handle(link, handle, cid, payload)
+    }
+
+    fn send_l2cap_on_handle(
+        &mut self,
+        link: &mut LocalLink,
+        handle: u16,
+        cid: u16,
+        payload: &[u8],
+    ) -> bool {
         let frame = L2capPdu::new(cid, payload.to_vec()).to_bytes(false);
-        link.send_acl_data(self.controller_id, handle, &frame)
+        let Ok(fragments) =
+            fragment_l2cap_pdu(handle, 0, self.acl_data_packet_length, &frame, false)
+        else {
+            return false;
+        };
+        fragments
+            .into_iter()
+            .all(|packet| link.send_acl_packet(self.controller_id, packet))
     }
 
     /// Send an ATT PDU to the peer on the ATT channel.
@@ -245,6 +282,7 @@ impl Device {
                 HciPacket::Event(Event::DisconnectionComplete {
                     connection_handle, ..
                 }) => {
+                    self.acl_assemblers.remove(&connection_handle);
                     if self.connection_handle == Some(connection_handle) {
                         self.connection_handle = None;
                     }
@@ -278,7 +316,7 @@ impl Device {
                         link_type,
                         air_mode,
                     }),
-                HciPacket::AclData(acl) => self.on_acl(link, acl.connection_handle, &acl.data),
+                HciPacket::AclData(acl) => self.on_acl(link, acl),
                 HciPacket::SyncData(packet) => self.synchronous_inbox.push(packet),
                 _ => {}
             }
@@ -286,8 +324,12 @@ impl Device {
         true
     }
 
-    fn on_acl(&mut self, link: &mut LocalLink, handle: u16, data: &[u8]) {
-        let Ok(l2cap) = L2capPdu::from_bytes(data) else {
+    fn on_acl(&mut self, link: &mut LocalLink, acl: AclDataPacket) {
+        let handle = acl.connection_handle;
+        let Ok(Some(data)) = self.acl_assemblers.entry(handle).or_default().feed(&acl) else {
+            return;
+        };
+        let Ok(l2cap) = L2capPdu::from_bytes(&data) else {
             return;
         };
         // Non-ATT channels (e.g. SMP on 0x0006) are queued raw for the caller.
@@ -302,10 +344,12 @@ impl Device {
         // A server answers requests automatically; everything else is for the
         // client (this device's user) to collect.
         if is_request(&pdu) {
-            if let Some(server) = &mut self.server {
-                let response = server.handle_request(&pdu);
-                let frame = L2capPdu::new(ATT_CID, response.to_bytes()).to_bytes(false);
-                link.send_acl_data(self.controller_id, handle, &frame);
+            let response = self
+                .server
+                .as_mut()
+                .map(|server| server.handle_request(&pdu).to_bytes());
+            if let Some(response) = response {
+                self.send_l2cap_on_handle(link, handle, ATT_CID, &response);
                 return;
             }
         }
