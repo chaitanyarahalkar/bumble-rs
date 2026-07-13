@@ -27,15 +27,22 @@
 //! delegate-driven Legacy JustWorks/Passkey/OOB feature-confirm-random engine.
 //! [`ScPairingSession`] adds live Secure Connections JustWorks and Numeric
 //! Comparison, 20-round Passkey, and SC OOB orchestration through DHKey checks.
-//! Deferred: encrypted key distribution and bonding storage.
+//! [`KeyDistributionSession`] adds responder-first encrypted phase-3 key
+//! distribution, Bumble-compatible bond assembly, and key-store persistence.
+//! Deferred: CT2 negotiation, Security Request/re-pairing management, and
+//! signed-data counters.
 
 use bumble::Address;
 use core::fmt;
 
+pub mod distribution;
 pub mod pairing;
 pub mod sc_session;
 pub mod session;
 
+pub use distribution::{
+    KeyDistributionConfig, KeyDistributionSession, KeyDistributionState, LocalKeyMaterial,
+};
 pub use pairing::{
     derive_link_key, derive_ltk, select_pairing_method, select_pairing_method_with_oob,
     AcceptAllDelegate, AuthReq, IdentityAddressType, IoCapability, KeyDistribution, OobConfig,
@@ -366,8 +373,8 @@ pub fn legacy_stk(tk: &[u8], srand: &[u8], mrand: &[u8]) -> [u8; 16] {
 /// endian** here (SMP byte-swaps the big-endian [`bumble_crypto::EccKey`]
 /// output before feeding these functions).
 ///
-/// The passkey and OOB variants (non-zero `ra`/`rb`) and the async state
-/// machine are deferred.
+/// The live session layers use the generalized non-zero `ra`/`rb` path for
+/// Passkey and OOB and then continue into encrypted key distribution.
 pub mod sc {
     use bumble_crypto::{f4, f5, f6, g2};
 

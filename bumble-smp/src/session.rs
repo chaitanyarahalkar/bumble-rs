@@ -2,11 +2,15 @@
 
 use std::collections::VecDeque;
 
+use bumble::keys::{KeyStore, KeyStoreResult, PairingKeys};
 use bumble::Address;
+
+use crate::distribution::is_key_distribution_pdu;
 
 use crate::{
     legacy_confirm, legacy_stk, select_pairing_method_with_oob, AuthReq, Error, IoCapability,
-    KeyDistribution, PairingConfig, PairingDelegate, PairingFeatures, PairingMethod,
+    KeyDistribution, KeyDistributionConfig, KeyDistributionSession, KeyDistributionState,
+    LocalKeyMaterial, PairingConfig, PairingDelegate, PairingFeatures, PairingMethod,
     PairingMethodSelection, Result, SmpPdu,
 };
 
@@ -23,6 +27,7 @@ pub enum PairingState {
     WaitPairingConfirm,
     WaitPairingRandom,
     WaitEncryption,
+    KeyDistribution,
     Complete,
     Failed,
 }
@@ -81,6 +86,8 @@ pub struct LegacyPairingSession {
     maximum_encryption_key_size: u8,
     initiator_key_distribution: KeyDistribution,
     responder_key_distribution: KeyDistribution,
+    local_keys: LocalKeyMaterial,
+    distribution: Option<KeyDistributionSession>,
 }
 
 impl LegacyPairingSession {
@@ -93,12 +100,18 @@ impl LegacyPairingSession {
         local_random: [u8; 16],
     ) -> Result<Self> {
         config.capabilities.validate()?;
+        let identity_address = match role {
+            PairingRole::Initiator => initiator_address.clone(),
+            PairingRole::Responder => responder_address.clone(),
+        };
         Ok(Self {
             role,
             bonding: config.bonding,
             maximum_encryption_key_size: config.capabilities.maximum_encryption_key_size,
             initiator_key_distribution: config.capabilities.local_initiator_key_distribution,
             responder_key_distribution: config.capabilities.local_responder_key_distribution,
+            local_keys: LocalKeyMaterial::generate(identity_address),
+            distribution: None,
             config,
             delegate,
             initiator_address,
@@ -138,6 +151,18 @@ impl LegacyPairingSession {
         if let SmpPdu::PairingFailed { reason } = pdu {
             self.failure = pairing_failure_from_u8(reason);
             self.state = PairingState::Failed;
+            return Ok(());
+        }
+        if self.state == PairingState::KeyDistribution {
+            self.distribution
+                .as_mut()
+                .expect("distribution session exists")
+                .process(pdu);
+            self.sync_distribution();
+            return Ok(());
+        }
+        if is_key_distribution_pdu(&pdu) {
+            self.fail(PairingFailureReason::UnspecifiedReason);
             return Ok(());
         }
         match (self.role, self.state, pdu) {
@@ -190,14 +215,76 @@ impl LegacyPairingSession {
         self.failure
     }
 
+    pub fn set_local_key_material(&mut self, keys: LocalKeyMaterial) -> Result<()> {
+        if self.state != PairingState::Idle {
+            return Err(Error::InvalidPacket(
+                "local keys can only be changed before pairing".into(),
+            ));
+        }
+        self.local_keys = keys;
+        Ok(())
+    }
+
+    pub fn pairing_keys(&self) -> Option<PairingKeys> {
+        self.distribution
+            .as_ref()
+            .and_then(KeyDistributionSession::pairing_keys)
+    }
+
+    pub fn store_bond(&self, store: &mut dyn KeyStore) -> KeyStoreResult<bool> {
+        if !self.outcome.as_ref().is_some_and(|outcome| outcome.bonding) {
+            return Ok(false);
+        }
+        match &self.distribution {
+            Some(distribution) => distribution.store_bond(store),
+            None => Ok(false),
+        }
+    }
+
     pub fn mark_encrypted(&mut self) -> Result<()> {
         if self.state != PairingState::WaitEncryption || self.outcome.is_none() {
             return Err(Error::InvalidPacket(
                 "pairing is not waiting for encryption".into(),
             ));
         }
-        self.state = PairingState::Complete;
+        let outcome = self.outcome.as_ref().expect("outcome checked");
+        let peer_address = match self.role {
+            PairingRole::Initiator => self.responder_address.clone(),
+            PairingRole::Responder => self.initiator_address.clone(),
+        };
+        let mut distribution = KeyDistributionSession::new(KeyDistributionConfig {
+            role: self.role,
+            secure_connections: false,
+            authenticated: outcome.authenticated,
+            maximum_encryption_key_size: outcome.maximum_encryption_key_size,
+            pairing_ltk: outcome.stk,
+            initiator_keys: outcome.initiator_key_distribution,
+            responder_keys: outcome.responder_key_distribution,
+            local_keys: self.local_keys.clone(),
+            peer_address,
+        });
+        distribution.mark_encrypted();
+        self.distribution = Some(distribution);
+        self.sync_distribution();
         Ok(())
+    }
+
+    fn sync_distribution(&mut self) {
+        let distribution = self
+            .distribution
+            .as_mut()
+            .expect("distribution session exists");
+        self.outbound.extend(distribution.drain_outbound());
+        match distribution.state() {
+            KeyDistributionState::Complete => self.state = PairingState::Complete,
+            KeyDistributionState::Failed => {
+                self.failure = distribution.failure();
+                self.state = PairingState::Failed;
+            }
+            KeyDistributionState::WaitEncryption | KeyDistributionState::Distributing => {
+                self.state = PairingState::KeyDistribution;
+            }
+        }
     }
 
     fn on_pairing_request(&mut self, features: PairingFeatures) -> Result<()> {
@@ -483,7 +570,7 @@ fn valid_features(features: PairingFeatures) -> bool {
         && features.responder_key_distribution & !KeyDistribution::ALL.0 == 0
 }
 
-fn pairing_failure_from_u8(reason: u8) -> Option<PairingFailureReason> {
+pub(crate) fn pairing_failure_from_u8(reason: u8) -> Option<PairingFailureReason> {
     Some(match reason {
         0x01 => PairingFailureReason::PasskeyEntryFailed,
         0x02 => PairingFailureReason::OobNotAvailable,

@@ -172,6 +172,7 @@ fn live_legacy_session_derives_stk_and_enables_encryption_on_both_hosts() {
 
     sessions[0].mark_encrypted().unwrap();
     sessions[1].mark_encrypted().unwrap();
+    drive_sessions(&mut link, &mut devices, &mut sessions);
     assert_eq!(sessions[0].state(), PairingState::Complete);
     assert_eq!(sessions[1].state(), PairingState::Complete);
 
@@ -231,6 +232,7 @@ fn live_sc_session_derives_ltk_and_enables_encryption_on_both_hosts() {
     assert!(devices[1].is_encrypted());
     sessions[0].mark_encrypted().unwrap();
     sessions[1].mark_encrypted().unwrap();
+    drive_sc_sessions(&mut link, &mut devices, &mut sessions);
     assert_eq!(sessions[0].state(), ScPairingState::Complete);
     assert_eq!(sessions[1].state(), ScPairingState::Complete);
 }

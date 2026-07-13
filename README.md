@@ -82,7 +82,8 @@ crate whose behavior is verified against the upstream Python.
 | 65. Live Legacy SMP session and host encryption transition | `bumble-smp`, `bumble-host` | ✅ JustWorks/passkey/OOB + failure paths green |
 | 66. Live SC JustWorks and Numeric Comparison session | `bumble-smp`, `bumble-host` | ✅ ECDH/confirm/DHKey-check/encryption green |
 | 67. SC Passkey and OOB association models | `bumble-smp` | ✅ 20 rounds + C/R validation green |
-| 68+. Remaining modules… | — | planned |
+| 68. Encrypted SMP key distribution and bond persistence | `bumble-smp`, `bumble` | ✅ responder-first phase 3 + stores green |
+| 69+. Remaining modules… | — | planned |
 
 The LE lifecycle is now complete end-to-end through library APIs: **connect →
 discover → read/write → notify → disconnect** between two virtual devices — and
@@ -157,7 +158,7 @@ size, to convey remaining surface.
 | Upstream (LOC) | Rust crate | Status | Notes |
 |---|---|---|---|
 | `crypto/` | `bumble-crypto` | ✅ | All SMP **symmetric** security functions — `e`, AES-CMAC, `c1`, `s1`, `f4`/`f5`/`f6`, `g2`, `h6`/`h7`, `ah` — spec/RFC-4493 vector-verified, plus **P-256 `EccKey`** (slice 19: keygen, `from_private_key_bytes`, public-key coordinates, ECDH) oracle-pinned to upstream. Deferred: none of the crypto primitives. |
-| `smp.py` (2.0k), `pairing.py` (0.3k) | `bumble-smp` | 🟡 | PDU codec (incl. all **LE Secure Connections** PDUs), live Legacy and SC sessions covering JustWorks, Passkey, Numeric Comparison, and OOB through public-key validation, commitments/nonces, delegate actions, DHKey checks and host/controller encryption, the complete method matrix, auth/key-distribution policy, SC + Legacy OOB contexts/AD interchange, and h6/h7 CTKD. Deferred: encrypted key distribution and bonding persistence. |
+| `smp.py` (2.0k), `pairing.py` (0.3k) | `bumble-smp` | 🟡 | PDU codec (incl. all **LE Secure Connections** PDUs), live Legacy and SC sessions covering every association model through host/controller encryption, responder-first encrypted key distribution, SC LTK handling, peer identity/signing keys, h6 CTKD link keys, and memory/JSON bond persistence. Also includes the complete method matrix, auth/key-distribution policy, and SC + Legacy OOB contexts/AD interchange. Deferred: CT2 negotiation, security-request/re-pairing management, and signed-data counters. |
 
 ### Transports & drivers
 | Upstream | Rust crate | Status | Notes |
@@ -1556,8 +1557,33 @@ Every LE Secure Connections association model now runs in the paired session:
   failure, two-sided OOB success, authenticated matching keys, zero delegate
   prompts, and tampered OOB confirmation rejection at public-key exchange.
 
-The remaining SMP protocol work is encrypted key distribution and persistence
-of the resulting bond.
+Those association models feed directly into the encrypted phase below.
+
+## Slice 68 — what's here
+
+SMP phase 3 now runs after the controller reports that the link is encrypted:
+
+- The responder distributes first. The initiator waits for the negotiated peer
+  set, sends its own set only after that set is complete, and both sessions
+  reject unexpected or pre-encryption distribution PDUs with Pairing Failed.
+- Legacy pairing sends Encryption Information plus Master Identification for
+  `ENC_KEY`; both modes send IRK plus identity address for `ID_KEY` and CSRK for
+  `SIGN_KEY`. Distribution PDUs may arrive in any order, matching Bumble's
+  expected-command-set behavior.
+- Secure Connections uses its derived shared LTK and deliberately suppresses
+  legacy ENC_INFO/MASTER_ID PDUs. Negotiated `LINK_KEY` produces the h6 CTKD
+  link key (the currently advertised CT2 bit remains disabled).
+- Completed sessions expose Bumble-compatible `PairingKeys`: SC uses the shared
+  `ltk`; Legacy preserves central/peripheral LTK, EDIV, and RAND direction; peer
+  IRK/CSRK and the peer identity address are retained with authentication state.
+- Bonds write through the existing `KeyStore` interface, so both memory and
+  atomic namespaced JSON stores can retrieve them by identity address.
+- Deterministic tests cover responder-first ordering, all key PDU families,
+  Legacy directional material, SC suppression and CTKD, persistence/readback,
+  malformed phase ordering, and live Legacy/SC distribution over host ACL/L2CAP.
+
+The remaining SMP work is CT2 negotiation, Security Request/re-pairing manager
+behavior, privacy resolution integration, and signed-data counters.
 
 ## Acceptance
 

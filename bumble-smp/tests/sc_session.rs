@@ -183,6 +183,7 @@ fn just_works_runs_public_key_nonce_and_dhkey_checks_to_matching_ltk() {
 
     initiator.mark_encrypted().unwrap();
     responder.mark_encrypted().unwrap();
+    relay(&mut initiator, &mut responder);
     assert_eq!(initiator.state(), ScPairingState::Complete);
     assert_eq!(responder.state(), ScPairingState::Complete);
 }

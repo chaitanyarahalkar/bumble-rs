@@ -2,11 +2,15 @@
 
 use std::collections::VecDeque;
 
+use bumble::keys::{KeyStore, KeyStoreResult, PairingKeys};
 use bumble::Address;
 use bumble_crypto::{random_128, EccKey};
 
+use crate::distribution::is_key_distribution_pdu;
+
 use crate::{
     sc, select_pairing_method_with_oob, AuthReq, Error, IoCapability, KeyDistribution,
+    KeyDistributionConfig, KeyDistributionSession, KeyDistributionState, LocalKeyMaterial,
     PairingConfig, PairingDelegate, PairingFailureReason, PairingFeatures, PairingMethod,
     PairingRole, Result, SmpPdu,
 };
@@ -20,6 +24,7 @@ pub enum ScPairingState {
     WaitPairingRandom,
     WaitDhKeyCheck,
     WaitEncryption,
+    KeyDistribution,
     Complete,
     Failed,
 }
@@ -65,6 +70,8 @@ pub struct ScPairingSession {
     maximum_encryption_key_size: u8,
     initiator_key_distribution: KeyDistribution,
     responder_key_distribution: KeyDistribution,
+    local_keys: LocalKeyMaterial,
+    distribution: Option<KeyDistributionSession>,
 }
 
 impl ScPairingSession {
@@ -91,12 +98,18 @@ impl ScPairingSession {
             .map_or((ecc_key, local_nonce), |context| {
                 (context.ecc_key.clone(), context.r)
             });
+        let identity_address = match role {
+            PairingRole::Initiator => initiator_address.clone(),
+            PairingRole::Responder => responder_address.clone(),
+        };
         Ok(Self {
             role,
             bonding: config.bonding,
             maximum_encryption_key_size: config.capabilities.maximum_encryption_key_size,
             initiator_key_distribution: config.capabilities.local_initiator_key_distribution,
             responder_key_distribution: config.capabilities.local_responder_key_distribution,
+            local_keys: LocalKeyMaterial::generate(identity_address),
+            distribution: None,
             config,
             delegate,
             initiator_address,
@@ -142,6 +155,18 @@ impl ScPairingSession {
         if let SmpPdu::PairingFailed { reason } = pdu {
             self.failure = failure_from_u8(reason);
             self.state = ScPairingState::Failed;
+            return Ok(());
+        }
+        if self.state == ScPairingState::KeyDistribution {
+            self.distribution
+                .as_mut()
+                .expect("distribution session exists")
+                .process(pdu);
+            self.sync_distribution();
+            return Ok(());
+        }
+        if is_key_distribution_pdu(&pdu) {
+            self.fail(PairingFailureReason::UnspecifiedReason);
             return Ok(());
         }
         match (self.role, self.state, pdu) {
@@ -205,14 +230,76 @@ impl ScPairingSession {
         self.failure
     }
 
+    pub fn set_local_key_material(&mut self, keys: LocalKeyMaterial) -> Result<()> {
+        if self.state != ScPairingState::Idle {
+            return Err(Error::InvalidPacket(
+                "local keys can only be changed before pairing".into(),
+            ));
+        }
+        self.local_keys = keys;
+        Ok(())
+    }
+
+    pub fn pairing_keys(&self) -> Option<PairingKeys> {
+        self.distribution
+            .as_ref()
+            .and_then(KeyDistributionSession::pairing_keys)
+    }
+
+    pub fn store_bond(&self, store: &mut dyn KeyStore) -> KeyStoreResult<bool> {
+        if !self.outcome.as_ref().is_some_and(|outcome| outcome.bonding) {
+            return Ok(false);
+        }
+        match &self.distribution {
+            Some(distribution) => distribution.store_bond(store),
+            None => Ok(false),
+        }
+    }
+
     pub fn mark_encrypted(&mut self) -> Result<()> {
         if self.state != ScPairingState::WaitEncryption || self.outcome.is_none() {
             return Err(Error::InvalidPacket(
                 "SC pairing is not waiting for encryption".into(),
             ));
         }
-        self.state = ScPairingState::Complete;
+        let outcome = self.outcome.as_ref().expect("outcome checked");
+        let peer_address = match self.role {
+            PairingRole::Initiator => self.responder_address.clone(),
+            PairingRole::Responder => self.initiator_address.clone(),
+        };
+        let mut distribution = KeyDistributionSession::new(KeyDistributionConfig {
+            role: self.role,
+            secure_connections: true,
+            authenticated: outcome.authenticated,
+            maximum_encryption_key_size: outcome.maximum_encryption_key_size,
+            pairing_ltk: outcome.ltk,
+            initiator_keys: outcome.initiator_key_distribution,
+            responder_keys: outcome.responder_key_distribution,
+            local_keys: self.local_keys.clone(),
+            peer_address,
+        });
+        distribution.mark_encrypted();
+        self.distribution = Some(distribution);
+        self.sync_distribution();
         Ok(())
+    }
+
+    fn sync_distribution(&mut self) {
+        let distribution = self
+            .distribution
+            .as_mut()
+            .expect("distribution session exists");
+        self.outbound.extend(distribution.drain_outbound());
+        match distribution.state() {
+            KeyDistributionState::Complete => self.state = ScPairingState::Complete,
+            KeyDistributionState::Failed => {
+                self.failure = distribution.failure();
+                self.state = ScPairingState::Failed;
+            }
+            KeyDistributionState::WaitEncryption | KeyDistributionState::Distributing => {
+                self.state = ScPairingState::KeyDistribution;
+            }
+        }
     }
 
     fn on_pairing_request(&mut self, features: PairingFeatures) -> Result<()> {

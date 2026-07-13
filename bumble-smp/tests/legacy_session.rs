@@ -179,6 +179,7 @@ fn just_works_negotiates_features_and_derives_the_same_truncated_stk() {
 
     initiator.mark_encrypted().unwrap();
     responder.mark_encrypted().unwrap();
+    relay(&mut initiator, &mut responder);
     assert_eq!(initiator.state(), PairingState::Complete);
     assert_eq!(responder.state(), PairingState::Complete);
 }
