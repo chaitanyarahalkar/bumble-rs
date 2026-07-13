@@ -82,7 +82,7 @@ fn le_read_local_supported_features_returns_bitmap() {
             le_features,
         } => {
             assert_eq!(*status, 0);
-            assert_eq!(*le_features, [0x00, 0x10, 0x00, 0x30, 0, 0, 0, 0]);
+            assert_eq!(*le_features, [0x00, 0x10, 0x00, 0xF0, 0, 0, 0, 0]);
         }
         other => panic!("expected LE feature params, got {other:?}"),
     }

@@ -22,8 +22,8 @@
 //! ATT traffic over the fixed ATT CID plus raw fixed/dynamic L2CAP channels,
 //! with controller-buffer-sized ACL fragmentation/reassembly. High-level
 //! legacy and extended advertising, scanning, and connection setup are also
-//! available, along with periodic advertising/synchronization, CIG/CIS control,
-//! PAST transfer, ISO SDU fragmentation/reassembly, and handle-scoped LE
+//! available, along with periodic advertising/synchronization, CIG/CIS and
+//! BIG/BIS control, PAST transfer, ISO SDU fragmentation/reassembly, and handle-scoped LE
 //! credit-based channel managers driven over the same ACL path.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -98,6 +98,9 @@ pub trait HostTransport {
 
     /// Advance pending periodic sync transfers when applicable.
     fn pump_periodic_sync_transfers(&mut self) {}
+
+    /// Advance broadcast-group termination notifications when applicable.
+    fn pump_big_terminations(&mut self) {}
 }
 
 impl HostTransport for ControllerLocalLink {
@@ -151,6 +154,10 @@ impl HostTransport for ControllerLocalLink {
 
     fn pump_periodic_sync_transfers(&mut self) {
         ControllerLocalLink::pump_periodic_sync_transfers(self);
+    }
+
+    fn pump_big_terminations(&mut self) {
+        ControllerLocalLink::pump_big_terminations(self);
     }
 }
 
@@ -306,6 +313,82 @@ pub struct IsoSdu {
     pub packet_sequence_number: u16,
     pub packet_status_flag: u8,
     pub data: Vec<u8>,
+}
+
+/// Parameters for creating a Broadcast Isochronous Group.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BigParameters {
+    pub big_handle: u8,
+    pub advertising_handle: u8,
+    pub num_bis: u8,
+    pub sdu_interval: u32,
+    pub max_sdu: u16,
+    pub max_transport_latency: u16,
+    pub rtn: u8,
+    pub phy: u8,
+    pub packing: u8,
+    pub framing: u8,
+    pub broadcast_code: Option<[u8; 16]>,
+}
+
+impl BigParameters {
+    pub fn new(big_handle: u8, advertising_handle: u8, num_bis: u8) -> Self {
+        Self {
+            big_handle,
+            advertising_handle,
+            num_bis,
+            sdu_interval: 10_000,
+            max_sdu: 120,
+            max_transport_latency: 65,
+            rtn: 4,
+            phy: 2,
+            packing: 0,
+            framing: 0,
+            broadcast_code: None,
+        }
+    }
+}
+
+/// Parameters for synchronizing to selected BIS indices in a remote BIG.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BigSyncParameters {
+    pub big_handle: u8,
+    pub sync_handle: u16,
+    pub bis: Vec<u8>,
+    pub mse: u8,
+    pub big_sync_timeout: u16,
+    pub broadcast_code: Option<[u8; 16]>,
+}
+
+impl BigSyncParameters {
+    pub fn new(big_handle: u8, sync_handle: u16, bis: Vec<u8>) -> Self {
+        Self {
+            big_handle,
+            sync_handle,
+            bis,
+            mse: 0,
+            big_sync_timeout: 0x4000,
+            broadcast_code: None,
+        }
+    }
+}
+
+/// The controller's BIGInfo report associated with a periodic sync.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BigInfoReport {
+    pub sync_handle: u16,
+    pub num_bis: u8,
+    pub nse: u8,
+    pub iso_interval: u16,
+    pub bn: u8,
+    pub pto: u8,
+    pub irc: u8,
+    pub max_pdu: u16,
+    pub sdu_interval: u32,
+    pub max_sdu: u16,
+    pub phy: u8,
+    pub framing: u8,
+    pub encrypted: bool,
 }
 
 #[derive(Debug, Default)]
@@ -493,6 +576,12 @@ pub struct Device {
     cis_requests: Vec<CisRequestInfo>,
     configured_cis_handles: Vec<u16>,
     established_cis_handles: BTreeSet<u16>,
+    bigs: BTreeMap<u8, Vec<u16>>,
+    big_syncs: BTreeMap<u8, Vec<u16>>,
+    bis_directions: BTreeMap<u16, u8>,
+    biginfo_reports: Vec<BigInfoReport>,
+    big_errors: Vec<(u8, u8)>,
+    terminated_bigs: Vec<(u8, u8)>,
     iso_sequence_numbers: BTreeMap<u16, u16>,
     iso_assemblers: BTreeMap<u16, IsoSduAssembler>,
     iso_inbox: Vec<IsoSdu>,
@@ -547,6 +636,12 @@ impl Device {
             cis_requests: Vec::new(),
             configured_cis_handles: Vec::new(),
             established_cis_handles: BTreeSet::new(),
+            bigs: BTreeMap::new(),
+            big_syncs: BTreeMap::new(),
+            bis_directions: BTreeMap::new(),
+            biginfo_reports: Vec::new(),
+            big_errors: Vec::new(),
+            terminated_bigs: Vec::new(),
             iso_sequence_numbers: BTreeMap::new(),
             iso_assemblers: BTreeMap::new(),
             iso_inbox: Vec::new(),
@@ -601,6 +696,12 @@ impl Device {
             cis_requests: Vec::new(),
             configured_cis_handles: Vec::new(),
             established_cis_handles: BTreeSet::new(),
+            bigs: BTreeMap::new(),
+            big_syncs: BTreeMap::new(),
+            bis_directions: BTreeMap::new(),
+            biginfo_reports: Vec::new(),
+            big_errors: Vec::new(),
+            terminated_bigs: Vec::new(),
             iso_sequence_numbers: BTreeMap::new(),
             iso_assemblers: BTreeMap::new(),
             iso_inbox: Vec::new(),
@@ -1634,19 +1735,136 @@ impl Device {
         self.established_cis_handles.iter().copied()
     }
 
+    /// Create a BIG attached to an active periodic advertising set. BIS handles
+    /// become available through [`Self::big_bis_handles`] after polling.
+    pub fn create_big(&mut self, link: &mut LocalLink, parameters: BigParameters) -> bool {
+        if parameters.big_handle > 0xEF
+            || self.bigs.contains_key(&parameters.big_handle)
+            || self.big_syncs.contains_key(&parameters.big_handle)
+            || parameters.num_bis == 0
+            || parameters.num_bis > 31
+            || !(0xFF..=0x00FF_FFFF).contains(&parameters.sdu_interval)
+            || !(1..=0x0FFF).contains(&parameters.max_sdu)
+            || !(5..=4_000).contains(&parameters.max_transport_latency)
+            || parameters.rtn > 0x1E
+            || parameters.phy == 0
+            || parameters.phy & !0x07 != 0
+            || parameters.packing > 1
+            || parameters.framing > 1
+        {
+            return false;
+        }
+        let encrypted = parameters.broadcast_code.is_some();
+        self.send_hci_command(
+            link,
+            Command::LeCreateBig {
+                big_handle: parameters.big_handle,
+                advertising_handle: parameters.advertising_handle,
+                num_bis: parameters.num_bis,
+                sdu_interval: parameters.sdu_interval,
+                max_sdu: parameters.max_sdu,
+                max_transport_latency: parameters.max_transport_latency,
+                rtn: parameters.rtn,
+                phy: parameters.phy,
+                packing: parameters.packing,
+                framing: parameters.framing,
+                encryption: u8::from(encrypted),
+                broadcast_code: parameters.broadcast_code.unwrap_or([0; 16]),
+            },
+        );
+        true
+    }
+
+    pub fn terminate_big(&mut self, link: &mut LocalLink, big_handle: u8, reason: u8) -> bool {
+        if !self.bigs.contains_key(&big_handle) {
+            return false;
+        }
+        self.send_hci_command(link, Command::LeTerminateBig { big_handle, reason });
+        true
+    }
+
+    pub fn big_bis_handles(&self, big_handle: u8) -> Option<&[u16]> {
+        self.bigs.get(&big_handle).map(Vec::as_slice)
+    }
+
+    /// Start receiver synchronization to selected BIS indices. The periodic
+    /// sync must already exist and BIGInfo must subsequently arrive over it.
+    pub fn create_big_sync(&mut self, link: &mut LocalLink, parameters: BigSyncParameters) -> bool {
+        let mut unique_bis = parameters.bis.clone();
+        unique_bis.sort_unstable();
+        unique_bis.dedup();
+        if parameters.big_handle > 0xEF
+            || self.bigs.contains_key(&parameters.big_handle)
+            || self.big_syncs.contains_key(&parameters.big_handle)
+            || !self.periodic_syncs.contains_key(&parameters.sync_handle)
+            || parameters.bis.is_empty()
+            || parameters.bis.len() > 31
+            || parameters.bis.iter().any(|index| !(1..=31).contains(index))
+            || unique_bis.len() != parameters.bis.len()
+            || parameters.mse > 0x1F
+            || !(0x000A..=0x4000).contains(&parameters.big_sync_timeout)
+        {
+            return false;
+        }
+        let encrypted = parameters.broadcast_code.is_some();
+        self.send_hci_command(
+            link,
+            Command::LeBigCreateSync {
+                big_handle: parameters.big_handle,
+                sync_handle: parameters.sync_handle,
+                encryption: u8::from(encrypted),
+                broadcast_code: parameters.broadcast_code.unwrap_or([0; 16]),
+                mse: parameters.mse,
+                big_sync_timeout: parameters.big_sync_timeout,
+                bis: parameters.bis,
+            },
+        );
+        true
+    }
+
+    pub fn terminate_big_sync(&mut self, link: &mut LocalLink, big_handle: u8) -> bool {
+        if !self.big_syncs.contains_key(&big_handle) {
+            return false;
+        }
+        self.send_hci_command(link, Command::LeBigTerminateSync { big_handle });
+        true
+    }
+
+    pub fn big_sync_bis_handles(&self, big_handle: u8) -> Option<&[u16]> {
+        self.big_syncs.get(&big_handle).map(Vec::as_slice)
+    }
+
+    pub fn established_bis_handles(&self) -> impl Iterator<Item = u16> + '_ {
+        self.bis_directions.keys().copied()
+    }
+
+    pub fn take_biginfo_reports(&mut self) -> Vec<BigInfoReport> {
+        std::mem::take(&mut self.biginfo_reports)
+    }
+
+    pub fn take_big_errors(&mut self) -> Vec<(u8, u8)> {
+        std::mem::take(&mut self.big_errors)
+    }
+
+    pub fn take_terminated_bigs(&mut self) -> Vec<(u8, u8)> {
+        std::mem::take(&mut self.terminated_bigs)
+    }
+
     pub fn setup_iso_data_path(
         &mut self,
         link: &mut LocalLink,
-        cis_handle: u16,
+        iso_handle: u16,
         direction: u8,
     ) -> bool {
-        if !self.established_cis_handles.contains(&cis_handle) || direction > 1 {
+        let established = self.established_cis_handles.contains(&iso_handle)
+            || self.bis_directions.get(&iso_handle) == Some(&direction);
+        if !established || direction > 1 {
             return false;
         }
         self.send_hci_command(
             link,
             Command::LeSetupIsoDataPath {
-                connection_handle: cis_handle,
+                connection_handle: iso_handle,
                 data_path_direction: direction,
                 data_path_id: 0,
                 codec_id: CodingFormat::TRANSPARENT,
@@ -1660,32 +1878,36 @@ impl Device {
     pub fn remove_iso_data_path(
         &mut self,
         link: &mut LocalLink,
-        cis_handle: u16,
+        iso_handle: u16,
         directions: u8,
     ) -> bool {
-        if !self.established_cis_handles.contains(&cis_handle) || directions & !0x03 != 0 {
+        let established = self.established_cis_handles.contains(&iso_handle)
+            || self.bis_directions.contains_key(&iso_handle);
+        if !established || directions & !0x03 != 0 {
             return false;
         }
         self.send_hci_command(
             link,
             Command::LeRemoveIsoDataPath {
-                connection_handle: cis_handle,
+                connection_handle: iso_handle,
                 data_path_direction: directions,
             },
         );
         true
     }
 
-    /// Fragment and send one ISO SDU through an established CIS. The 960-byte
-    /// controller packet size and first-fragment SDU-info overhead match
-    /// upstream Bumble's software-controller defaults.
-    pub fn send_iso_sdu(&mut self, link: &mut LocalLink, cis_handle: u16, sdu: &[u8]) -> bool {
+    /// Fragment and send one ISO SDU through an established CIS or broadcaster
+    /// BIS. The 960-byte controller packet size and first-fragment SDU-info
+    /// overhead match upstream Bumble's software-controller defaults.
+    pub fn send_iso_sdu(&mut self, link: &mut LocalLink, iso_handle: u16, sdu: &[u8]) -> bool {
         const ISO_PACKET_LENGTH: usize = 960;
         const SDU_INFO_LENGTH: usize = 4;
-        if !self.established_cis_handles.contains(&cis_handle) || sdu.len() > 0x0FFF {
+        let can_send = self.established_cis_handles.contains(&iso_handle)
+            || self.bis_directions.get(&iso_handle) == Some(&0);
+        if !can_send || sdu.len() > 0x0FFF {
             return false;
         }
-        let sequence = *self.iso_sequence_numbers.entry(cis_handle).or_default();
+        let sequence = *self.iso_sequence_numbers.entry(iso_handle).or_default();
         let mut offset = 0;
         loop {
             let first = offset == 0;
@@ -1694,7 +1916,7 @@ impl Device {
             let last = end == sdu.len();
             let fragment = sdu[offset..end].to_vec();
             let packet = IsoDataPacket {
-                connection_handle: cis_handle,
+                connection_handle: iso_handle,
                 pb_flag: match (first, last) {
                     (true, true) => 0b10,
                     (true, false) => 0b00,
@@ -1719,7 +1941,7 @@ impl Device {
             offset = end;
         }
         self.iso_sequence_numbers
-            .insert(cis_handle, sequence.wrapping_add(1));
+            .insert(iso_handle, sequence.wrapping_add(1));
         true
     }
 
@@ -2436,6 +2658,89 @@ impl Device {
                     self.periodic_report_accumulators.remove(&sync_handle);
                     self.lost_periodic_syncs.push(sync_handle);
                 }
+                HciPacket::Event(Event::LeMeta(LeMetaEvent::BiginfoAdvertisingReport {
+                    sync_handle,
+                    num_bis,
+                    nse,
+                    iso_interval,
+                    bn,
+                    pto,
+                    irc,
+                    max_pdu,
+                    sdu_interval,
+                    max_sdu,
+                    phy,
+                    framing,
+                    encryption,
+                })) => self.biginfo_reports.push(BigInfoReport {
+                    sync_handle,
+                    num_bis,
+                    nse,
+                    iso_interval,
+                    bn,
+                    pto,
+                    irc,
+                    max_pdu,
+                    sdu_interval,
+                    max_sdu,
+                    phy,
+                    framing,
+                    encrypted: encryption != 0,
+                }),
+                HciPacket::Event(Event::LeMeta(LeMetaEvent::CreateBigComplete {
+                    status,
+                    big_handle,
+                    connection_handle,
+                    ..
+                })) => {
+                    if status == 0 {
+                        for handle in &connection_handle {
+                            self.bis_directions.insert(*handle, 0);
+                            self.iso_sequence_numbers.entry(*handle).or_default();
+                        }
+                        self.bigs.insert(big_handle, connection_handle);
+                    } else {
+                        self.big_errors.push((big_handle, status));
+                    }
+                }
+                HciPacket::Event(Event::LeMeta(LeMetaEvent::TerminateBigComplete {
+                    big_handle,
+                    reason,
+                })) => {
+                    if let Some(handles) = self.bigs.remove(&big_handle) {
+                        for handle in handles {
+                            self.clear_bis_handle(handle);
+                        }
+                    }
+                    self.terminated_bigs.push((big_handle, reason));
+                }
+                HciPacket::Event(Event::LeMeta(LeMetaEvent::BigSyncEstablished {
+                    status,
+                    big_handle,
+                    connection_handle,
+                    ..
+                })) => {
+                    if status == 0 {
+                        for handle in &connection_handle {
+                            self.bis_directions.insert(*handle, 1);
+                            self.iso_sequence_numbers.entry(*handle).or_default();
+                        }
+                        self.big_syncs.insert(big_handle, connection_handle);
+                    } else {
+                        self.big_errors.push((big_handle, status));
+                    }
+                }
+                HciPacket::Event(Event::LeMeta(LeMetaEvent::BigSyncLost {
+                    big_handle,
+                    reason,
+                })) => {
+                    if let Some(handles) = self.big_syncs.remove(&big_handle) {
+                        for handle in handles {
+                            self.clear_bis_handle(handle);
+                        }
+                    }
+                    self.terminated_bigs.push((big_handle, reason));
+                }
                 HciPacket::Event(Event::LeMeta(LeMetaEvent::CisRequest {
                     acl_connection_handle,
                     cis_connection_handle,
@@ -2807,6 +3112,13 @@ impl Device {
         true
     }
 
+    fn clear_bis_handle(&mut self, handle: u16) {
+        self.bis_directions.remove(&handle);
+        self.iso_sequence_numbers.remove(&handle);
+        self.iso_assemblers.remove(&handle);
+        self.iso_inbox.retain(|sdu| sdu.connection_handle != handle);
+    }
+
     fn flush_acl_queue(&mut self, link: &mut LocalLink) -> bool {
         let mut success = true;
         while let Some(packet) = self.acl_packet_queue.poll_ready() {
@@ -2936,6 +3248,7 @@ pub fn pump(link: &mut LocalLink, devices: &mut [Device]) {
         link.pump_ll();
         link.pump_classic();
         link.pump_periodic_sync_transfers();
+        link.pump_big_terminations();
         let mut active = false;
         for device in devices.iter_mut() {
             if device.poll(link) {

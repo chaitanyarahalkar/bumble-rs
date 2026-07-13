@@ -117,6 +117,7 @@ crate whose behavior is verified against the upstream Python.
 | 100. Bidirectional filtered HCI bridge | `bumble-transport` | ✅ replacement/short-circuit/trace paths green |
 | 101. Periodic advertising and synchronization | `bumble-controller` / `bumble-host` | ✅ 600-byte train + create/cancel/receive/terminate flow green |
 | 102. Periodic Advertising Sync Transfer | `bumble-controller` / `bumble-host` | ✅ sync + set-info transfer over live LE ACL green |
+| 135. Broadcast ISO groups and streams | `bumble-controller` / `bumble-host` | ✅ BIGInfo + encrypted BIG sync + one-to-many BIS SDUs green |
 | 103+. Repository completion audit and remaining gaps | workspace | in progress |
 
 The LE lifecycle is now complete end-to-end through library APIs: **connect →
@@ -174,8 +175,8 @@ size, to convey remaining surface.
 | `controller.py` (2.8k) | `bumble-controller` | 🟡 | **Full command surface**: every command upstream's `controller.py` handles (93, via the generated [`command_surface`](bumble-controller/src/command_surface.rs) table) gets a reply of the matching HCI shape — Command Complete + SUCCESS for config/set commands, Command Status for operations completing via a later event, and the spec-correct "Unknown HCI Command" for anything upstream also doesn't handle. **Functionally simulated**: legacy, extended, and periodic LE advertising/scanning/synchronization; multi-set parameters/random addresses/fragmented data/scan responses; sync create/cancel/terminate, receive control, and PAST sync/set-info transfer over ACL; IRK resolving-list offload with identity-targeted RPA connections; ACL routing with PB/BC preservation and Number Of Completed Packets flow events; disconnection; the read commands (`Read_BD_ADDR`/`Read_Local_Name`/`LE_Read_Buffer_Size`/`LE_Read_Local_Supported_Features`/`LE_Rand`); per-connection `LE_Set_Data_Length`/`LE_Set_PHY`; and — via LL control-PDU exchange — **encryption start**, **remote-features**, and **CIS establishment**. CIS links retain Setup/Remove ISO data paths and route HCI ISO fragments with handle translation and completed-packet events. Also **classic (BR/EDR)** connection/name/features, accept-time and explicit role switching, and SCO/eSCO request/accept/reject/disconnect with synchronous-data routing. Other read commands are acknowledged SUCCESS **without a synthesized payload**. Upstream itself leaves LTK verification as a TODO and has no Classic-authentication or remote-version command handler; Rust retains those exact boundaries. |
 | `link.py` (0.15k) | `bumble-controller` | 🟡 | In-process **synchronous** `LocalLink` with LL-control, simplified LMP, ACL, and SCO/eSCO routing. Deferred: serialized over-the-air PDUs and async scheduling. |
 | `ll.py` (0.2k) | `bumble-controller` | 🟡 | Advertising/connection PDUs modeled as in-process structs, not serialized LL PDUs. Control PDUs (`EncReq`, `FeatureReq`/`PeripheralFeatureReq`/`FeatureRsp`, `TerminateInd`) are exchanged between controllers via `LocalLink::pump_ll` to drive the encryption-start, remote-features, and CIS-establishment (`CisReq`/`CisRsp`/`CisInd`) flows. |
-| `host.py` (2.1k) | `bumble-host` | 🟡 | `Device` glue (ATT↔L2CAP↔ACL sequencing + pairing transport), controller-buffer-sized outbound ACL fragmentation, per-connection inbound reassembly, a global/per-handle `DataPacketQueue` driven by Number Of Completed Packets, handle-indexed LE and Classic connection ownership, live LE signaling/credit-channel managers, LE/Classic encryption, resolving-list programming, Classic and LE L2CAP, plus synchronous audio APIs. The host pump advances LL, LMP, periodic-sync-transfer, and HCI/ACL traffic. Deferred: the broader host listener/convenience surface. |
-| `device.py` (7.0k) | `bumble-host` | 🟡 | High-level legacy, extended, and periodic LE advertising; active/passive scan reports; periodic sync create/cancel/terminate, fragmented-report assembly, and PAST sync/set-info transfer; identity/RPA-aware legacy and extended connection setup; handle-indexed LE/Classic peer and role state; and disconnect run through `Device` without raw HCI. Extended and periodic data fragment across HCI commands up to the controller's 1650-byte limit. ATT/L2CAP, encryption, PAST, and CIS operations have explicit handle-selecting forms while legacy convenience calls use a selectable current connection. CIG/CIS configuration, request/accept, data-path management, sequence numbering, 960-byte ISO fragmentation, and receive-side SDU reassembly are live. GATT/ATT, SMP, Classic, and synchronous operations are also exposed by the same type. Deferred: listener/async conveniences. |
+| `host.py` (2.1k) | `bumble-host` | 🟡 | `Device` glue (ATT↔L2CAP↔ACL sequencing + pairing transport), controller-buffer-sized outbound ACL fragmentation, per-connection inbound reassembly, a global/per-handle `DataPacketQueue` driven by Number Of Completed Packets, handle-indexed LE and Classic connection ownership, live LE signaling/credit-channel managers, LE/Classic encryption, resolving-list programming, Classic and LE L2CAP, plus connected and broadcast ISO audio APIs. The host pump advances LL, LMP, periodic-sync-transfer, BIG termination, and HCI/ACL traffic. Deferred: the broader host listener/convenience surface. |
+| `device.py` (7.0k) | `bumble-host` | 🟡 | High-level legacy, extended, and periodic LE advertising; active/passive scan reports; periodic sync create/cancel/terminate, fragmented-report assembly, and PAST sync/set-info transfer; identity/RPA-aware legacy and extended connection setup; handle-indexed LE/Classic peer and role state; and disconnect run through `Device` without raw HCI. Extended and periodic data fragment across HCI commands up to the controller's 1650-byte limit. ATT/L2CAP, encryption, PAST, and ISO operations have explicit handle-selecting forms while legacy convenience calls use a selectable current connection. CIG/CIS and BIG/BIS creation, synchronization, data-path management, sequence numbering, 960-byte ISO fragmentation, and receive-side SDU reassembly are live. GATT/ATT, SMP, Classic, and synchronous operations are also exposed by the same type. Deferred: listener/async conveniences. |
 | `lmp.py` (0.4k) | `bumble-controller::lmp` | 🟡 | Classic Link Manager Protocol PDUs modeled as in-process structs (`HostConnectionReq`/accept/reject, role-switch request/accept/reject, `NameReq`/`NameRes`, `FeaturesReq`/`FeaturesRes`, synchronous request/accept/reject, `Detach`) driving the Classic connection/role/name/features/SCO-eSCO flows via `LocalLink::pump_classic`. Authentication remains deferred; Classic encryption uses the port's existing state transition rather than the full LMP key exchange. |
 
 ### L2CAP
@@ -244,7 +245,7 @@ size, to convey remaining surface.
 | `apps/usb_probe.py` | `bumble-usb-probe` (`bumble-transport`) | ✅ | Runnable libusb device inventory with upstream `--verbose`, `--hci-only`, manufacturer, and product filters; device/interface-level Bluetooth HCI classification; stable index, VID/PID, duplicate, and serial transport names; string-descriptor error tolerance; and verbose configuration/interface/endpoint details including isochronous packet sizes. |
 | `apps/ble_rpa_tool.py` | `bumble-rpa-tool` (`bumble-smp`) | ✅ | Runnable `gen-irk`, `gen-rpa`, and `verify-rpa` commands backed by the OS RNG and the real SMP `ah` primitive. Flexible Python-style hex input, address validation, colored verification results, and malformed/extra argument errors are covered. |
 | `apps/unbond.py` | `bumble-unbond` (`bumble-transport`) | ✅ | File-backed and external-controller list/delete modes are runnable with upstream-style colored key rendering and `!!! pairing not found` behavior. Controller mode resets HCI, discovers the public BD_ADDR, falls back to the configured random address, reproduces `JsonKeyStore[:filename]` namespace/path selection, and uses an in-memory store for absent or unknown keystore types. |
-| `pandora/`, remaining apps | — | ⬜ | Conformance harnesses and the remaining command-line applications; still unported. |
+| `apps/auracast.py`, `apps/bench.py`, `pandora/` | — | ⬜ | The three remaining application/conformance entry points; still unported. The broadcast-ISO runtime required by Auracast is now live. |
 
 ### Roughly where that leaves things
 
@@ -2899,6 +2900,27 @@ The upstream LE Audio unicast server now runs over external controllers:
   typed ATT request—not only the original discovery subset—is answered over a
   live connection.
 
+## Slice 135 — what's here
+
+The broadcast-ISO runtime required by the upstream Auracast app is now live:
+
+- The software controller implements LE Create/Terminate BIG and BIG
+  Create/Terminate Sync with real state, BIS handle allocation, BIGInfo reports
+  attached to matching periodic trains, encrypted Broadcast Code validation,
+  and source-termination propagation to synchronized receivers.
+- `bumble-host::Device` exposes typed BIG and BIG-sync parameters, source and
+  receiver BIS handle ownership, BIGInfo/error/termination queues, directional
+  ISO data-path setup, and the existing 960-byte SDU fragment/reassembly path
+  for both CIS and BIS handles.
+- The local radio routes each broadcaster BIS fragment to every matching
+  synchronized receiver while preserving HCI ISO metadata and completed-packet
+  flow control. Broadcaster paths are host-to-controller only and synchronized
+  receiver paths are controller-to-host only.
+- A live three-controller test creates an encrypted two-BIS BIG, rejects a bad
+  Broadcast Code, synchronizes two receivers, fans out a 2,500-byte SDU to both,
+  terminates one receiver independently, and propagates source termination to
+  the remaining receiver.
+
 ## Acceptance
 
 The port's contract is the upstream Python test suite, ported 1:1:
@@ -2970,6 +2992,7 @@ bumble-rs/
 │   ├── tests/gatt_over_host.rs # full LE lifecycle via the Device API
 │   ├── tests/high_level_device.rs # legacy/extended advertising and connection
 │   ├── tests/periodic_advertising.rs # 600-byte sync/report/receive/cancel flow
+│   ├── tests/broadcast_iso.rs # encrypted BIG/BIS fan-out and teardown
 │   ├── tests/smp_pairing.rs    # two-party LE Legacy JustWorks handshake
 │   ├── tests/smp_sc_pairing.rs # two-party LE Secure Connections handshake (slice 19)
 │   └── tests/synchronous_audio.rs # HFP mSBC over host/controller (slice 27)
