@@ -21,11 +21,22 @@
 //!   the confirm value, MacKey/LTK, DHKey checks (`Ea`/`Eb`), and numeric
 //!   comparison value, following upstream's argument construction.
 //!
-//! Deferred: the full async pairing state machine, MITM/passkey/OOB methods,
-//! and bonding storage.
+//! [`pairing`] adds the full I/O capability decision matrix, authentication and
+//! key-distribution policy, SC/Legacy OOB contexts and AD interchange, pairing
+//! configuration, and CTKD key derivation. Deferred: the live pairing state
+//! machine, user-delegate actions, key exchange, and bonding storage.
 
 use bumble::Address;
 use core::fmt;
+
+pub mod pairing;
+
+pub use pairing::{
+    derive_link_key, derive_ltk, select_pairing_method, select_pairing_method_with_oob, AuthReq,
+    IdentityAddressType, IoCapability, KeyDistribution, OobConfig, OobContext, OobData,
+    OobLegacyContext, OobSharedData, PairingCapabilities, PairingConfig, PairingMethod,
+    PairingMethodSelection,
+};
 
 /// The L2CAP channel id for the LE Security Manager Protocol.
 pub const SMP_CID: u16 = 0x0006;

@@ -78,7 +78,8 @@ crate whose behavior is verified against the upstream Python.
 | 61. Enhanced credit-based multi-channel and reconfigure runtime | `bumble-l2cap` | ✅ five-channel + refusal matrix green |
 | 62. Enhanced Retransmission Mode control fields and data engine | `bumble-l2cap` | ✅ loss/busy/window/timer paths green |
 | 63. Live Classic L2CAP ERTM negotiation and transport | `bumble-l2cap` | ✅ upstream MTU matrix + FCS green |
-| 64+. Remaining modules… | — | planned |
+| 64. SMP pairing policy, OOB data, and CTKD foundation | `bumble-smp` | ✅ method matrix + upstream vectors green |
+| 65+. Remaining modules… | — | planned |
 
 The LE lifecycle is now complete end-to-end through library APIs: **connect →
 discover → read/write → notify → disconnect** between two virtual devices — and
@@ -153,7 +154,7 @@ size, to convey remaining surface.
 | Upstream (LOC) | Rust crate | Status | Notes |
 |---|---|---|---|
 | `crypto/` | `bumble-crypto` | ✅ | All SMP **symmetric** security functions — `e`, AES-CMAC, `c1`, `s1`, `f4`/`f5`/`f6`, `g2`, `h6`/`h7`, `ah` — spec/RFC-4493 vector-verified, plus **P-256 `EccKey`** (slice 19: keygen, `from_private_key_bytes`, public-key coordinates, ECDH) oracle-pinned to upstream. Deferred: none of the crypto primitives. |
-| `smp.py` (2.0k), `pairing.py` (0.3k) | `bumble-smp` | 🟡 | PDU codec (incl. all **LE Secure Connections** PDUs — public key, DHKey check, keypress, key-distribution), LE Legacy (JustWorks) pairing over the link, and the **SC JustWorks derivation** (`sc` module: `f4` confirm + `f5`/`f6`/`g2` keys) oracle-pinned and run as a two-party handshake. Deferred: full pairing state machine, Numeric Comparison / passkey / OOB entry UX, key distribution over the wire, bonding storage. |
+| `smp.py` (2.0k), `pairing.py` (0.3k) | `bumble-smp` | 🟡 | PDU codec (incl. all **LE Secure Connections** PDUs — public key, DHKey check, keypress, key-distribution), LE Legacy and SC JustWorks two-party derivations, the complete legacy/SC I/O-capability method matrix, auth/key-distribution policy, SC + Legacy OOB contexts and Advertising Data interchange, and h6/h7 CTKD in both directions. Deferred: the live unified pairing state machine, delegate-driven Numeric Comparison/passkey/OOB actions, encrypted key distribution, and bonding persistence. |
 
 ### Transports & drivers
 | Upstream | Rust crate | Status | Notes |
@@ -1449,6 +1450,32 @@ SDP, AVDTP, AVCTP, and HID:
 
 The named L2CAP protocol-depth gaps are now closed; remaining work is broader
 host/device integration and the many still-unported upstream modules.
+
+## Slice 64 — what's here
+
+The policy and interchange layer needed by a complete SMP session is now
+ported from `pairing.py` and `smp.py`:
+
+- `IoCapability`, `AuthReq`, and `KeyDistribution` model the exact SMP numeric
+  values and bit masks. `PairingCapabilities` validates the 7–16-byte key-size
+  range and intersects initiator/responder distribution requests with local
+  policy, matching `PairingDelegate.key_distribution_response`.
+- `select_pairing_method` implements every entry in Vol 3, Part H, Table 2.8,
+  including the legacy-vs-SC differences for Display Yes/No and Keyboard
+  Display, plus which Passkey endpoint displays or enters the value. OOB
+  selection preserves SC's one-sided and Legacy's two-sided requirements.
+- `OobContext` generates or accepts a P-256 key and random value, derives the
+  shared `C/R` data with `f4`, and matches a deterministic Python oracle.
+  `OobData` losslessly composes/parses address, LE role, SC confirmation/random,
+  and Legacy TK Advertising Data structures—including upstream's permissive
+  variable-length shared values.
+- `PairingConfig` and `OobConfig` capture SC, MITM, bonding, identity-address,
+  capability, and OOB policy without imposing an async runtime.
+- LE→BR/EDR and BR/EDR→LE CTKD use Bumble's `h6`/`h7` salts and key IDs. Both
+  CT2 branches match the four upstream test vectors byte-for-byte.
+
+The next SMP slice uses this foundation to replace the manually scripted host
+tests with a live, delegate-driven session state machine.
 
 ## Acceptance
 

@@ -231,6 +231,14 @@ pub fn h7(salt: &[u8], w: &[u8]) -> Vec<u8> {
 
 use p256::elliptic_curve::sec1::{FromEncodedPoint, ToEncodedPoint};
 use p256::{EncodedPoint, PublicKey, SecretKey};
+use rand_core::RngCore;
+
+/// Generate a cryptographically random 128-bit SMP value using the OS RNG.
+pub fn random_128() -> [u8; 16] {
+    let mut value = [0u8; 16];
+    rand_core::OsRng.fill_bytes(&mut value);
+    value
+}
 
 /// Errors from ECC key operations.
 #[derive(Debug, Clone, PartialEq, Eq)]

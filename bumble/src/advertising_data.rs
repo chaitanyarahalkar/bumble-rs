@@ -21,8 +21,13 @@ impl Type {
     pub const COMPLETE_LOCAL_NAME: Type = Type(0x09);
     pub const TX_POWER_LEVEL: Type = Type(0x0A);
     pub const CLASS_OF_DEVICE: Type = Type(0x0D);
+    pub const SECURITY_MANAGER_TK_VALUE: Type = Type(0x10);
     pub const APPEARANCE: Type = Type(0x19);
     pub const ADVERTISING_INTERVAL: Type = Type(0x1A);
+    pub const LE_BLUETOOTH_DEVICE_ADDRESS: Type = Type(0x1B);
+    pub const LE_ROLE: Type = Type(0x1C);
+    pub const LE_SECURE_CONNECTIONS_CONFIRMATION_VALUE: Type = Type(0x22);
+    pub const LE_SECURE_CONNECTIONS_RANDOM_VALUE: Type = Type(0x23);
     pub const URI: Type = Type(0x24);
     pub const BROADCAST_NAME: Type = Type(0x30);
     pub const MANUFACTURER_SPECIFIC_DATA: Type = Type(0xFF);
