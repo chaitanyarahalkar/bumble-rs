@@ -26,8 +26,8 @@
 //! configuration, and CTKD key derivation. [`LegacyPairingSession`] adds a live
 //! delegate-driven Legacy JustWorks/Passkey/OOB feature-confirm-random engine.
 //! [`ScPairingSession`] adds live Secure Connections JustWorks and Numeric
-//! Comparison orchestration through DHKey checks. Deferred: SC Passkey/OOB,
-//! encrypted key distribution, and bonding storage.
+//! Comparison, 20-round Passkey, and SC OOB orchestration through DHKey checks.
+//! Deferred: encrypted key distribution and bonding storage.
 
 use bumble::Address;
 use core::fmt;
@@ -408,7 +408,16 @@ pub mod sc {
         peer_pk_x_le: &[u8; 32],
         own_nonce: &[u8; 16],
     ) -> [u8; 16] {
-        to16(&f4(own_pk_x_le, peer_pk_x_le, own_nonce, 0))
+        confirm_value_with_z(own_pk_x_le, peer_pk_x_le, own_nonce, 0)
+    }
+
+    pub fn confirm_value_with_z(
+        own_pk_x_le: &[u8; 32],
+        peer_pk_x_le: &[u8; 32],
+        own_nonce: &[u8; 16],
+        z: u8,
+    ) -> [u8; 16] {
+        to16(&f4(own_pk_x_le, peer_pk_x_le, own_nonce, z))
     }
 
     /// Derive the JustWorks / Numeric Comparison keys and DHKey checks
@@ -429,6 +438,28 @@ pub mod sc {
         pka_x_le: &[u8; 32],
         pkb_x_le: &[u8; 32],
     ) -> ScKeys {
+        let r0 = [0u8; 16];
+        keys_with_r(
+            dh_key_le, na, nb, ia, iat, ra, rat, io_cap_a, io_cap_b, pka_x_le, pkb_x_le, &r0, &r0,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn keys_with_r(
+        dh_key_le: &[u8; 32],
+        na: &[u8; 16],
+        nb: &[u8; 16],
+        ia: &[u8; 6],
+        iat: u8,
+        ra: &[u8; 6],
+        rat: u8,
+        io_cap_a: &[u8; 3],
+        io_cap_b: &[u8; 3],
+        pka_x_le: &[u8; 32],
+        pkb_x_le: &[u8; 32],
+        r_a: &[u8; 16],
+        r_b: &[u8; 16],
+    ) -> ScKeys {
         let mut a = [0u8; 7];
         a[..6].copy_from_slice(ia);
         a[6] = iat;
@@ -437,10 +468,8 @@ pub mod sc {
         b[6] = rat;
 
         let (mac_key, ltk) = f5(dh_key_le, na, nb, &a, &b);
-        // JustWorks / Numeric Comparison use all-zero r values in the checks.
-        let r0 = [0u8; 16];
-        let ea = f6(&mac_key, na, nb, &r0, io_cap_a, &a, &b);
-        let eb = f6(&mac_key, nb, na, &r0, io_cap_b, &b, &a);
+        let ea = f6(&mac_key, na, nb, r_b, io_cap_a, &a, &b);
+        let eb = f6(&mac_key, nb, na, r_a, io_cap_b, &b, &a);
         let numeric_check = g2(pka_x_le, pkb_x_le, na, nb) % 1_000_000;
 
         ScKeys {

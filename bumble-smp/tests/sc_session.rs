@@ -3,8 +3,9 @@ use std::sync::{Arc, Mutex};
 use bumble::{Address, AddressType};
 use bumble_crypto::EccKey;
 use bumble_smp::{
-    IoCapability, KeyDistribution, PairingCapabilities, PairingConfig, PairingDelegate,
-    PairingFailureReason, PairingMethod, PairingRole, ScPairingSession, ScPairingState, SmpPdu,
+    IoCapability, KeyDistribution, OobConfig, OobContext, PairingCapabilities, PairingConfig,
+    PairingDelegate, PairingFailureReason, PairingMethod, PairingRole, ScPairingSession,
+    ScPairingState, SmpPdu,
 };
 
 fn address(value: &str) -> Address {
@@ -15,6 +16,38 @@ fn address(value: &str) -> Address {
 struct DelegateState {
     confirms: usize,
     comparisons: Vec<u32>,
+    displayed: Vec<u32>,
+}
+
+struct PasskeyDelegate {
+    passkey: u32,
+    state: Arc<Mutex<DelegateState>>,
+}
+
+impl PairingDelegate for PasskeyDelegate {
+    fn get_number(&mut self) -> Option<u32> {
+        Some(self.passkey)
+    }
+
+    fn generate_passkey(&mut self) -> u32 {
+        self.passkey
+    }
+
+    fn display_number(&mut self, number: u32, digits: u8) {
+        assert_eq!(digits, 6);
+        self.state.lock().unwrap().displayed.push(number);
+    }
+}
+
+fn passkey_delegate(passkey: u32) -> (Box<dyn PairingDelegate>, Arc<Mutex<DelegateState>>) {
+    let state = Arc::new(Mutex::new(DelegateState::default()));
+    (
+        Box::new(PasskeyDelegate {
+            passkey,
+            state: state.clone(),
+        }),
+        state,
+    )
 }
 
 struct Delegate {
@@ -267,5 +300,139 @@ fn invalid_peer_public_key_is_rejected_before_nonce_exchange() {
     assert_eq!(
         responder.failure(),
         Some(PairingFailureReason::InvalidParameters)
+    );
+}
+
+#[test]
+fn passkey_completes_all_twenty_commitment_rounds() {
+    let passkey = 678_901;
+    let (initiator_delegate, initiator_state) = passkey_delegate(passkey);
+    let (responder_delegate, responder_state) = passkey_delegate(passkey);
+    let (mut initiator, mut responder) = sessions(
+        config(IoCapability::DisplayOnly, true, 16),
+        config(IoCapability::KeyboardOnly, true, 16),
+        initiator_delegate,
+        responder_delegate,
+    );
+    initiator.start().unwrap();
+    relay(&mut initiator, &mut responder);
+
+    assert_eq!(initiator.state(), ScPairingState::WaitEncryption);
+    assert_eq!(responder.state(), ScPairingState::WaitEncryption);
+    assert_eq!(initiator.method(), Some(PairingMethod::Passkey));
+    assert_eq!(initiator.ltk(), responder.ltk());
+    assert_eq!(
+        initiator.outcome().unwrap().mac_key,
+        responder.outcome().unwrap().mac_key
+    );
+    assert!(initiator.outcome().unwrap().authenticated);
+    assert_eq!(initiator_state.lock().unwrap().displayed, vec![passkey]);
+    assert!(responder_state.lock().unwrap().displayed.is_empty());
+}
+
+#[test]
+fn wrong_sc_passkey_fails_during_commitment_rounds() {
+    let (initiator_delegate, _) = passkey_delegate(123_456);
+    let (responder_delegate, _) = passkey_delegate(123_457);
+    let (mut initiator, mut responder) = sessions(
+        config(IoCapability::DisplayOnly, true, 16),
+        config(IoCapability::KeyboardOnly, true, 16),
+        initiator_delegate,
+        responder_delegate,
+    );
+    initiator.start().unwrap();
+    relay(&mut initiator, &mut responder);
+    assert_eq!(initiator.state(), ScPairingState::Failed);
+    assert_eq!(responder.state(), ScPairingState::Failed);
+    assert_eq!(
+        initiator.failure(),
+        Some(PairingFailureReason::ConfirmValueFailed)
+    );
+}
+
+#[test]
+fn sc_oob_verifies_shared_data_and_uses_oob_r_in_dhkey_checks() {
+    let initiator_context = OobContext::new(
+        Some(EccKey::from_private_key_bytes(&(1u8..=32).collect::<Vec<_>>()).unwrap()),
+        Some([0x31; 16]),
+    );
+    let responder_context = OobContext::new(
+        Some(EccKey::from_private_key_bytes(&(33u8..=64).collect::<Vec<_>>()).unwrap()),
+        Some([0x42; 16]),
+    );
+    let initiator_shared = initiator_context.share();
+    let responder_shared = responder_context.share();
+    let mut initiator_config = config(IoCapability::NoInputNoOutput, true, 16);
+    initiator_config.oob = Some(OobConfig {
+        our_context: Some(initiator_context),
+        peer_data: Some(responder_shared),
+        legacy_context: None,
+    });
+    let mut responder_config = config(IoCapability::NoInputNoOutput, true, 16);
+    responder_config.oob = Some(OobConfig {
+        our_context: Some(responder_context),
+        peer_data: Some(initiator_shared),
+        legacy_context: None,
+    });
+    let (initiator_delegate, initiator_state) = delegate(true, false);
+    let (responder_delegate, responder_state) = delegate(true, false);
+    let (mut initiator, mut responder) = sessions(
+        initiator_config,
+        responder_config,
+        initiator_delegate,
+        responder_delegate,
+    );
+    initiator.start().unwrap();
+    relay(&mut initiator, &mut responder);
+
+    assert_eq!(initiator.method(), Some(PairingMethod::Oob));
+    assert_eq!(initiator.state(), ScPairingState::WaitEncryption);
+    assert_eq!(responder.state(), ScPairingState::WaitEncryption);
+    assert_eq!(initiator.ltk(), responder.ltk());
+    assert!(initiator.outcome().unwrap().authenticated);
+    assert_eq!(initiator_state.lock().unwrap().confirms, 0);
+    assert_eq!(responder_state.lock().unwrap().confirms, 0);
+}
+
+#[test]
+fn tampered_sc_oob_confirmation_is_rejected_at_public_key_exchange() {
+    let initiator_context = OobContext::new(
+        Some(EccKey::from_private_key_bytes(&(1u8..=32).collect::<Vec<_>>()).unwrap()),
+        Some([0x31; 16]),
+    );
+    let responder_context = OobContext::new(
+        Some(EccKey::from_private_key_bytes(&(33u8..=64).collect::<Vec<_>>()).unwrap()),
+        Some([0x42; 16]),
+    );
+    let mut bad_responder_data = responder_context.share();
+    bad_responder_data.c[0] ^= 0x80;
+    let initiator_shared = initiator_context.share();
+    let mut initiator_config = config(IoCapability::NoInputNoOutput, true, 16);
+    initiator_config.oob = Some(OobConfig {
+        our_context: Some(initiator_context),
+        peer_data: Some(bad_responder_data),
+        legacy_context: None,
+    });
+    let mut responder_config = config(IoCapability::NoInputNoOutput, true, 16);
+    responder_config.oob = Some(OobConfig {
+        our_context: Some(responder_context),
+        peer_data: Some(initiator_shared),
+        legacy_context: None,
+    });
+    let (initiator_delegate, _) = delegate(true, true);
+    let (responder_delegate, _) = delegate(true, true);
+    let (mut initiator, mut responder) = sessions(
+        initiator_config,
+        responder_config,
+        initiator_delegate,
+        responder_delegate,
+    );
+    initiator.start().unwrap();
+    relay(&mut initiator, &mut responder);
+    assert_eq!(initiator.state(), ScPairingState::Failed);
+    assert_eq!(responder.state(), ScPairingState::Failed);
+    assert_eq!(
+        initiator.failure(),
+        Some(PairingFailureReason::ConfirmValueFailed)
     );
 }

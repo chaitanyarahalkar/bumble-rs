@@ -3,12 +3,12 @@
 use std::collections::VecDeque;
 
 use bumble::Address;
-use bumble_crypto::EccKey;
+use bumble_crypto::{random_128, EccKey};
 
 use crate::{
-    sc, select_pairing_method, AuthReq, Error, IoCapability, KeyDistribution, PairingConfig,
-    PairingDelegate, PairingFailureReason, PairingFeatures, PairingMethod, PairingRole, Result,
-    SmpPdu,
+    sc, select_pairing_method_with_oob, AuthReq, Error, IoCapability, KeyDistribution,
+    PairingConfig, PairingDelegate, PairingFailureReason, PairingFeatures, PairingMethod,
+    PairingRole, Result, SmpPdu,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -50,6 +50,8 @@ pub struct ScPairingSession {
     preq: Option<Vec<u8>>,
     pres: Option<Vec<u8>>,
     method: Option<PairingMethod>,
+    passkey: Option<u32>,
+    passkey_step: u8,
     peer_public_x: Option<[u8; 32]>,
     peer_public_y: Option<[u8; 32]>,
     dh_key: Option<[u8; 32]>,
@@ -82,6 +84,13 @@ impl ScPairingSession {
                 "SC session requires Secure Connections policy".into(),
             ));
         }
+        let (ecc_key, local_nonce) = config
+            .oob
+            .as_ref()
+            .and_then(|oob| oob.our_context.as_ref())
+            .map_or((ecc_key, local_nonce), |context| {
+                (context.ecc_key.clone(), context.r)
+            });
         Ok(Self {
             role,
             bonding: config.bonding,
@@ -99,6 +108,8 @@ impl ScPairingSession {
             preq: None,
             pres: None,
             method: None,
+            passkey: None,
+            passkey_step: 0,
             peer_public_x: None,
             peer_public_y: None,
             dh_key: None,
@@ -125,6 +136,9 @@ impl ScPairingSession {
     }
 
     pub fn process(&mut self, pdu: SmpPdu) -> Result<()> {
+        if self.state == ScPairingState::Failed {
+            return Ok(());
+        }
         if let SmpPdu::PairingFailed { reason } = pdu {
             self.failure = failure_from_u8(reason);
             self.state = ScPairingState::Failed;
@@ -147,11 +161,9 @@ impl ScPairingSession {
                     public_key_y,
                 },
             ) => self.on_public_key(public_key_x, public_key_y),
-            (
-                PairingRole::Initiator,
-                ScPairingState::WaitPairingConfirm,
-                SmpPdu::PairingConfirm { confirm_value },
-            ) => self.on_pairing_confirm(confirm_value),
+            (_, ScPairingState::WaitPairingConfirm, SmpPdu::PairingConfirm { confirm_value }) => {
+                self.on_pairing_confirm(confirm_value)
+            }
             (_, ScPairingState::WaitPairingRandom, SmpPdu::PairingRandom { random_value }) => {
                 self.on_pairing_random(random_value)
             }
@@ -264,17 +276,56 @@ impl ScPairingSession {
         self.peer_public_y = Some(y_le);
         self.dh_key = Some(dh_key);
 
-        match self.role {
-            PairingRole::Initiator => {
-                self.state = ScPairingState::WaitPairingConfirm;
+        if self.method == Some(PairingMethod::Oob) {
+            if let Some(peer_data) = self
+                .config
+                .oob
+                .as_ref()
+                .and_then(|oob| oob.peer_data.as_ref())
+            {
+                let Ok(peer_r) = peer_data.r.as_slice().try_into() else {
+                    self.fail(PairingFailureReason::OobNotAvailable);
+                    return Ok(());
+                };
+                let expected = sc::confirm_value_with_z(&x_le, &x_le, peer_r, 0);
+                if peer_data.c.as_slice() != expected {
+                    self.fail(PairingFailureReason::ConfirmValueFailed);
+                    return Ok(());
+                }
             }
+        }
+
+        match self.role {
+            PairingRole::Initiator => match self.method.expect("method selected") {
+                PairingMethod::Passkey => {
+                    self.queue_passkey_confirm()?;
+                    self.state = ScPairingState::WaitPairingConfirm;
+                }
+                PairingMethod::JustWorks
+                | PairingMethod::NumericComparison
+                | PairingMethod::Oob => {
+                    self.state = ScPairingState::WaitPairingConfirm;
+                }
+                _ => unreachable!("unsupported methods are rejected"),
+            },
             PairingRole::Responder => {
                 self.outbound.push_back(self.public_key_pdu());
-                let confirm = sc::confirm_value(&self.public_x_le(), &x_le, &self.local_nonce);
-                self.outbound.push_back(SmpPdu::PairingConfirm {
-                    confirm_value: confirm,
-                });
-                self.state = ScPairingState::WaitPairingRandom;
+                match self.method.expect("method selected") {
+                    PairingMethod::JustWorks
+                    | PairingMethod::NumericComparison
+                    | PairingMethod::Oob => {
+                        let confirm =
+                            sc::confirm_value(&self.public_x_le(), &x_le, &self.local_nonce);
+                        self.outbound.push_back(SmpPdu::PairingConfirm {
+                            confirm_value: confirm,
+                        });
+                        self.state = ScPairingState::WaitPairingRandom;
+                    }
+                    PairingMethod::Passkey => {
+                        self.state = ScPairingState::WaitPairingConfirm;
+                    }
+                    _ => unreachable!("unsupported methods are rejected"),
+                }
             }
         }
         Ok(())
@@ -282,14 +333,22 @@ impl ScPairingSession {
 
     fn on_pairing_confirm(&mut self, confirm_value: [u8; 16]) -> Result<()> {
         self.peer_confirm = Some(confirm_value);
-        self.outbound.push_back(SmpPdu::PairingRandom {
-            random_value: self.local_nonce,
-        });
-        self.state = ScPairingState::WaitPairingRandom;
+        if self.method == Some(PairingMethod::Passkey) && self.role == PairingRole::Responder {
+            self.queue_passkey_confirm()?;
+            self.state = ScPairingState::WaitPairingRandom;
+        } else {
+            self.outbound.push_back(SmpPdu::PairingRandom {
+                random_value: self.local_nonce,
+            });
+            self.state = ScPairingState::WaitPairingRandom;
+        }
         Ok(())
     }
 
     fn on_pairing_random(&mut self, random_value: [u8; 16]) -> Result<()> {
+        if self.method == Some(PairingMethod::Passkey) {
+            return self.on_passkey_random(random_value);
+        }
         self.peer_nonce = Some(random_value);
         match self.role {
             PairingRole::Initiator => {
@@ -317,6 +376,55 @@ impl ScPairingSession {
                     return Ok(());
                 }
                 self.state = ScPairingState::WaitDhKeyCheck;
+            }
+        }
+        Ok(())
+    }
+
+    fn on_passkey_random(&mut self, random_value: [u8; 16]) -> Result<()> {
+        let peer_x = self.peer_public_x.expect("peer key received");
+        let expected = sc::confirm_value_with_z(
+            &peer_x,
+            &self.public_x_le(),
+            &random_value,
+            self.passkey_z(),
+        );
+        if self.peer_confirm != Some(expected) {
+            self.fail(PairingFailureReason::ConfirmValueFailed);
+            return Ok(());
+        }
+        self.peer_nonce = Some(random_value);
+        match self.role {
+            PairingRole::Responder => {
+                self.outbound.push_back(SmpPdu::PairingRandom {
+                    random_value: self.local_nonce,
+                });
+                self.passkey_step += 1;
+                if self.passkey_step < 20 {
+                    self.local_nonce = random_128();
+                    self.peer_confirm = None;
+                    self.state = ScPairingState::WaitPairingConfirm;
+                } else {
+                    self.derive_keys()?;
+                    self.user_confirmed = true;
+                    self.state = ScPairingState::WaitDhKeyCheck;
+                }
+            }
+            PairingRole::Initiator => {
+                self.passkey_step += 1;
+                if self.passkey_step < 20 {
+                    self.local_nonce = random_128();
+                    self.peer_confirm = None;
+                    self.queue_passkey_confirm()?;
+                    self.state = ScPairingState::WaitPairingConfirm;
+                } else {
+                    self.derive_keys()?;
+                    self.user_confirmed = true;
+                    let ea = self.keys.as_ref().expect("keys derived").ea;
+                    self.outbound
+                        .push_back(SmpPdu::PairingDhKeyCheck { dhkey_check: ea });
+                    self.state = ScPairingState::WaitDhKeyCheck;
+                }
             }
         }
         Ok(())
@@ -364,7 +472,8 @@ impl ScPairingSession {
             .pres
             .as_deref()
             .ok_or_else(|| Error::InvalidPacket("missing Pairing Response".into()))?;
-        self.keys = Some(sc::just_works_keys(
+        let (r_a, r_b) = self.dhkey_r_values()?;
+        self.keys = Some(sc::keys_with_r(
             &self.dh_key.expect("DH key derived"),
             &na,
             &nb,
@@ -376,8 +485,45 @@ impl ScPairingSession {
             &sc::io_cap(pres).expect("pairing response shape"),
             &pka,
             &pkb,
+            &r_a,
+            &r_b,
         ));
         Ok(())
+    }
+
+    fn dhkey_r_values(&self) -> Result<([u8; 16], [u8; 16])> {
+        match self.method.expect("method selected") {
+            PairingMethod::JustWorks | PairingMethod::NumericComparison => Ok(([0; 16], [0; 16])),
+            PairingMethod::Passkey => {
+                let passkey = self.passkey.expect("passkey selected");
+                let mut value = [0u8; 16];
+                value[..4].copy_from_slice(&passkey.to_le_bytes());
+                Ok((value, value))
+            }
+            PairingMethod::Oob => {
+                let local_r = self
+                    .config
+                    .oob
+                    .as_ref()
+                    .and_then(|oob| oob.our_context.as_ref())
+                    .map(|context| context.r)
+                    .ok_or_else(|| Error::InvalidPacket("missing local OOB context".into()))?;
+                let peer_r = self
+                    .config
+                    .oob
+                    .as_ref()
+                    .and_then(|oob| oob.peer_data.as_ref())
+                    .map(|data| data.r.as_slice().try_into())
+                    .transpose()
+                    .map_err(|_| Error::InvalidPacket("peer OOB R must be 16 bytes".into()))?
+                    .unwrap_or([0; 16]);
+                Ok(match self.role {
+                    PairingRole::Initiator => (local_r, peer_r),
+                    PairingRole::Responder => (peer_r, local_r),
+                })
+            }
+            _ => Err(Error::InvalidPacket("unsupported pairing method".into())),
+        }
     }
 
     fn confirm_user(&mut self) -> bool {
@@ -387,6 +533,7 @@ impl ScPairingSession {
             PairingMethod::NumericComparison => {
                 self.delegate.compare_numbers(keys.numeric_check, 6)
             }
+            PairingMethod::Oob | PairingMethod::Passkey => true,
             _ => false,
         };
         if !accepted {
@@ -458,8 +605,10 @@ impl ScPairingSession {
         request: PairingFeatures,
         response: PairingFeatures,
     ) -> Result<bool> {
-        let selection = select_pairing_method(
+        let selection = select_pairing_method_with_oob(
             true,
+            request.oob_data_flag != 0,
+            response.oob_data_flag != 0,
             self.config.mitm,
             AuthReq(if self.role == PairingRole::Initiator {
                 response.auth_req
@@ -469,12 +618,40 @@ impl ScPairingSession {
             IoCapability::try_from(request.io_capability)?,
             IoCapability::try_from(response.io_capability)?,
         );
-        if !matches!(
-            selection.method,
-            PairingMethod::JustWorks | PairingMethod::NumericComparison
-        ) {
-            self.fail(PairingFailureReason::AuthenticationRequirements);
-            return Ok(false);
+        match selection.method {
+            PairingMethod::Passkey => {
+                let displays = match self.role {
+                    PairingRole::Initiator => selection.initiator_displays,
+                    PairingRole::Responder => selection.responder_displays,
+                };
+                let passkey = if displays {
+                    let passkey = self.delegate.generate_passkey();
+                    self.delegate.display_number(passkey, 6);
+                    Some(passkey)
+                } else {
+                    self.delegate.get_number()
+                };
+                let Some(passkey) = passkey.filter(|passkey| *passkey < 1_000_000) else {
+                    self.fail(PairingFailureReason::PasskeyEntryFailed);
+                    return Ok(false);
+                };
+                self.passkey = Some(passkey);
+            }
+            PairingMethod::Oob => {
+                let Some(oob) = self.config.oob.as_ref() else {
+                    self.fail(PairingFailureReason::OobNotAvailable);
+                    return Ok(false);
+                };
+                if oob.our_context.is_none() {
+                    self.fail(PairingFailureReason::OobNotAvailable);
+                    return Ok(false);
+                }
+            }
+            PairingMethod::JustWorks | PairingMethod::NumericComparison => {}
+            _ => {
+                self.fail(PairingFailureReason::AuthenticationRequirements);
+                return Ok(false);
+            }
         }
         self.method = Some(selection.method);
         Ok(true)
@@ -483,7 +660,14 @@ impl ScPairingSession {
     fn local_features(&self) -> PairingFeatures {
         PairingFeatures {
             io_capability: self.config.capabilities.io_capability as u8,
-            oob_data_flag: 0,
+            // In SC, this flag says that we possess the peer's OOB data.
+            oob_data_flag: u8::from(
+                self.config
+                    .oob
+                    .as_ref()
+                    .and_then(|oob| oob.peer_data.as_ref())
+                    .is_some(),
+            ),
             auth_req: AuthReq::from_booleans(
                 self.config.bonding,
                 true,
@@ -526,6 +710,26 @@ impl ScPairingSession {
             public_key_x: self.public_x_le(),
             public_key_y: self.public_y_le(),
         }
+    }
+
+    fn passkey_z(&self) -> u8 {
+        0x80 | (((self.passkey.expect("passkey selected") >> self.passkey_step) & 1) as u8)
+    }
+
+    fn queue_passkey_confirm(&mut self) -> Result<()> {
+        let peer_x = self
+            .peer_public_x
+            .ok_or_else(|| Error::InvalidPacket("missing peer public key".into()))?;
+        let confirm = sc::confirm_value_with_z(
+            &self.public_x_le(),
+            &peer_x,
+            &self.local_nonce,
+            self.passkey_z(),
+        );
+        self.outbound.push_back(SmpPdu::PairingConfirm {
+            confirm_value: confirm,
+        });
+        Ok(())
     }
 
     fn fail(&mut self, reason: PairingFailureReason) {

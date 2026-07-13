@@ -81,7 +81,8 @@ crate whose behavior is verified against the upstream Python.
 | 64. SMP pairing policy, OOB data, and CTKD foundation | `bumble-smp` | ✅ method matrix + upstream vectors green |
 | 65. Live Legacy SMP session and host encryption transition | `bumble-smp`, `bumble-host` | ✅ JustWorks/passkey/OOB + failure paths green |
 | 66. Live SC JustWorks and Numeric Comparison session | `bumble-smp`, `bumble-host` | ✅ ECDH/confirm/DHKey-check/encryption green |
-| 67+. Remaining modules… | — | planned |
+| 67. SC Passkey and OOB association models | `bumble-smp` | ✅ 20 rounds + C/R validation green |
+| 68+. Remaining modules… | — | planned |
 
 The LE lifecycle is now complete end-to-end through library APIs: **connect →
 discover → read/write → notify → disconnect** between two virtual devices — and
@@ -156,7 +157,7 @@ size, to convey remaining surface.
 | Upstream (LOC) | Rust crate | Status | Notes |
 |---|---|---|---|
 | `crypto/` | `bumble-crypto` | ✅ | All SMP **symmetric** security functions — `e`, AES-CMAC, `c1`, `s1`, `f4`/`f5`/`f6`, `g2`, `h6`/`h7`, `ah` — spec/RFC-4493 vector-verified, plus **P-256 `EccKey`** (slice 19: keygen, `from_private_key_bytes`, public-key coordinates, ECDH) oracle-pinned to upstream. Deferred: none of the crypto primitives. |
-| `smp.py` (2.0k), `pairing.py` (0.3k) | `bumble-smp` | 🟡 | PDU codec (incl. all **LE Secure Connections** PDUs), live Legacy JustWorks/Passkey/OOB, live SC JustWorks/Numeric Comparison through public-key validation, commitments, nonces, delegate approval, DHKey checks and host/controller encryption, the complete method matrix, auth/key-distribution policy, SC + Legacy OOB contexts/AD interchange, and h6/h7 CTKD. Deferred: live SC Passkey/OOB, encrypted key distribution, and bonding persistence. |
+| `smp.py` (2.0k), `pairing.py` (0.3k) | `bumble-smp` | 🟡 | PDU codec (incl. all **LE Secure Connections** PDUs), live Legacy and SC sessions covering JustWorks, Passkey, Numeric Comparison, and OOB through public-key validation, commitments/nonces, delegate actions, DHKey checks and host/controller encryption, the complete method matrix, auth/key-distribution policy, SC + Legacy OOB contexts/AD interchange, and h6/h7 CTKD. Deferred: encrypted key distribution and bonding persistence. |
 
 ### Transports & drivers
 | Upstream | Rust crate | Status | Notes |
@@ -1530,6 +1531,33 @@ session:
   key-size truncation, invalid public keys, and commitment tampering.
 
 The next SC slice adds the 20-round Passkey protocol and OOB association model.
+
+## Slice 67 — what's here
+
+Every LE Secure Connections association model now runs in the paired session:
+
+- Passkey calls the selected display/input delegate endpoints, validates the
+  six-digit range, and executes all 20 least-significant-bit-first rounds. Each
+  round exchanges independently generated `Nai/Nbi`, commits with
+  `f4(PKax,PKbx,Nai,0x80+ri)` / its responder mirror, verifies before advancing,
+  and only the final nonce pair enters `f5`.
+- The passkey is encoded as the 128-bit `Ra=Rb` input to the final `f6` checks.
+  Matching peers derive identical authenticated MacKey/LTK values; even a
+  one-value passkey mismatch terminates with Confirm Value Failed during the
+  commitment phase.
+- SC OOB sessions take their ECC key and local `R` directly from `OobContext`.
+  On receiving a public key, each endpoint with peer data verifies the shared
+  `C=f4(PKx,PKx,R,0)` before accepting the point or any nonce.
+- One-sided OOB remains valid as required by SC. Missing peer data contributes
+  a zero remote `R`; supplied data contributes its advertised `R`. Initiator
+  and responder map those values to the same `Ra/Rb` ordering for independent
+  DHKey-check verification, without confirmation UI.
+- Tests cover successful 20-round Passkey, display/input routing, wrong-passkey
+  failure, two-sided OOB success, authenticated matching keys, zero delegate
+  prompts, and tampered OOB confirmation rejection at public-key exchange.
+
+The remaining SMP protocol work is encrypted key distribution and persistence
+of the resulting bond.
 
 ## Acceptance
 

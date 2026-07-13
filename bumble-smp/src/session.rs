@@ -132,6 +132,9 @@ impl LegacyPairingSession {
     }
 
     pub fn process(&mut self, pdu: SmpPdu) -> Result<()> {
+        if self.state == PairingState::Failed {
+            return Ok(());
+        }
         if let SmpPdu::PairingFailed { reason } = pdu {
             self.failure = pairing_failure_from_u8(reason);
             self.state = PairingState::Failed;

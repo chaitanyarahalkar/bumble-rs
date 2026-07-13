@@ -261,6 +261,7 @@ impl std::error::Error for Error {}
 ///
 /// Coordinates and the DH result are **big-endian**, matching upstream (SMP
 /// then byte-swaps them to little-endian for the wire and for `f4`/`f5`/`f6`).
+#[derive(Clone)]
 pub struct EccKey {
     secret: SecretKey,
 }
