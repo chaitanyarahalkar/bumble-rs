@@ -15,6 +15,7 @@ mod hci_socket;
 #[cfg(unix)]
 mod pty;
 mod serial;
+pub mod snoop;
 mod tcp;
 mod udp;
 #[cfg(unix)]
@@ -50,6 +51,10 @@ pub use hci_socket::{
 #[cfg(unix)]
 pub use pty::PtyTransport;
 pub use serial::{SerialConfig, SerialTransport, DEFAULT_POST_OPEN_DELAY, DEFAULT_SERIAL_SPEED};
+pub use snoop::{
+    BtSnooper, FileSnooper, PcapSnooper, SnoopDataLinkType, SnoopDirection, Snooper, SnooperFormat,
+    SnooperIoType, SnooperSpec, SnoopingTransport,
+};
 pub use tcp::{TcpServer, TcpTransport};
 pub use udp::UdpTransport;
 #[cfg(unix)]

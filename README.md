@@ -162,7 +162,8 @@ size, to convey remaining surface.
 | `company_ids.py` (3.3k) | `bumble::company_ids` | ✅ | 3,327-entry SIG company table + `company_name()` binary-search lookup. |
 | `keys.py` (0.4k) | `bumble::keys` | ✅ | Complete `PairingKeys` / `Key` JSON model, replacement-style memory store, namespaced JSON store with upstream merge/default-namespace semantics and atomic replacement, delete/get/get-all/delete-all, platform data-path selection, and IRK resolving-list extraction to typed addresses. Rust uses synchronous filesystem calls rather than wrapping them in nominal async methods. |
 | `utils.py` (0.5k) | `bumble::util` (+ spread) | ✅ | Generic helpers (`bit_flags_to_strings`, `name_or_number`); `crc_16` lives in `bumble-l2cap`; the open-enum/flag pattern is realized as newtypes throughout. The asyncio event infra (`EventEmitter`/`AsyncRunner`/`FlowControlAsyncPipe`) is **N/A** for this synchronous port. |
-| `colors`, `logging`, `helpers`, `snoop` | — | N/A | Debug/logging tooling with idiomatic Rust equivalents rather than library surface: `colors` (ANSI), `logging` (→ `log`/`tracing`), `helpers.PacketTracer` (debug trace), and `snoop` (BTSnoop/pcap capture). |
+| `colors`, `logging`, `helpers` | — | N/A | Debug/logging tooling with idiomatic Rust equivalents rather than library surface: `colors` (ANSI), `logging` (→ `log`/`tracing`), and `helpers.PacketTracer` (debug trace). |
+| `snoop.py` (0.3k) | `bumble-transport::snoop` | ✅ | Byte-exact BTSnoop and PCAP HCI-H4 writers, deterministic timestamp injection, direction/pseudo-header flags, file/pipe specification parsing, file-backed snoopers, and a transparent bidirectional `SnoopingTransport` wrapper. |
 | `decoder.py` (0.4k) | `bumble-codecs::g722` | ✅ | Stateful integer G.722 64 kbit/s lower/higher sub-band decoder, receive QMF, predictor adaptation, saturating arithmetic, signed PCM sample API, and little-endian byte output. The upstream sample's first 80-byte frame produces all 320 oracle PCM bytes exactly; split-frame decoding proves state continuity. |
 
 ### HCI, controller & link — 🟡 HCI codec complete (full catalog, oracle-pinned); controller/link behavior partial
@@ -199,7 +200,7 @@ size, to convey remaining surface.
 ### Transports & drivers
 | Upstream | Rust crate | Status | Notes |
 |---|---|---|---|
-| `transport/*` — USB, UART/serial, TCP, WebSocket, UDP, PTY, android-netsim, vhci, … | `bumble-transport` | 🟡 | Incremental H4 framing accepts fragmented/coalesced streams and vendor packet layouts. Bumble transport-name/metadata dispatch opens file, serial/UART with RTS/CTS, raw PTY, TCP, UDP, Unix, WebSocket, Linux VHCI/raw HCI user-channel sockets, libusb Bluetooth-controller endpoints, Android emulator gRPC, and Android netsim host/controller packet streams. The typed HCI bridge pumps both directions with packet replacement, sender short-circuit responses, and trace hooks. USB covers discovery, class/forced interface selection, commands, events, ACL, and outgoing ISO-over-bulk compatibility. Deferred: USB SCO/isochronous input, DSR/DTR flow control, and narrower platform-specific endpoints. |
+| `transport/*` — USB, UART/serial, TCP, WebSocket, UDP, PTY, android-netsim, vhci, … | `bumble-transport` | 🟡 | Incremental H4 framing accepts fragmented/coalesced streams and vendor packet layouts. Bumble transport-name/metadata dispatch opens file, serial/UART with RTS/CTS, raw PTY, TCP, UDP, Unix, WebSocket, Linux VHCI/raw HCI user-channel sockets, libusb Bluetooth-controller endpoints, Android emulator gRPC, and Android netsim host/controller packet streams. The typed HCI bridge pumps both directions with packet replacement, sender short-circuit responses, and trace hooks; BTSnoop/PCAP writers can wrap any bidirectional transport. USB covers discovery, class/forced interface selection, commands, events, ACL, and outgoing ISO-over-bulk compatibility. Deferred: USB SCO/isochronous input, DSR/DTR flow control (not exposed by the current `serialport` backend), and narrower platform-specific endpoints. |
 | `drivers/*` — Intel, Realtek | `bumble-drivers` | ✅ | Both upstream driver modules and the RTK-before-Intel selector are ported behind a transport-neutral host contract. Intel covers open version TLVs, RSA/ECDSA SFI secure send, boot/reset vendor events, and DDC priority. Realtek covers all upstream USB IDs and 13 controller descriptors, epatch extension/table parsing, ROM patch choice, config append, download-index wrap/end markers, reset retry, and firmware lookup. The legacy 8723A download remains the same explicit no-op as upstream Bumble. |
 
 ### Classic Bluetooth (BR/EDR)
@@ -2333,6 +2334,21 @@ LE credit-based channels now run through the high-level host and controller:
 - A live two-device test negotiates a one-credit channel, transfers long SDUs in
   both directions across HCI fragments and credit replenishment, reconfigures
   MTU/MPS, disconnects cleanly, and asserts no manager errors.
+
+## Slice 106 — what's here
+
+Upstream's HCI capture surface is now a real Rust library capability:
+
+- `BtSnooper` emits the `btsnoop\0` header, H4 data-link type, command/event
+  direction flags, drops, microsecond timestamps, and big-endian records exactly
+  as `snoop.py`; `PcapSnooper` emits PCAP 2.4 HCI-H4 pseudo-header records and
+  flushes each packet for live consumers.
+- `SnooperSpec` covers BTSnoop files plus PCAP files/pipes, and `FileSnooper`
+  opens the selected sink. Timestamps have deterministic entry points for exact
+  tests as well as real-time defaults.
+- `SnoopingTransport` records controller-to-host reads and host-to-controller
+  writes without altering packets. Tests pin exact writer bytes and both wrapper
+  directions.
 
 ## Acceptance
 
