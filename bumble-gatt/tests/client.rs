@@ -6,9 +6,32 @@
 //! notify/indicate subscriptions end-to-end.
 
 use bumble::Uuid;
+use bumble_att::AttPdu;
 use bumble_gatt::{
-    properties, Characteristic, GattClient, GattError, GattServer, Service, ServiceDefinition,
+    properties, AttTransport, Characteristic, GattClient, GattError, GattServer, Service,
+    ServiceDefinition,
 };
+
+struct FailingTransport;
+
+impl AttTransport for FailingTransport {
+    fn request(&mut self, _request: &AttPdu) -> AttPdu {
+        unreachable!("the fallible path must be used")
+    }
+
+    fn try_request(&mut self, _request: &AttPdu) -> Result<AttPdu, String> {
+        Err("bearer closed".into())
+    }
+}
+
+#[test]
+fn surfaces_transport_failures_without_fabricating_att_errors() {
+    let mut client = GattClient::new();
+    assert_eq!(
+        client.read_value(&mut FailingTransport, 1, false),
+        Err(GattError::Transport("bearer closed".into()))
+    );
+}
 
 /// Device Information (0x180A) with:
 /// - Device Name (0x2A00), READ, a short value;
@@ -58,6 +81,11 @@ fn client_discovers_reads_writes_and_subscribes() {
     assert_eq!(service.handle, 1);
     assert_eq!(service.end_group_handle, 8);
     assert_eq!(service.uuid, Uuid::from_16_bits(0x180A));
+
+    let attributes = client.discover_attributes(&mut server).unwrap();
+    assert_eq!(attributes.len(), 8);
+    assert_eq!(attributes.first().unwrap().handle, 1);
+    assert_eq!(attributes.last().unwrap().handle, 8);
 
     // Discover the service by UUID (Find By Type Value) — same result.
     let by_uuid = client

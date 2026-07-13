@@ -34,6 +34,13 @@ pub const CCCD_INDICATION: u16 = 0x0002;
 /// response PDU.
 pub trait AttTransport {
     fn request(&mut self, request: &AttPdu) -> AttPdu;
+
+    /// Fallible request path used by the GATT client. In-process handlers keep
+    /// the infallible default, while external transports can surface I/O,
+    /// disconnect, and timeout failures without manufacturing an ATT error.
+    fn try_request(&mut self, request: &AttPdu) -> core::result::Result<AttPdu, String> {
+        Ok(self.request(request))
+    }
 }
 
 /// Any request-handling server is usable as a transport: the request is
@@ -56,6 +63,8 @@ pub enum GattError {
     },
     /// The peer's response did not match the request or was malformed.
     Protocol(String),
+    /// The underlying ATT bearer failed before a response was received.
+    Transport(String),
 }
 
 impl std::fmt::Display for GattError {
@@ -70,6 +79,7 @@ impl std::fmt::Display for GattError {
                 "ATT error {error_code:#04x} for opcode {request_opcode:#04x} at handle {attribute_handle:#06x}"
             ),
             GattError::Protocol(m) => write!(f, "protocol error: {m}"),
+            GattError::Transport(m) => write!(f, "transport error: {m}"),
         }
     }
 }
@@ -147,7 +157,9 @@ impl GattClient {
 
     /// Exchange MTUs, adopting the smaller of ours and the server's.
     pub fn exchange_mtu(&mut self, t: &mut impl AttTransport, client_rx_mtu: u16) -> Result<u16> {
-        let response = t.request(&AttPdu::ExchangeMtuRequest { client_rx_mtu });
+        let response = t
+            .try_request(&AttPdu::ExchangeMtuRequest { client_rx_mtu })
+            .map_err(GattError::Transport)?;
         if let Some(e) = as_error(&response) {
             return Err(e);
         }
@@ -167,11 +179,13 @@ impl GattClient {
         let mut services = Vec::new();
         let mut starting_handle: u16 = 0x0001;
         loop {
-            let response = t.request(&AttPdu::ReadByGroupTypeRequest {
-                starting_handle,
-                ending_handle: 0xFFFF,
-                attribute_group_type: Uuid::from_16_bits(GATT_PRIMARY_SERVICE_UUID),
-            });
+            let response = t
+                .try_request(&AttPdu::ReadByGroupTypeRequest {
+                    starting_handle,
+                    ending_handle: 0xFFFF,
+                    attribute_group_type: Uuid::from_16_bits(GATT_PRIMARY_SERVICE_UUID),
+                })
+                .map_err(GattError::Transport)?;
             match response {
                 AttPdu::ErrorResponse { error_code, .. }
                     if error_code == ATT_ATTRIBUTE_NOT_FOUND_ERROR =>
@@ -246,12 +260,14 @@ impl GattClient {
         let mut services = Vec::new();
         let mut starting_handle: u16 = 0x0001;
         loop {
-            let response = t.request(&AttPdu::FindByTypeValueRequest {
-                starting_handle,
-                ending_handle: 0xFFFF,
-                attribute_type: Uuid::from_16_bits(service_type),
-                attribute_value: uuid.to_bytes(false),
-            });
+            let response = t
+                .try_request(&AttPdu::FindByTypeValueRequest {
+                    starting_handle,
+                    ending_handle: 0xFFFF,
+                    attribute_type: Uuid::from_16_bits(service_type),
+                    attribute_value: uuid.to_bytes(false),
+                })
+                .map_err(GattError::Transport)?;
             match response {
                 AttPdu::ErrorResponse { error_code, .. }
                     if error_code == ATT_ATTRIBUTE_NOT_FOUND_ERROR =>
@@ -306,11 +322,13 @@ impl GattClient {
         let mut included_services = Vec::new();
         let mut starting_handle = service.handle + 1;
         while starting_handle <= service.end_group_handle {
-            let response = t.request(&AttPdu::ReadByTypeRequest {
-                starting_handle,
-                ending_handle: service.end_group_handle,
-                attribute_type: Uuid::from_16_bits(GATT_INCLUDE_UUID),
-            });
+            let response = t
+                .try_request(&AttPdu::ReadByTypeRequest {
+                    starting_handle,
+                    ending_handle: service.end_group_handle,
+                    attribute_type: Uuid::from_16_bits(GATT_INCLUDE_UUID),
+                })
+                .map_err(GattError::Transport)?;
             match response {
                 AttPdu::ErrorResponse { error_code, .. }
                     if error_code == ATT_ATTRIBUTE_NOT_FOUND_ERROR =>
@@ -348,9 +366,11 @@ impl GattClient {
                                 ))
                             })?
                         } else {
-                            let response = t.request(&AttPdu::ReadRequest {
-                                attribute_handle: handle,
-                            });
+                            let response = t
+                                .try_request(&AttPdu::ReadRequest {
+                                    attribute_handle: handle,
+                                })
+                                .map_err(GattError::Transport)?;
                             if let Some(error) = as_error(&response) {
                                 return Err(error);
                             }
@@ -397,11 +417,13 @@ impl GattClient {
         let mut starting_handle = service.handle;
         let ending_handle = service.end_group_handle;
         while starting_handle <= ending_handle {
-            let response = t.request(&AttPdu::ReadByTypeRequest {
-                starting_handle,
-                ending_handle,
-                attribute_type: Uuid::from_16_bits(GATT_CHARACTERISTIC_UUID),
-            });
+            let response = t
+                .try_request(&AttPdu::ReadByTypeRequest {
+                    starting_handle,
+                    ending_handle,
+                    attribute_type: Uuid::from_16_bits(GATT_CHARACTERISTIC_UUID),
+                })
+                .map_err(GattError::Transport)?;
             match response {
                 AttPdu::ErrorResponse { error_code, .. }
                     if error_code == ATT_ATTRIBUTE_NOT_FOUND_ERROR =>
@@ -474,17 +496,40 @@ impl GattClient {
         t: &mut impl AttTransport,
         characteristic: &CharacteristicProxy,
     ) -> Result<Vec<DescriptorProxy>> {
-        let mut descriptors = Vec::new();
         if characteristic.handle >= characteristic.end_group_handle {
-            return Ok(descriptors);
+            return Ok(Vec::new());
         }
-        let mut starting_handle = characteristic.handle + 1;
-        let ending_handle = characteristic.end_group_handle;
+        self.discover_attribute_range(
+            t,
+            characteristic.handle + 1,
+            characteristic.end_group_handle,
+        )
+    }
+
+    /// Discover every attribute type and handle on the peer with Find
+    /// Information, including service declarations, characteristic
+    /// declarations, values, and descriptors.
+    pub fn discover_attributes(
+        &mut self,
+        t: &mut impl AttTransport,
+    ) -> Result<Vec<DescriptorProxy>> {
+        self.discover_attribute_range(t, 0x0001, 0xFFFF)
+    }
+
+    fn discover_attribute_range(
+        &mut self,
+        t: &mut impl AttTransport,
+        mut starting_handle: u16,
+        ending_handle: u16,
+    ) -> Result<Vec<DescriptorProxy>> {
+        let mut attributes = Vec::new();
         while starting_handle <= ending_handle {
-            let response = t.request(&AttPdu::FindInformationRequest {
-                starting_handle,
-                ending_handle,
-            });
+            let response = t
+                .try_request(&AttPdu::FindInformationRequest {
+                    starting_handle,
+                    ending_handle,
+                })
+                .map_err(GattError::Transport)?;
             match response {
                 AttPdu::ErrorResponse { error_code, .. }
                     if error_code == ATT_ATTRIBUTE_NOT_FOUND_ERROR =>
@@ -502,7 +547,7 @@ impl GattClient {
                     }
                     let mut last = 0u16;
                     for (handle, uuid) in entries {
-                        descriptors.push(DescriptorProxy { handle, uuid });
+                        attributes.push(DescriptorProxy { handle, uuid });
                         last = handle;
                     }
                     if last >= ending_handle {
@@ -517,7 +562,7 @@ impl GattClient {
                 }
             }
         }
-        Ok(descriptors)
+        Ok(attributes)
     }
 
     /// Read a characteristic value (Vol 3, Part G - 4.8.1). When the value
@@ -529,7 +574,9 @@ impl GattClient {
         attribute_handle: u16,
         no_long_read: bool,
     ) -> Result<Vec<u8>> {
-        let response = t.request(&AttPdu::ReadRequest { attribute_handle });
+        let response = t
+            .try_request(&AttPdu::ReadRequest { attribute_handle })
+            .map_err(GattError::Transport)?;
         if let Some(e) = as_error(&response) {
             return Err(e);
         }
@@ -544,10 +591,12 @@ impl GattClient {
         if !no_long_read && value.len() == chunk {
             let mut offset = value.len() as u16;
             loop {
-                let response = t.request(&AttPdu::ReadBlobRequest {
-                    attribute_handle,
-                    value_offset: offset,
-                });
+                let response = t
+                    .try_request(&AttPdu::ReadBlobRequest {
+                        attribute_handle,
+                        value_offset: offset,
+                    })
+                    .map_err(GattError::Transport)?;
                 match response {
                     AttPdu::ErrorResponse { error_code, .. }
                         if error_code == ATT_ATTRIBUTE_NOT_LONG_ERROR
@@ -590,10 +639,12 @@ impl GattClient {
         with_response: bool,
     ) -> Result<()> {
         if with_response {
-            let response = t.request(&AttPdu::WriteRequest {
-                attribute_handle,
-                attribute_value: value,
-            });
+            let response = t
+                .try_request(&AttPdu::WriteRequest {
+                    attribute_handle,
+                    attribute_value: value,
+                })
+                .map_err(GattError::Transport)?;
             if let Some(e) = as_error(&response) {
                 return Err(e);
             }
@@ -605,10 +656,12 @@ impl GattClient {
             }
         } else {
             // A command has no response; the transport discards the returned PDU.
-            let _ = t.request(&AttPdu::WriteCommand {
-                attribute_handle,
-                attribute_value: value,
-            });
+            let _ = t
+                .try_request(&AttPdu::WriteCommand {
+                    attribute_handle,
+                    attribute_value: value,
+                })
+                .map_err(GattError::Transport)?;
             Ok(())
         }
     }
@@ -624,7 +677,7 @@ impl GattClient {
         let command = signer
             .sign(attribute_handle, value)
             .ok_or_else(|| GattError::Protocol("signed-write counter exhausted".into()))?;
-        let _ = t.request(&command);
+        let _ = t.try_request(&command).map_err(GattError::Transport)?;
         Ok(())
     }
 

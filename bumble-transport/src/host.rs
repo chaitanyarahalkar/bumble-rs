@@ -1,4 +1,6 @@
 use crate::{CommandResponse, Error, PacketSink, Result, SplitOpenedTransport};
+use bumble_att::AttPdu;
+use bumble_gatt::AttTransport;
 use bumble_hci::metadata::supported_command_names;
 use bumble_hci::{
     AclDataPacket, Command, Event, HciPacket, IsoDataPacket, ReturnParameters,
@@ -32,6 +34,130 @@ pub struct ExternalControllerInfo {
     pub total_num_le_acl_data_packets: u8,
     pub iso_data_packet_length: u16,
     pub total_num_iso_data_packets: u8,
+}
+
+/// Synchronous ATT bearer over an initialized [`ExternalHost`] and connected
+/// [`Device`].
+pub struct ExternalAttTransport<'a> {
+    host: &'a mut ExternalHost,
+    device: &'a mut Device,
+    connection_handle: u16,
+    timeout: Duration,
+    unsolicited: VecDeque<AttPdu>,
+}
+
+impl<'a> ExternalAttTransport<'a> {
+    pub fn new(
+        host: &'a mut ExternalHost,
+        device: &'a mut Device,
+        connection_handle: u16,
+        timeout: Duration,
+    ) -> Result<Self> {
+        if !device.is_connected_on_handle(connection_handle) {
+            return Err(Error::Remote(format!(
+                "unknown LE connection handle {connection_handle:#06x}"
+            )));
+        }
+        Ok(Self {
+            host,
+            device,
+            connection_handle,
+            timeout,
+            unsolicited: VecDeque::new(),
+        })
+    }
+
+    pub fn take_unsolicited(&mut self) -> Vec<AttPdu> {
+        self.unsolicited.drain(..).collect()
+    }
+
+    fn take_response(&mut self, request_opcode: u8) -> Option<AttPdu> {
+        let mut response = None;
+        for pdu in self.device.take_inbox_on_handle(self.connection_handle) {
+            let matches = match &pdu {
+                AttPdu::ErrorResponse {
+                    request_opcode_in_error,
+                    ..
+                } => *request_opcode_in_error == request_opcode,
+                _ => pdu.op_code() == request_opcode.wrapping_add(1),
+            };
+            if response.is_none() && matches {
+                response = Some(pdu);
+            } else {
+                self.unsolicited.push_back(pdu);
+            }
+        }
+        response
+    }
+
+    fn request_result(&mut self, request: &AttPdu) -> Result<AttPdu> {
+        if !self
+            .device
+            .send_att_on_handle(self.host, self.connection_handle, request)
+        {
+            return Err(Error::Remote(format!(
+                "failed to send ATT request {:#04x} on handle {:#06x}",
+                request.op_code(),
+                self.connection_handle
+            )));
+        }
+        if request.is_command() {
+            return Ok(AttPdu::WriteResponse);
+        }
+
+        let deadline = Instant::now() + self.timeout;
+        loop {
+            self.device.poll(self.host);
+            if let Some(response) = self.take_response(request.op_code()) {
+                return Ok(response);
+            }
+            if !self.device.is_connected_on_handle(self.connection_handle) {
+                return Err(Error::Remote(format!(
+                    "LE connection {:#06x} ended before ATT response {:#04x}",
+                    self.connection_handle,
+                    request.op_code()
+                )));
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(Error::Remote(format!(
+                    "timed out waiting for ATT response to {:#04x}",
+                    request.op_code()
+                )));
+            }
+            match self.host.wait_for_activity(remaining)? {
+                ExternalHostActivity::Packet => {}
+                ExternalHostActivity::Timeout => {
+                    return Err(Error::Remote(format!(
+                        "timed out waiting for ATT response to {:#04x}",
+                        request.op_code()
+                    )))
+                }
+                ExternalHostActivity::Ended => {
+                    return Err(Error::Remote(format!(
+                        "transport ended before ATT response to {:#04x}",
+                        request.op_code()
+                    )))
+                }
+            }
+        }
+    }
+}
+
+impl AttTransport for ExternalAttTransport<'_> {
+    fn request(&mut self, request: &AttPdu) -> AttPdu {
+        self.request_result(request)
+            .unwrap_or_else(|_| AttPdu::ErrorResponse {
+                request_opcode_in_error: request.op_code(),
+                attribute_handle_in_error: 0,
+                error_code: 0x0E,
+            })
+    }
+
+    fn try_request(&mut self, request: &AttPdu) -> core::result::Result<AttPdu, String> {
+        self.request_result(request)
+            .map_err(|error| error.to_string())
+    }
 }
 
 enum ReaderMessage {
@@ -468,6 +594,14 @@ mod tests {
         }
     }
 
+    struct ChannelSource(std::sync::mpsc::Receiver<HciPacket>);
+
+    impl PacketSource for ChannelSource {
+        fn read_packet(&mut self) -> TransportResult<Option<HciPacket>> {
+            Ok(self.0.recv().ok())
+        }
+    }
+
     #[derive(Clone, Default)]
     struct RecordingSink(Arc<Mutex<Vec<HciPacket>>>);
 
@@ -504,6 +638,21 @@ mod tests {
             num_hci_command_packets: 1,
             command_opcode: command.op_code(),
             return_parameters,
+        })
+    }
+
+    fn att_acl(connection_handle: u16, pdu: AttPdu) -> HciPacket {
+        let payload = pdu.to_bytes();
+        let mut data = Vec::with_capacity(4 + payload.len());
+        data.extend_from_slice(&(payload.len() as u16).to_le_bytes());
+        data.extend_from_slice(&bumble_host::ATT_CID.to_le_bytes());
+        data.extend_from_slice(&payload);
+        HciPacket::AclData(AclDataPacket {
+            connection_handle,
+            pb_flag: 0,
+            bc_flag: 0,
+            data_total_length: data.len() as u16,
+            data,
         })
     }
 
@@ -751,5 +900,66 @@ mod tests {
             Some(HciPacket::Command(Command::LeCreateConnection { peer_address, .. }))
                 if peer_address == &address
         ));
+    }
+
+    #[test]
+    fn external_att_transport_returns_response_and_retains_notification() {
+        let address =
+            Address::parse("C4:F2:17:1A:1D:BB", bumble::AddressType::RANDOM_DEVICE).unwrap();
+        let connection = HciPacket::Event(Event::LeMeta(LeMetaEvent::ConnectionComplete {
+            status: 0,
+            connection_handle: 0x123,
+            role: 0,
+            peer_address_type: 1,
+            peer_address: address,
+            connection_interval: 24,
+            peripheral_latency: 0,
+            supervision_timeout: 42,
+            central_clock_accuracy: 0,
+        }));
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let sink = RecordingSink::default();
+        let recorded = sink.clone();
+        let mut host = ExternalHost::new(SplitOpenedTransport {
+            source: Box::new(ChannelSource(receiver)),
+            sink: Box::new(sink),
+            metadata: BTreeMap::new(),
+        });
+        let mut device = Device::new(0);
+        sender.send(connection).unwrap();
+        assert_eq!(
+            host.wait_for_activity(Duration::from_secs(1)).unwrap(),
+            ExternalHostActivity::Packet
+        );
+        assert!(device.poll(&mut host));
+
+        let notification = AttPdu::HandleValueNotification {
+            attribute_handle: 7,
+            attribute_value: vec![0x44],
+        };
+        sender.send(att_acl(0x123, notification.clone())).unwrap();
+        sender
+            .send(att_acl(
+                0x123,
+                AttPdu::ReadResponse {
+                    attribute_value: vec![1, 2, 3],
+                },
+            ))
+            .unwrap();
+        let mut transport =
+            ExternalAttTransport::new(&mut host, &mut device, 0x123, Duration::from_secs(1))
+                .unwrap();
+        let mut client = bumble_gatt::GattClient::new();
+        assert_eq!(
+            client.read_value(&mut transport, 1, false).unwrap(),
+            vec![1, 2, 3]
+        );
+        assert_eq!(transport.take_unsolicited(), vec![notification]);
+        assert!(recorded
+            .0
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|packet| matches!(packet, HciPacket::AclData(_))));
     }
 }
