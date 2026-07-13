@@ -226,7 +226,7 @@ size, to convey remaining surface.
 | `profiles/*` — all 23 modules | `bumble-profiles` | ✅ | All upstream profile modules are live: GAP/GATT/Battery/Device Information/Heart Rate, ASHA/HAP/CSIP, VCS/VOCS/AICS, MCP/GMCS, LE Audio metadata plus BAP/PACS/ASCS/BASS/CAP/TMAP/GMAP/PBP, and AMS/ANCS. Services, typed proxies, control/state runtimes, assigned-number and vendor UUID catalogs, strict wire models, encryption requirements, notifications/indications, and included-service discovery are covered by live tests. |
 | `bridge.py` (0.1k) | `bumble-transport::HciBridge` | ✅ | Separate host/controller sources and sinks, directional single-packet pumping, typed replacement filters, responses short-circuited to the sender, post-filter directional tracing, EOF reporting, and transport-error propagation. |
 | `apps/show.py` | `bumble-show` (`bumble-transport`) | ✅ | Runnable H4/BTSnoop capture decoder with upstream `--format` and repeatable Android/Zephyr `--vendor` options, typed HCI parsing, direction/timestamp output, and explicit truncated-record reporting. Rust vendor codecs are statically linked rather than dynamically registered. |
-| `apps/controller_info.py` | `bumble-controller-info` (`bumble-transport`) | 🟡 | Runnable external-controller inspection with reset, optional primed latency probes, local version/address/name, Classic + LE feature and buffer queries, data/advertising limits, minimum connection intervals, codec/voice queries, and V2-to-V1 LE buffer fallback. Unsupported commands are skipped and interleaved asynchronous packets are preserved. Deferred: symbolic supported-command, feature, codec, version, and voice-field names instead of numeric/bitmap rendering. |
+| `apps/controller_info.py` | `bumble-controller-info` (`bumble-transport`) | ✅ | Runnable external-controller inspection with reset, optional primed latency probes, symbolic local version/address/name, LE features, all 338 upstream Supported Commands labels, Classic + LE buffers, data/advertising limits, minimum connection intervals, named standard/vendor codecs and transports, typed voice fields, and V2-to-V1 LE buffer fallback. Unsupported commands are skipped and interleaved asynchronous packets are preserved. |
 | `apps/scan.py` | `bumble-scan` (`bumble-transport`) | ✅ | Runnable external HCI scanner with upstream RSSI/passive/interval/window/PHY/duplicate/raw/IRK/key-store/device-config options, extended scanning with legacy fallback, typed legacy + extended report decoding, exact active/passive scan-response accumulation, labeled AD rendering, RSSI bars, and real RPA identity resolution. |
 | `apps/usb_probe.py` | `bumble-usb-probe` (`bumble-transport`) | ✅ | Runnable libusb device inventory with upstream `--verbose`, `--hci-only`, manufacturer, and product filters; device/interface-level Bluetooth HCI classification; stable index, VID/PID, duplicate, and serial transport names; string-descriptor error tolerance; and verbose configuration/interface/endpoint details including isochronous packet sizes. |
 | `apps/ble_rpa_tool.py` | `bumble-rpa-tool` (`bumble-smp`) | ✅ | Runnable `gen-irk`, `gen-rpa`, and `verify-rpa` commands backed by the OS RNG and the real SMP `ah` primitive. Flexible Python-style hex input, address validation, colored verification results, and malformed/extra argument errors are covered. |
@@ -2491,6 +2491,23 @@ Processed scan reporting now matches upstream behavior:
   names for known manufacturer identifiers and hexadecimal fallbacks for opaque
   values. Focused tests cover active merging, passive immediate delivery, and
   the end-to-end scripted controller scan/response path.
+
+## Slice 115 — what's here
+
+Controller inspection now has full symbolic report parity:
+
+- `bumble-hci::metadata` exposes upstream specification-version, LE-feature,
+  standard-codec, codec-transport, Supported Commands, and typed Voice Setting
+  decoders. The 338 command-bit labels and assigned-number tables are generated
+  directly from `bumble/hci.py`; regeneration needs no Bumble Python imports.
+- `bumble-controller-info` renders named HCI/LMP versions, each LE feature and
+  supported command on its own line, standard codec and transport names,
+  vendor codec company/code pairs, and all five decoded voice fields. Unknown
+  open values retain hexadecimal fallbacks.
+- Metadata fixtures pin sparse bitmap ordering, newest command-table entries,
+  combined codec transports, and voice-setting round trips. The scripted
+  controller test exercises the complete report instead of only numeric query
+  payloads.
 
 ## Acceptance
 

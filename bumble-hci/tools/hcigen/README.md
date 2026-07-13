@@ -55,7 +55,7 @@ cargo test -p bumble-hci                # verify oracle-pinned tests pass
 `HCIGEN_OUT` defaults to this directory; output paths are resolved relative to
 the script (the `bumble-hci` crate root).
 
-## `gen_events.py` and `gen_surface.py`
+## `gen_events.py`, `gen_metadata.py`, and `gen_surface.py`
 
 - **`gen_events.py`** mirrors `gen_commands.py` for the event catalog — it emits
   `src/event.rs` (the `Event` / `LeMetaEvent` enums), regenerates the full
@@ -69,3 +69,7 @@ the script (the `bumble-hci` crate root).
   data / Command Status), and emits `bumble-controller/src/command_surface.rs` —
   the table the software controller uses to reply to the full command surface.
   Set `BUMBLE_SRC` to the upstream checkout (default `/tmp/bumble-scope`).
+- **`gen_metadata.py`** parses upstream `bumble/hci.py` without importing it and
+  emits `src/metadata_tables.rs`: specification-version, LE-feature, codec-ID,
+  and all 64-byte Supported Commands bitmap labels. Set `BUMBLE_SRC` to the
+  upstream checkout (default `/tmp/bumble-scope`).

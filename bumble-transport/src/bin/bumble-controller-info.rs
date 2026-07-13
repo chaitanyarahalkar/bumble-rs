@@ -1,4 +1,8 @@
 use bumble::company_name;
+use bumble_hci::metadata::{
+    codec_id_name, codec_transport_names, le_feature_names, specification_version_name,
+    supported_command_names, VoiceSetting,
+};
 use bumble_hci::{Command, HciPacket, ReturnParameters};
 use bumble_transport::{
     open_transport, CommandResponse, HciCommandChannel, PacketSink, PacketSource,
@@ -103,8 +107,40 @@ fn parse_args(arguments: impl IntoIterator<Item = String>) -> Result<Args, Strin
     })
 }
 
-fn bytes_hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+fn version_label(version: u8) -> String {
+    specification_version_name(version)
+        .map(str::to_owned)
+        .unwrap_or_else(|| format!("{version:#04x}"))
+}
+
+fn codec_label(codec: u8) -> String {
+    codec_id_name(codec)
+        .map(str::to_owned)
+        .unwrap_or_else(|| format!("{codec:#04x}"))
+}
+
+fn codec_transport_label(transport: u8) -> String {
+    let mut names = codec_transport_names(transport)
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    let unknown = transport & !0x0F;
+    if unknown != 0 {
+        names.push(format!("{unknown:#04x}"));
+    }
+    if names.is_empty() {
+        format!("{transport:#04x}")
+    } else {
+        names.join("|")
+    }
+}
+
+fn vendor_codec_label(codec: u32) -> String {
+    let company_identifier = (codec >> 16) as u16;
+    let company = company_name(company_identifier)
+        .map(str::to_owned)
+        .unwrap_or_else(|| format!("{company_identifier:#06x}"));
+    format!("{company} / {}", codec & 0xFFFF)
 }
 
 fn query<T: PacketSource + PacketSink>(
@@ -180,9 +216,9 @@ fn run_report<T: PacketSource + PacketSink>(
             .unwrap_or_else(|| format!("{company_identifier:#06x}"));
         lines.push("Version:".into());
         lines.push(format!("  Manufacturer: {company}"));
-        lines.push(format!("  HCI Version: {hci_version:#04x}"));
+        lines.push(format!("  HCI Version: {}", version_label(hci_version)));
         lines.push(format!("  HCI Subversion: {hci_subversion:#06x}"));
-        lines.push(format!("  LMP Version: {lmp_version:#04x}"));
+        lines.push(format!("  LMP Version: {}", version_label(lmp_version)));
         lines.push(format!("  LMP Subversion: {lmp_subversion:#06x}"));
     }
     if let Some(ReturnParameters::ReadBdAddr { bd_addr, .. }) =
@@ -198,24 +234,22 @@ fn run_report<T: PacketSource + PacketSink>(
             bumble_hci::map_null_terminated_utf8_string(&local_name)
         ));
     }
-    if let Some(ReturnParameters::ReadLocalSupportedCommands {
-        supported_commands, ..
-    }) = query(&mut channel, Command::ReadLocalSupportedCommands)?
-    {
-        lines.push(format!(
-            "Supported Commands Bitmap: {}",
-            bytes_hex(&supported_commands)
-        ));
-    }
-    if let Some(ReturnParameters::ReadLocalSupportedFeatures { lmp_features, .. }) =
-        query(&mut channel, Command::ReadLocalSupportedFeatures)?
-    {
-        lines.push(format!("LMP Features: {}", bytes_hex(&lmp_features)));
-    }
+    let supported_commands = match query(&mut channel, Command::ReadLocalSupportedCommands)? {
+        Some(ReturnParameters::ReadLocalSupportedCommands {
+            supported_commands, ..
+        }) => Some(supported_commands),
+        _ => None,
+    };
+    let _ = query(&mut channel, Command::ReadLocalSupportedFeatures)?;
     if let Some(ReturnParameters::LeReadLocalSupportedFeatures { le_features, .. }) =
         query(&mut channel, Command::LeReadLocalSupportedFeatures)?
     {
-        lines.push(format!("LE Features: {}", bytes_hex(&le_features)));
+        lines.push("LE Features:".into());
+        lines.extend(
+            le_feature_names(&le_features)
+                .into_iter()
+                .map(|feature| format!("  {feature}")),
+        );
     }
     if let Some(ReturnParameters::ReadBufferSize {
         hc_acl_data_packet_length,
@@ -341,7 +375,9 @@ fn run_report<T: PacketSource + PacketSink>(
         lines.push("Codecs:".into());
         for (codec, transport) in standard_codec_ids.iter().zip(standard_codec_transports) {
             lines.push(format!(
-                "  standard {codec:#04x} - transport {transport:#04x}"
+                "  {} - {}",
+                codec_label(*codec),
+                codec_transport_label(transport)
             ));
         }
         for (codec, transport) in vendor_specific_codec_ids
@@ -349,8 +385,16 @@ fn run_report<T: PacketSource + PacketSink>(
             .zip(vendor_specific_codec_transports)
         {
             lines.push(format!(
-                "  vendor {codec:#010x} - transport {transport:#04x}"
+                "  {} - {}",
+                vendor_codec_label(*codec),
+                codec_transport_label(transport)
             ));
+        }
+        if standard_codec_ids.is_empty() {
+            lines.push("  No standard codecs".into());
+        }
+        if vendor_specific_codec_ids.is_empty() {
+            lines.push("  No Vendor-specific codecs".into());
         }
     }
     if let Some(ReturnParameters::ReadLocalSupportedCodecs {
@@ -359,15 +403,57 @@ fn run_report<T: PacketSource + PacketSink>(
         ..
     }) = query(&mut channel, Command::ReadLocalSupportedCodecs)?
     {
-        lines.push(format!(
-            "Codecs (BR/EDR): standard={:?}, vendor={:?}",
-            standard_codec_ids, vendor_specific_codec_ids
-        ));
+        lines.push("Codecs (BR/EDR):".into());
+        lines.extend(
+            standard_codec_ids
+                .iter()
+                .map(|codec| format!("  {}", codec_label(*codec))),
+        );
+        lines.extend(
+            vendor_specific_codec_ids
+                .iter()
+                .map(|codec| format!("  {}", vendor_codec_label(*codec))),
+        );
+        if standard_codec_ids.is_empty() {
+            lines.push("  No standard codecs".into());
+        }
+        if vendor_specific_codec_ids.is_empty() {
+            lines.push("  No Vendor-specific codecs".into());
+        }
     }
     if let Some(ReturnParameters::ReadVoiceSetting { voice_setting, .. }) =
         query(&mut channel, Command::ReadVoiceSetting)?
     {
-        lines.push(format!("Voice Setting: {voice_setting:#06x}"));
+        let voice_setting = VoiceSetting::from_bits(voice_setting);
+        lines.push("Voice Setting:".into());
+        lines.push(format!(
+            "  Air Coding Format:       {}",
+            voice_setting.air_coding_format.name()
+        ));
+        lines.push(format!(
+            "  Linear PCM Bit Position: {}",
+            voice_setting.linear_pcm_bit_position
+        ));
+        lines.push(format!(
+            "  Input Sample Size:       {}",
+            voice_setting.input_sample_size.name()
+        ));
+        lines.push(format!(
+            "  Input Data Format:       {}",
+            voice_setting.input_data_format.name()
+        ));
+        lines.push(format!(
+            "  Input Coding Format:     {}",
+            voice_setting.input_coding_format.name()
+        ));
+    }
+    if let Some(supported_commands) = supported_commands {
+        lines.push("Supported Commands:".into());
+        lines.extend(
+            supported_command_names(&supported_commands)
+                .into_iter()
+                .map(|command| format!("  {command}")),
+        );
     }
     let pending = channel.take_pending_packets().len();
     if pending > 0 {
@@ -470,6 +556,11 @@ mod tests {
     #[test]
     fn renders_available_controller_information_and_skips_unsupported_queries() {
         let address = Address::parse("00:11:22:33:44:55", AddressType::PUBLIC_DEVICE).unwrap();
+        let mut supported_commands = [0; 64];
+        supported_commands[5] = 0x80;
+        let mut le_features = [0; 8];
+        le_features[0] = 1;
+        le_features[1] = 0x10;
         let responses = BTreeMap::from([
             (
                 Command::Reset.op_code(),
@@ -505,6 +596,20 @@ mod tests {
                 },
             ),
             (
+                Command::ReadLocalSupportedCommands.op_code(),
+                ReturnParameters::ReadLocalSupportedCommands {
+                    status: 0,
+                    supported_commands,
+                },
+            ),
+            (
+                Command::LeReadLocalSupportedFeatures.op_code(),
+                ReturnParameters::LeReadLocalSupportedFeatures {
+                    status: 0,
+                    le_features,
+                },
+            ),
+            (
                 Command::LeReadBufferSizeV2.op_code(),
                 ReturnParameters::LeReadBufferSizeV2 {
                     status: 0,
@@ -522,6 +627,24 @@ mod tests {
                 },
             ),
             (
+                Command::ReadLocalSupportedCodecsV2.op_code(),
+                ReturnParameters::ReadLocalSupportedCodecsV2 {
+                    status: 0,
+                    standard_codec_ids: vec![2, 6],
+                    standard_codec_transports: vec![2, 4],
+                    vendor_specific_codec_ids: vec![0x004C_1234],
+                    vendor_specific_codec_transports: vec![8],
+                },
+            ),
+            (
+                Command::ReadLocalSupportedCodecs.op_code(),
+                ReturnParameters::ReadLocalSupportedCodecs {
+                    status: 0,
+                    standard_codec_ids: vec![5],
+                    vendor_specific_codec_ids: vec![0x000F_5678],
+                },
+            ),
+            (
                 Command::ReadVoiceSetting.op_code(),
                 ReturnParameters::ReadVoiceSetting {
                     status: 0,
@@ -536,12 +659,21 @@ mod tests {
         };
         let report = run_report(transport, 0, 0, None).unwrap();
         assert!(report.contains("Manufacturer: Apple, Inc."));
+        assert!(report.contains("HCI Version: BLUETOOTH_CORE_5_4"));
+        assert!(report.contains("LMP Version: BLUETOOTH_CORE_5_3"));
         assert!(report.contains("Public Address: 00:11:22:33:44:55"));
         assert!(report.contains("Local Name: Bumble"));
+        assert!(report.contains("LE Features:\n  LE_ENCRYPTION\n  LE_EXTENDED_ADVERTISING"));
         assert!(report.contains("LE ACL Flow Control: 12 packets of size 251"));
         assert!(report.contains("LE ISO Flow Control: 6 packets of size 960"));
         assert!(report.contains("LE Maximum Advertising Data Length: 1650"));
-        assert!(report.contains("Voice Setting: 0x0060"));
-        assert!(!report.contains("LE Features:"));
+        assert!(report.contains("  CVSD - BR_EDR_SCO"));
+        assert!(report.contains("  LC3 - LE_CIS"));
+        assert!(report.contains("  Apple, Inc. / 4660 - LE_BIS"));
+        assert!(report.contains("Codecs (BR/EDR):\n  MSBC\n  Broadcom Corporation / 22136"));
+        assert!(report.contains("Voice Setting:\n  Air Coding Format:       CVSD"));
+        assert!(report.contains("  Input Sample Size:       SIZE_16_BITS"));
+        assert!(report.contains("  Input Data Format:       TWOS_COMPLEMENT"));
+        assert!(report.contains("Supported Commands:\n  HCI_RESET_COMMAND"));
     }
 }

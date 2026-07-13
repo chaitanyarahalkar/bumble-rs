@@ -18,6 +18,7 @@
 pub mod codes;
 pub mod command;
 pub mod event;
+pub mod metadata;
 pub mod packet;
 pub mod return_parameters;
 pub mod vendor;
