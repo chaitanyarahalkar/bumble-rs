@@ -105,7 +105,8 @@ crate whose behavior is verified against the upstream Python.
 | 88. Media Control and Generic Media Control | `bumble-profiles` | ✅ full model/proxy catalog + live notification handshake green |
 | 89. LE Audio metadata, BAP codec foundations, and PACS | `bumble-profiles` / `bumble-hci` | ✅ LTV/PAC codecs + live capability discovery green |
 | 90. Telephony/Media, Gaming Audio, and Public Broadcast profiles | `bumble-profiles` | ✅ role/features + announcement vectors/live reads green |
-| 91+. Remaining modules… | — | planned |
+| 91. Basic Audio announcements and Audio Stream Control | `bumble-profiles` | ✅ all ASE operations + live sink/source state machine green |
+| 92+. Remaining modules… | — | planned |
 
 The LE lifecycle is now complete end-to-end through library APIs: **connect →
 discover → read/write → notify → disconnect** between two virtual devices — and
@@ -207,7 +208,7 @@ size, to convey remaining surface.
 ### Profiles & apps
 | Upstream | Rust crate | Status | Notes |
 |---|---|---|---|
-| `profiles/*` — GAP, Battery, Device Info, Heart Rate, ASHA, LE Audio (BAP/PACS/ASCS/…), HAP, CSIP, … (23 modules) | `bumble-profiles` | 🟡 | Sixteen modules are live: foundational GAP/GATT/Battery/Device Information/Heart Rate, ASHA/CSIP, VCS/VOCS/AICS, MCP/GMCS, common LE Audio metadata, PACS, TMAP, GMAP, and PBP. BAP now has its shared assigned-number, codec-capability/configuration LTV, channel-count, and unicast-advertising foundation but not yet its complete announcement/session runtime. Deferred: the remaining 7 modules, with BAP already started. |
+| `profiles/*` — GAP, Battery, Device Info, Heart Rate, ASHA, LE Audio (BAP/PACS/ASCS/…), HAP, CSIP, … (23 modules) | `bumble-profiles` | 🟡 | Eighteen modules are live: foundational GAP/GATT/Battery/Device Information/Heart Rate, ASHA/CSIP, VCS/VOCS/AICS, MCP/GMCS, common LE Audio metadata, BAP/PACS/ASCS, TMAP, GMAP, and PBP. BAP includes its complete codec/announcement data model, and ASCS includes every control operation plus the sink/source ASE runtime. Deferred: BASS, CAP, HAP, AMS, and ANCS. |
 | `bridge.py`, `pandora/`, apps | — | ⬜ | Test harnesses / apps — out of scope. |
 
 ### Roughly where that leaves things
@@ -2073,6 +2074,23 @@ The compact LE Audio role and public-broadcast profiles are live:
   emits UUID 0x1856 service-data advertising, preserves unknown feature bits,
   and rejects truncated or length-inconsistent announcements.
 
+## Slice 91 — what's here
+
+Basic Audio Profile announcements and Audio Stream Control are live:
+
+- Broadcast Audio Announcement validates and emits the 24-bit Broadcast ID;
+  Basic Audio Announcement strictly parses and serializes presentation delay,
+  subgroup codec/metadata, and per-BIS codec configurations, including 0x1851
+  and 0x1852 service-data advertising.
+- ASCS covers all eight ASE control operations and response/reason codes with
+  exact counted wire forms, bounded 24-bit values, and rejection of truncated,
+  trailing, or oversized fields.
+- The live service publishes any number of sink/source ASE characteristics,
+  handles dynamic reads and control-point writes, queues control and state
+  notifications, and models codec, QoS, enable, CIS establishment, streaming,
+  metadata, disable, release, and reset transitions. Its typed proxy discovers,
+  subscribes, writes operations, reads states, and decodes notifications.
+
 ## Acceptance
 
 The port's contract is the upstream Python test suite, ported 1:1:
@@ -2237,14 +2255,15 @@ bumble-rs/
 │   ├── tests/intel.rs         # exact wire, parser, lookup, full cold-start flow
 │   ├── tests/rtk.rs           # epatch failures, matrix, wrap, full download flow
 │   └── tests/selection.rs     # forced/unknown/automatic driver selection
-├── bumble-profiles/           # slices 85-90 standard GATT profile services
-│   ├── src/{gap,gatt_service,battery_service,device_information_service,heart_rate_service,asha,csip,vcs,vocs,aics,mcp,le_audio,bap,pacs,tmap,gmap,pbp}.rs
+├── bumble-profiles/           # slices 85-91 standard GATT profile services
+│   ├── src/{gap,gatt_service,battery_service,device_information_service,heart_rate_service,asha,csip,vcs,vocs,aics,mcp,le_audio,bap,pacs,tmap,gmap,pbp,ascs}.rs
 │   ├── tests/foundational_services.rs # live typed proxy/control/hash coverage
 │   ├── tests/hearing_profiles.rs # ASHA state + CSIS vectors/encrypted reads
 │   ├── tests/volume_controls.rs # encrypted VCS/VOCS/AICS control matrices
 │   ├── tests/media_control.rs # typed MCS events + GMCS control handshake
-│   ├── tests/le_audio_pacs.rs # metadata/LTV/PAC vectors + live PACS reads
-│   └── tests/role_profiles.rs # TMAP/GMAP live reads + PBP announcement vectors
+│   ├── tests/le_audio_pacs.rs # metadata/LTV/PAC/announcement vectors + live PACS reads
+│   ├── tests/role_profiles.rs # TMAP/GMAP live reads + PBP announcement vectors
+│   └── tests/ascs.rs          # all operations + live sink/source ASE lifecycle
 └── docs/superpowers/          # design specs + implementation plans
 ```
 

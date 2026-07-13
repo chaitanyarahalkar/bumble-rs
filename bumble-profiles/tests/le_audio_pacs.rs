@@ -2,7 +2,8 @@ use bumble::Uuid;
 use bumble_gatt::{GattClient, GattServer};
 use bumble_hci::CodingFormat;
 use bumble_profiles::bap::{
-    AudioLocation, CodecSpecificCapabilities, CodecSpecificConfiguration, ContextType,
+    AudioLocation, BasicAudioAnnouncement, BasicAudioBis, BasicAudioSubgroup,
+    BroadcastAudioAnnouncement, CodecSpecificCapabilities, CodecSpecificConfiguration, ContextType,
     FrameDuration, SamplingFrequency, SupportedFrameDuration, SupportedSamplingFrequency,
     UnicastServerAdvertisingData,
 };
@@ -112,6 +113,67 @@ fn bap_codec_ltv_models_and_unicast_advertising_are_byte_exact() {
         UnicastServerAdvertisingData::default().to_bytes().unwrap(),
         [9, 0x16, 0x4E, 0x18, 1, 4, 0, 0, 0, 0]
     );
+}
+
+#[test]
+fn broadcast_and_basic_audio_announcements_round_trip_exactly() {
+    let broadcast = BroadcastAudioAnnouncement::new(123_456).unwrap();
+    assert_eq!(broadcast.to_bytes().unwrap(), [0x40, 0xE2, 0x01]);
+    assert_eq!(
+        BroadcastAudioAnnouncement::from_bytes(&broadcast.to_bytes().unwrap()).unwrap(),
+        broadcast
+    );
+    assert_eq!(
+        broadcast.advertising_data().unwrap(),
+        [6, 0x16, 0x52, 0x18, 0x40, 0xE2, 0x01]
+    );
+
+    let announcement = BasicAudioAnnouncement {
+        presentation_delay: 40_000,
+        subgroups: vec![BasicAudioSubgroup {
+            codec_id: CodingFormat {
+                coding_format: 0x06,
+                company_id: 0,
+                vendor_specific_codec_id: 0,
+            },
+            codec_specific_configuration: CodecSpecificConfiguration {
+                sampling_frequency: Some(SamplingFrequency::FREQ_48000),
+                frame_duration: Some(FrameDuration::DURATION_10000_US),
+                octets_per_codec_frame: Some(100),
+                ..CodecSpecificConfiguration::default()
+            },
+            metadata: Metadata::new(vec![
+                MetadataEntry::new(MetadataTag::LANGUAGE, b"eng".to_vec()),
+                MetadataEntry::new(MetadataTag::PROGRAM_INFO, b"Disco".to_vec()),
+            ]),
+            bis: vec![
+                BasicAudioBis {
+                    index: 0,
+                    codec_specific_configuration: CodecSpecificConfiguration {
+                        audio_channel_allocation: Some(AudioLocation::FRONT_LEFT),
+                        ..CodecSpecificConfiguration::default()
+                    },
+                },
+                BasicAudioBis {
+                    index: 1,
+                    codec_specific_configuration: CodecSpecificConfiguration {
+                        audio_channel_allocation: Some(AudioLocation::FRONT_RIGHT),
+                        ..CodecSpecificConfiguration::default()
+                    },
+                },
+            ],
+        }],
+    };
+    let bytes = announcement.to_bytes().unwrap();
+    assert_eq!(
+        BasicAudioAnnouncement::from_bytes(&bytes).unwrap(),
+        announcement
+    );
+    let advertising = announcement.advertising_data().unwrap();
+    assert_eq!(&advertising[1..4], [0x16, 0x51, 0x18]);
+    assert_eq!(&advertising[4..], bytes);
+    assert!(BasicAudioAnnouncement::from_bytes(&bytes[..bytes.len() - 1]).is_err());
+    assert!(BroadcastAudioAnnouncement::new(0x0100_0000).is_err());
 }
 
 #[test]

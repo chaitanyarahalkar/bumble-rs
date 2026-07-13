@@ -8,6 +8,7 @@ use bumble_gatt::{
 use core::fmt;
 
 pub mod aics;
+pub mod ascs;
 pub mod asha;
 pub mod bap;
 pub mod battery_service;

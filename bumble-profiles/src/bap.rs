@@ -5,11 +5,14 @@
 
 use crate::{Error, Result};
 use bumble::{advertising_data::Type as AdvertisingType, AdvertisingData, Uuid};
+use bumble_hci::command::CodingFormat;
 use std::ops::{BitOr, BitOrAssign};
 
 pub use crate::vocs::AudioLocation;
 
 pub const AUDIO_STREAM_CONTROL_SERVICE: u16 = 0x184E;
+pub const BASIC_AUDIO_ANNOUNCEMENT_SERVICE: u16 = 0x1851;
+pub const BROADCAST_AUDIO_ANNOUNCEMENT_SERVICE: u16 = 0x1852;
 
 macro_rules! open_u8 {
     ($name:ident { $($constant:ident = $value:expr),+ $(,)? }) => {
@@ -397,6 +400,237 @@ impl CodecSpecificConfiguration {
             value.extend_from_slice(&[2, 0x05, frames]);
         }
         value
+    }
+}
+
+/// The three-byte Broadcast ID carried in Broadcast Audio Announcement service
+/// data.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BroadcastAudioAnnouncement {
+    pub broadcast_id: u32,
+}
+
+impl BroadcastAudioAnnouncement {
+    pub fn new(broadcast_id: u32) -> Result<Self> {
+        require_u24("broadcast ID", broadcast_id)?;
+        Ok(Self { broadcast_id })
+    }
+
+    pub fn from_bytes(data: &[u8]) -> Result<Self> {
+        if data.len() != 3 {
+            return Err(Error::InvalidValue(format!(
+                "broadcast audio announcement has length {}, expected 3",
+                data.len()
+            )));
+        }
+        Self::new(read_u24(data))
+    }
+
+    pub fn to_bytes(self) -> Result<[u8; 3]> {
+        require_u24("broadcast ID", self.broadcast_id)?;
+        Ok(u24_bytes(self.broadcast_id))
+    }
+
+    pub fn advertising_data(self) -> Result<Vec<u8>> {
+        service_data_advertising(BROADCAST_AUDIO_ANNOUNCEMENT_SERVICE, &self.to_bytes()?)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BasicAudioBis {
+    pub index: u8,
+    pub codec_specific_configuration: CodecSpecificConfiguration,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BasicAudioSubgroup {
+    pub codec_id: CodingFormat,
+    pub codec_specific_configuration: CodecSpecificConfiguration,
+    pub metadata: crate::le_audio::Metadata,
+    pub bis: Vec<BasicAudioBis>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BasicAudioAnnouncement {
+    pub presentation_delay: u32,
+    pub subgroups: Vec<BasicAudioSubgroup>,
+}
+
+impl BasicAudioAnnouncement {
+    pub fn from_bytes(data: &[u8]) -> Result<Self> {
+        let mut reader = SliceReader::new(data);
+        let presentation_delay = reader.u24("presentation delay")?;
+        let subgroup_count = reader.u8("subgroup count")?;
+        let mut subgroups = Vec::with_capacity(usize::from(subgroup_count));
+        for subgroup_index in 0..subgroup_count {
+            let bis_count = reader.u8("BIS count")?;
+            let codec_id = CodingFormat::from_bytes(reader.take(5, "codec ID")?)
+                .map_err(|error| Error::InvalidValue(error.to_string()))?;
+            let configuration = reader.length_prefixed("codec configuration")?;
+            let codec_specific_configuration =
+                CodecSpecificConfiguration::from_bytes(configuration)?;
+            let metadata = crate::le_audio::Metadata::from_bytes(
+                reader.length_prefixed("subgroup metadata")?,
+            )?;
+            let mut bis = Vec::with_capacity(usize::from(bis_count));
+            for _ in 0..bis_count {
+                let index = reader.u8("BIS index")?;
+                let configuration = reader.length_prefixed("BIS codec configuration")?;
+                bis.push(BasicAudioBis {
+                    index,
+                    codec_specific_configuration: CodecSpecificConfiguration::from_bytes(
+                        configuration,
+                    )?,
+                });
+            }
+            if bis.is_empty() {
+                return Err(Error::InvalidValue(format!(
+                    "basic audio subgroup {subgroup_index} contains no BIS"
+                )));
+            }
+            subgroups.push(BasicAudioSubgroup {
+                codec_id,
+                codec_specific_configuration,
+                metadata,
+                bis,
+            });
+        }
+        reader.finish("basic audio announcement")?;
+        Ok(Self {
+            presentation_delay,
+            subgroups,
+        })
+    }
+
+    pub fn to_bytes(&self) -> Result<Vec<u8>> {
+        require_u24("presentation delay", self.presentation_delay)?;
+        let subgroup_count = u8::try_from(self.subgroups.len()).map_err(|_| {
+            Error::InvalidValue("basic audio announcement has over 255 subgroups".into())
+        })?;
+        let mut value = Vec::new();
+        value.extend_from_slice(&u24_bytes(self.presentation_delay));
+        value.push(subgroup_count);
+        for (subgroup_index, subgroup) in self.subgroups.iter().enumerate() {
+            let bis_count = u8::try_from(subgroup.bis.len()).map_err(|_| {
+                Error::InvalidValue(format!(
+                    "basic audio subgroup {subgroup_index} has over 255 BIS entries"
+                ))
+            })?;
+            if bis_count == 0 {
+                return Err(Error::InvalidValue(format!(
+                    "basic audio subgroup {subgroup_index} contains no BIS"
+                )));
+            }
+            value.push(bis_count);
+            value.extend_from_slice(&subgroup.codec_id.to_bytes());
+            push_length_prefixed(
+                &mut value,
+                &subgroup.codec_specific_configuration.to_bytes(),
+                "subgroup codec configuration",
+            )?;
+            push_length_prefixed(
+                &mut value,
+                &subgroup.metadata.to_bytes()?,
+                "subgroup metadata",
+            )?;
+            for bis in &subgroup.bis {
+                value.push(bis.index);
+                push_length_prefixed(
+                    &mut value,
+                    &bis.codec_specific_configuration.to_bytes(),
+                    "BIS codec configuration",
+                )?;
+            }
+        }
+        Ok(value)
+    }
+
+    pub fn advertising_data(&self) -> Result<Vec<u8>> {
+        service_data_advertising(BASIC_AUDIO_ANNOUNCEMENT_SERVICE, &self.to_bytes()?)
+    }
+}
+
+fn service_data_advertising(service_uuid: u16, data: &[u8]) -> Result<Vec<u8>> {
+    let mut value = Uuid::from_16_bits(service_uuid).to_bytes(false);
+    value.extend_from_slice(data);
+    Ok(AdvertisingData {
+        ad_structures: vec![(AdvertisingType(0x16), value)],
+    }
+    .to_bytes())
+}
+
+fn push_length_prefixed(target: &mut Vec<u8>, data: &[u8], name: &str) -> Result<()> {
+    let length = u8::try_from(data.len())
+        .map_err(|_| Error::InvalidValue(format!("{name} exceeds 255 bytes")))?;
+    target.push(length);
+    target.extend_from_slice(data);
+    Ok(())
+}
+
+fn require_u24(name: &str, value: u32) -> Result<()> {
+    if value > 0x00FF_FFFF {
+        return Err(Error::InvalidValue(format!(
+            "{name} 0x{value:08X} exceeds 24 bits"
+        )));
+    }
+    Ok(())
+}
+
+fn u24_bytes(value: u32) -> [u8; 3] {
+    let bytes = value.to_le_bytes();
+    [bytes[0], bytes[1], bytes[2]]
+}
+
+fn read_u24(data: &[u8]) -> u32 {
+    u32::from_le_bytes([data[0], data[1], data[2], 0])
+}
+
+struct SliceReader<'a> {
+    data: &'a [u8],
+    offset: usize,
+}
+
+impl<'a> SliceReader<'a> {
+    fn new(data: &'a [u8]) -> Self {
+        Self { data, offset: 0 }
+    }
+
+    fn take(&mut self, length: usize, name: &str) -> Result<&'a [u8]> {
+        let end = self
+            .offset
+            .checked_add(length)
+            .ok_or_else(|| Error::InvalidValue(format!("{name} length overflow")))?;
+        let value = self.data.get(self.offset..end).ok_or_else(|| {
+            Error::InvalidValue(format!(
+                "truncated {name} at offset {}: need {length} bytes",
+                self.offset
+            ))
+        })?;
+        self.offset = end;
+        Ok(value)
+    }
+
+    fn u8(&mut self, name: &str) -> Result<u8> {
+        Ok(self.take(1, name)?[0])
+    }
+
+    fn u24(&mut self, name: &str) -> Result<u32> {
+        Ok(read_u24(self.take(3, name)?))
+    }
+
+    fn length_prefixed(&mut self, name: &str) -> Result<&'a [u8]> {
+        let length = usize::from(self.u8(&format!("{name} length"))?);
+        self.take(length, name)
+    }
+
+    fn finish(self, name: &str) -> Result<()> {
+        if self.offset != self.data.len() {
+            return Err(Error::InvalidValue(format!(
+                "{name} has {} trailing bytes",
+                self.data.len() - self.offset
+            )));
+        }
+        Ok(())
     }
 }
 
