@@ -8,7 +8,7 @@
 //!
 //! A `Device` sits above a [`bumble_controller::Controller`] (addressed by id
 //! on a shared [`bumble_controller::LocalLink`]). It:
-//! - learns its connection handle from the LE Connection Complete event,
+//! - owns its LE connections by handle and exposes a selectable current one,
 //! - sends ATT PDUs on the ATT channel with [`Device::send_att`],
 //! - on [`Device::poll`], processes inbound ACL: an optional server-role
 //!   [`bumble_gatt::AttServer`] answers requests automatically; other ATT PDUs (responses /
@@ -24,8 +24,7 @@
 //! legacy and extended advertising, scanning, and connection setup are also
 //! available, along with periodic advertising/synchronization, CIG/CIS control,
 //! PAST transfer, and ISO SDU fragmentation/reassembly. Deferred: direct
-//! integration of the LE signaling manager and multiple simultaneous
-//! connections per device.
+//! integration of the LE signaling manager.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -54,6 +53,22 @@ pub struct SynchronousConnectionInfo {
     pub peer_address: Address,
     pub link_type: u8,
     pub air_mode: u8,
+}
+
+/// Host-owned metadata for one established LE ACL connection.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LeConnectionInfo {
+    pub connection_handle: u16,
+    pub role: u8,
+    pub peer_address: Address,
+}
+
+/// Host-owned metadata for one established Classic ACL connection.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ClassicConnectionInfo {
+    pub connection_handle: u16,
+    pub role: u8,
+    pub peer_address: Address,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -234,9 +249,11 @@ pub struct Device {
     connection_handle: Option<u16>,
     connection_role: Option<u8>,
     peer_address: Option<Address>,
+    le_connections: BTreeMap<u16, LeConnectionInfo>,
     classic_connection_handle: Option<u16>,
     classic_connection_role: Option<u8>,
-    pending_classic_role: Option<u8>,
+    classic_connections: BTreeMap<u16, ClassicConnectionInfo>,
+    pending_classic_roles: Vec<(Address, u8)>,
     synchronous_connections: Vec<SynchronousConnectionInfo>,
     synchronous_requests: Vec<(Address, u8)>,
     synchronous_inbox: Vec<SynchronousDataPacket>,
@@ -246,10 +263,10 @@ pub struct Device {
     iso_sequence_numbers: BTreeMap<u16, u16>,
     iso_assemblers: BTreeMap<u16, IsoSduAssembler>,
     iso_inbox: Vec<IsoSdu>,
-    inbox: Vec<AttPdu>,
-    /// Received payloads on non-ATT L2CAP channels, as `(cid, payload)`.
-    l2cap_inbox: Vec<(u16, Vec<u8>)>,
-    security_requests: Vec<u8>,
+    inbox: Vec<(u16, AttPdu)>,
+    /// Received payloads on non-ATT L2CAP channels, as `(handle, cid, payload)`.
+    l2cap_inbox: Vec<(u16, u16, Vec<u8>)>,
+    security_requests: Vec<(u16, u8)>,
     advertising_reports: Vec<AdvertisingReport>,
     extended_advertising_reports: Vec<ExtendedAdvertisingReport>,
     periodic_syncs: BTreeMap<u16, PeriodicAdvertisingSyncInfo>,
@@ -273,9 +290,11 @@ impl Device {
             connection_handle: None,
             connection_role: None,
             peer_address: None,
+            le_connections: BTreeMap::new(),
             classic_connection_handle: None,
             classic_connection_role: None,
-            pending_classic_role: None,
+            classic_connections: BTreeMap::new(),
+            pending_classic_roles: Vec::new(),
             synchronous_connections: Vec::new(),
             synchronous_requests: Vec::new(),
             synchronous_inbox: Vec::new(),
@@ -312,9 +331,11 @@ impl Device {
             connection_handle: None,
             connection_role: None,
             peer_address: None,
+            le_connections: BTreeMap::new(),
             classic_connection_handle: None,
             classic_connection_role: None,
-            pending_classic_role: None,
+            classic_connections: BTreeMap::new(),
+            pending_classic_roles: Vec::new(),
             synchronous_connections: Vec::new(),
             synchronous_requests: Vec::new(),
             synchronous_inbox: Vec::new(),
@@ -346,14 +367,45 @@ impl Device {
         self.controller_id
     }
 
-    /// The connection handle, once connected (and `None` after disconnection).
+    /// The selected LE connection handle, or the most recently established one.
     pub fn connection_handle(&self) -> Option<u16> {
         self.connection_handle
     }
 
-    /// `true` while a connection is established.
+    /// Iterate over all established LE ACL connections, ordered by handle.
+    pub fn le_connections(&self) -> impl Iterator<Item = &LeConnectionInfo> {
+        self.le_connections.values()
+    }
+
+    pub fn le_connection(&self, connection_handle: u16) -> Option<&LeConnectionInfo> {
+        self.le_connections.get(&connection_handle)
+    }
+
+    pub fn connection_handle_for_peer(&self, peer_address: &Address) -> Option<u16> {
+        self.le_connections
+            .values()
+            .find(|connection| connection.peer_address == *peer_address)
+            .map(|connection| connection.connection_handle)
+    }
+
+    /// Select which LE connection the convenience methods without a handle use.
+    pub fn select_connection(&mut self, connection_handle: u16) -> bool {
+        let Some(connection) = self.le_connections.get(&connection_handle).cloned() else {
+            return false;
+        };
+        self.connection_handle = Some(connection.connection_handle);
+        self.connection_role = Some(connection.role);
+        self.peer_address = Some(connection.peer_address);
+        true
+    }
+
+    /// `true` while at least one LE connection is established.
     pub fn is_connected(&self) -> bool {
-        self.connection_handle.is_some()
+        !self.le_connections.is_empty()
+    }
+
+    pub fn is_connected_on_handle(&self, connection_handle: u16) -> bool {
+        self.le_connections.contains_key(&connection_handle)
     }
 
     pub fn connection_role(&self) -> Option<u8> {
@@ -615,6 +667,24 @@ impl Device {
         let Some(connection_handle) = self.connection_handle else {
             return false;
         };
+        self.transfer_periodic_advertising_sync_on_handle(
+            link,
+            connection_handle,
+            sync_handle,
+            service_data,
+        )
+    }
+
+    pub fn transfer_periodic_advertising_sync_on_handle(
+        &mut self,
+        link: &mut LocalLink,
+        connection_handle: u16,
+        sync_handle: u16,
+        service_data: u16,
+    ) -> bool {
+        if !self.le_connections.contains_key(&connection_handle) {
+            return false;
+        }
         self.send_hci_command(
             link,
             Command::LePeriodicAdvertisingSyncTransfer {
@@ -635,6 +705,24 @@ impl Device {
         let Some(connection_handle) = self.connection_handle else {
             return false;
         };
+        self.transfer_periodic_advertising_set_info_on_handle(
+            link,
+            connection_handle,
+            advertising_handle,
+            service_data,
+        )
+    }
+
+    pub fn transfer_periodic_advertising_set_info_on_handle(
+        &mut self,
+        link: &mut LocalLink,
+        connection_handle: u16,
+        advertising_handle: u8,
+        service_data: u16,
+    ) -> bool {
+        if !self.le_connections.contains_key(&connection_handle) {
+            return false;
+        }
         self.send_hci_command(
             link,
             Command::LePeriodicAdvertisingSetInfoTransfer {
@@ -833,9 +921,19 @@ impl Device {
             .is_some_and(|handle| self.encrypted_handles.contains(&handle))
     }
 
+    pub fn is_encrypted_on_handle(&self, connection_handle: u16) -> bool {
+        self.le_connections.contains_key(&connection_handle)
+            && self.encrypted_handles.contains(&connection_handle)
+    }
+
     pub fn is_classic_encrypted(&self) -> bool {
         self.classic_connection_handle
             .is_some_and(|handle| self.encrypted_handles.contains(&handle))
+    }
+
+    pub fn is_classic_encrypted_on_handle(&self, connection_handle: u16) -> bool {
+        self.classic_connections.contains_key(&connection_handle)
+            && self.encrypted_handles.contains(&connection_handle)
     }
 
     /// Enable LE encryption with a pairing-derived STK/LTK. The peer receives
@@ -856,6 +954,35 @@ impl Device {
         let Some(connection_handle) = self.connection_handle else {
             return false;
         };
+        self.enable_encryption_with_parameters_on_handle(
+            link,
+            connection_handle,
+            key,
+            encrypted_diversifier,
+            random_number,
+        )
+    }
+
+    pub fn enable_encryption_on_handle(
+        &mut self,
+        link: &mut LocalLink,
+        connection_handle: u16,
+        key: [u8; 16],
+    ) -> bool {
+        self.enable_encryption_with_parameters_on_handle(link, connection_handle, key, 0, [0; 8])
+    }
+
+    pub fn enable_encryption_with_parameters_on_handle(
+        &mut self,
+        link: &mut LocalLink,
+        connection_handle: u16,
+        key: [u8; 16],
+        encrypted_diversifier: u16,
+        random_number: [u8; 8],
+    ) -> bool {
+        if !self.le_connections.contains_key(&connection_handle) {
+            return false;
+        }
         self.send_hci_command(
             link,
             Command::LeEnableEncryption {
@@ -906,6 +1033,30 @@ impl Device {
         self.classic_connection_handle
     }
 
+    pub fn classic_connections(&self) -> impl Iterator<Item = &ClassicConnectionInfo> {
+        self.classic_connections.values()
+    }
+
+    pub fn classic_connection(&self, connection_handle: u16) -> Option<&ClassicConnectionInfo> {
+        self.classic_connections.get(&connection_handle)
+    }
+
+    pub fn classic_connection_handle_for_peer(&self, peer_address: &Address) -> Option<u16> {
+        self.classic_connections
+            .values()
+            .find(|connection| connection.peer_address == *peer_address)
+            .map(|connection| connection.connection_handle)
+    }
+
+    pub fn select_classic_connection(&mut self, connection_handle: u16) -> bool {
+        let Some(connection) = self.classic_connections.get(&connection_handle).cloned() else {
+            return false;
+        };
+        self.classic_connection_handle = Some(connection.connection_handle);
+        self.classic_connection_role = Some(connection.role);
+        true
+    }
+
     /// The local role on the established Classic ACL (`0` Central, `1` Peripheral).
     pub fn classic_connection_role(&self) -> Option<u8> {
         self.classic_connection_role
@@ -915,6 +1066,18 @@ impl Device {
         let Some(connection_handle) = self.classic_connection_handle else {
             return false;
         };
+        self.set_classic_encryption_on_handle(link, connection_handle, enabled)
+    }
+
+    pub fn set_classic_encryption_on_handle(
+        &mut self,
+        link: &mut LocalLink,
+        connection_handle: u16,
+        enabled: bool,
+    ) -> bool {
+        if !self.classic_connections.contains_key(&connection_handle) {
+            return false;
+        }
         self.send_hci_command(
             link,
             Command::SetConnectionEncryption {
@@ -976,6 +1139,18 @@ impl Device {
         let Some(acl_handle) = self.connection_handle else {
             return false;
         };
+        self.create_cis_on_handle(link, acl_handle, cis_handle)
+    }
+
+    pub fn create_cis_on_handle(
+        &mut self,
+        link: &mut LocalLink,
+        acl_handle: u16,
+        cis_handle: u16,
+    ) -> bool {
+        if !self.le_connections.contains_key(&acl_handle) {
+            return false;
+        }
         self.send_hci_command(
             link,
             Command::LeCreateCis {
@@ -1102,11 +1277,31 @@ impl Device {
 
     /// Submit any typed HCI command through this device's attached controller.
     pub fn send_hci_command(&mut self, link: &mut LocalLink, command: Command) {
+        match &command {
+            Command::CreateConnection { bd_addr, .. } => {
+                self.set_pending_classic_role(bd_addr.clone(), bumble_controller::ROLE_CENTRAL);
+            }
+            Command::AcceptConnectionRequest { bd_addr, role } => {
+                self.set_pending_classic_role(bd_addr.clone(), *role);
+            }
+            _ => {}
+        }
         link.handle_command(self.controller_id, command);
     }
 
+    fn set_pending_classic_role(&mut self, peer_address: Address, role: u8) {
+        if let Some((_, pending_role)) = self
+            .pending_classic_roles
+            .iter_mut()
+            .find(|(address, _)| *address == peer_address)
+        {
+            *pending_role = role;
+        } else {
+            self.pending_classic_roles.push((peer_address, role));
+        }
+    }
+
     pub fn connect_classic(&mut self, link: &mut LocalLink, peer_address: Address) {
-        self.pending_classic_role = Some(bumble_controller::ROLE_CENTRAL);
         self.send_hci_command(
             link,
             Command::CreateConnection {
@@ -1131,7 +1326,6 @@ impl Device {
         peer_address: Address,
         role: u8,
     ) {
-        self.pending_classic_role = Some(role);
         self.send_hci_command(
             link,
             Command::AcceptConnectionRequest {
@@ -1217,6 +1411,18 @@ impl Device {
     /// the server (i.e. responses and notifications destined for a client).
     pub fn take_inbox(&mut self) -> Vec<AttPdu> {
         std::mem::take(&mut self.inbox)
+            .into_iter()
+            .map(|(_, pdu)| pdu)
+            .collect()
+    }
+
+    /// Remove client-bound ATT PDUs received on one LE connection.
+    pub fn take_inbox_on_handle(&mut self, connection_handle: u16) -> Vec<AttPdu> {
+        let (matching, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut self.inbox)
+            .into_iter()
+            .partition(|(handle, _)| *handle == connection_handle);
+        self.inbox = rest;
+        matching.into_iter().map(|(_, pdu)| pdu).collect()
     }
 
     /// Send a raw payload on an L2CAP channel to the peer. Requires an
@@ -1252,20 +1458,58 @@ impl Device {
         self.send_l2cap(link, ATT_CID, &pdu.to_bytes())
     }
 
+    pub fn send_att_on_handle(
+        &mut self,
+        link: &mut LocalLink,
+        connection_handle: u16,
+        pdu: &AttPdu,
+    ) -> bool {
+        self.send_l2cap_on_handle(link, connection_handle, ATT_CID, &pdu.to_bytes())
+    }
+
     /// Remove and return payloads received on the given (non-ATT) L2CAP channel,
     /// e.g. SMP on CID `0x0006`.
     pub fn take_l2cap(&mut self, cid: u16) -> Vec<Vec<u8>> {
         let (matching, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut self.l2cap_inbox)
             .into_iter()
-            .partition(|(c, _)| *c == cid);
+            .partition(|(_, packet_cid, _)| *packet_cid == cid);
         self.l2cap_inbox = rest;
-        matching.into_iter().map(|(_, payload)| payload).collect()
+        matching
+            .into_iter()
+            .map(|(_, _, payload)| payload)
+            .collect()
+    }
+
+    pub fn take_l2cap_on_handle(&mut self, connection_handle: u16, cid: u16) -> Vec<Vec<u8>> {
+        let (matching, rest): (Vec<_>, Vec<_>) =
+            std::mem::take(&mut self.l2cap_inbox).into_iter().partition(
+                |(handle, packet_cid, _)| *handle == connection_handle && *packet_cid == cid,
+            );
+        self.l2cap_inbox = rest;
+        matching
+            .into_iter()
+            .map(|(_, _, payload)| payload)
+            .collect()
     }
 
     /// Remove Security Request authentication bitmasks observed on the SMP
     /// fixed channel. The raw PDU remains available through [`Self::take_l2cap`].
     pub fn take_security_requests(&mut self) -> Vec<u8> {
         std::mem::take(&mut self.security_requests)
+            .into_iter()
+            .map(|(_, authentication)| authentication)
+            .collect()
+    }
+
+    pub fn take_security_requests_on_handle(&mut self, connection_handle: u16) -> Vec<u8> {
+        let (matching, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut self.security_requests)
+            .into_iter()
+            .partition(|(handle, _)| *handle == connection_handle);
+        self.security_requests = rest;
+        matching
+            .into_iter()
+            .map(|(_, authentication)| authentication)
+            .collect()
     }
 
     /// Send an unsolicited Handle Value Notification for `value_handle` to the
@@ -1273,6 +1517,23 @@ impl Device {
     pub fn notify(&mut self, link: &mut LocalLink, value_handle: u16, value: Vec<u8>) -> bool {
         self.send_att(
             link,
+            &AttPdu::HandleValueNotification {
+                attribute_handle: value_handle,
+                attribute_value: value,
+            },
+        )
+    }
+
+    pub fn notify_on_handle(
+        &mut self,
+        link: &mut LocalLink,
+        connection_handle: u16,
+        value_handle: u16,
+        value: Vec<u8>,
+    ) -> bool {
+        self.send_att_on_handle(
+            link,
+            connection_handle,
             &AttPdu::HandleValueNotification {
                 attribute_handle: value_handle,
                 attribute_value: value,
@@ -1291,14 +1552,21 @@ impl Device {
         for event in events {
             match event {
                 HciPacket::Event(Event::LeMeta(LeMetaEvent::ConnectionComplete {
+                    status: 0,
                     connection_handle,
                     role,
                     peer_address,
                     ..
                 })) => {
-                    self.connection_handle = Some(connection_handle);
-                    self.connection_role = Some(role);
-                    self.peer_address = Some(peer_address);
+                    self.le_connections.insert(
+                        connection_handle,
+                        LeConnectionInfo {
+                            connection_handle,
+                            role,
+                            peer_address,
+                        },
+                    );
+                    self.select_connection(connection_handle);
                 }
                 HciPacket::Event(Event::LeMeta(LeMetaEvent::AdvertisingReport { reports })) => {
                     self.advertising_reports.extend(reports);
@@ -1456,15 +1724,26 @@ impl Device {
                         .retain(|sdu| sdu.connection_handle != connection_handle);
                     self.acl_assemblers.remove(&connection_handle);
                     self.acl_packet_queue.flush(connection_handle);
+                    self.le_connections.remove(&connection_handle);
                     if self.connection_handle == Some(connection_handle) {
-                        self.connection_handle = None;
-                        self.connection_role = None;
-                        self.peer_address = None;
+                        if let Some(next_handle) = self.le_connections.keys().next().copied() {
+                            self.select_connection(next_handle);
+                        } else {
+                            self.connection_handle = None;
+                            self.connection_role = None;
+                            self.peer_address = None;
+                        }
                     }
                     if self.classic_connection_handle == Some(connection_handle) {
-                        self.classic_connection_handle = None;
-                        self.classic_connection_role = None;
-                        self.pending_classic_role = None;
+                        self.classic_connections.remove(&connection_handle);
+                        if let Some(next_handle) = self.classic_connections.keys().next().copied() {
+                            self.select_classic_connection(next_handle);
+                        } else {
+                            self.classic_connection_handle = None;
+                            self.classic_connection_role = None;
+                        }
+                    } else {
+                        self.classic_connections.remove(&connection_handle);
                     }
                     self.synchronous_connections
                         .retain(|connection| connection.connection_handle != connection_handle);
@@ -1472,27 +1751,56 @@ impl Device {
                 HciPacket::Event(Event::ConnectionComplete {
                     status,
                     connection_handle,
+                    bd_addr,
                     link_type: 1,
                     ..
                 }) => {
                     if status == 0 {
-                        self.classic_connection_handle = Some(connection_handle);
-                        self.classic_connection_role = self.pending_classic_role.take();
+                        let role = self
+                            .pending_classic_roles
+                            .iter()
+                            .position(|(address, _)| *address == bd_addr)
+                            .map(|index| self.pending_classic_roles.remove(index).1)
+                            .unwrap_or(bumble_controller::ROLE_CENTRAL);
+                        self.classic_connections.insert(
+                            connection_handle,
+                            ClassicConnectionInfo {
+                                connection_handle,
+                                role,
+                                peer_address: bd_addr,
+                            },
+                        );
+                        self.select_classic_connection(connection_handle);
                     } else {
-                        self.classic_connection_handle = None;
-                        self.classic_connection_role = None;
-                        self.pending_classic_role = None;
+                        self.pending_classic_roles
+                            .retain(|(address, _)| *address != bd_addr);
                     }
                 }
                 HciPacket::Event(Event::RoleChange {
                     status: 0,
+                    bd_addr,
                     new_role,
-                    ..
                 }) => {
-                    if self.classic_connection_handle.is_some() {
-                        self.classic_connection_role = Some(new_role);
+                    if let Some(handle) = self
+                        .classic_connections
+                        .values()
+                        .find(|connection| connection.peer_address == bd_addr)
+                        .map(|connection| connection.connection_handle)
+                    {
+                        if let Some(connection) = self.classic_connections.get_mut(&handle) {
+                            connection.role = new_role;
+                        }
+                        if self.classic_connection_handle == Some(handle) {
+                            self.classic_connection_role = Some(new_role);
+                        }
+                    } else if let Some((_, role)) = self
+                        .pending_classic_roles
+                        .iter_mut()
+                        .find(|(address, _)| *address == bd_addr)
+                    {
+                        *role = new_role;
                     } else {
-                        self.pending_classic_role = Some(new_role);
+                        self.set_pending_classic_role(bd_addr, new_role);
                     }
                 }
                 HciPacket::Event(Event::ConnectionRequest {
@@ -1575,9 +1883,9 @@ impl Device {
         // Non-ATT channels (e.g. SMP on 0x0006) are queued raw for the caller.
         if l2cap.cid != ATT_CID {
             if l2cap.cid == SMP_CID && l2cap.payload.len() == 2 && l2cap.payload[0] == 0x0B {
-                self.security_requests.push(l2cap.payload[1]);
+                self.security_requests.push((handle, l2cap.payload[1]));
             }
-            self.l2cap_inbox.push((l2cap.cid, l2cap.payload));
+            self.l2cap_inbox.push((handle, l2cap.cid, l2cap.payload));
             return;
         }
         let Ok(pdu) = AttPdu::from_bytes(&l2cap.payload) else {
@@ -1604,7 +1912,7 @@ impl Device {
                 return;
             }
         }
-        self.inbox.push(pdu);
+        self.inbox.push((handle, pdu));
     }
 }
 
@@ -1631,6 +1939,7 @@ pub fn pump(link: &mut LocalLink, devices: &mut [Device]) {
         // Commands such as LE Enable Encryption and remote-feature exchange
         // enqueue link-layer control PDUs rather than host events directly.
         link.pump_ll();
+        link.pump_classic();
         link.pump_periodic_sync_transfers();
         let mut active = false;
         for device in devices.iter_mut() {

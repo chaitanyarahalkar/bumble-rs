@@ -77,14 +77,13 @@
 //! `Remote_Name_Request` (→ `Remote Name Request Complete`), and
 //! `Read_Remote_Supported_Features` (→ the matching complete event).
 //!
-//! ## Deferred (behavioral simulation, not the codec)
+//! ## Upstream TODO parity
 //!
-//! The remaining deep behavior is not simulated: LTK verification,
-//! remote-version exchange, and Classic authentication. The HCI
-//! *codec* for all of them (in `bumble-hci`) is complete and oracle-pinned; what
-//! remains is controller-side behavior, which — unlike the codec — has no
-//! ground-truth oracle to pin against (upstream's controller is itself a
-//! simulation with placeholder values).
+//! Upstream's software controller does not handle Classic authentication or
+//! `Read_Remote_Version_Information`, and its LE encryption handler explicitly
+//! skips LTK verification. This port retains those boundaries rather than
+//! synthesizing behavior or values absent from the Python implementation. Their
+//! HCI packet codecs in `bumble-hci` remain complete and oracle-pinned.
 
 pub mod command_surface;
 pub mod ll;
