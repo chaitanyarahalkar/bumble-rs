@@ -224,3 +224,117 @@ fn packed_codec_handles_standard_scalar_string_and_padding_forms() {
         ])
     );
 }
+
+#[test]
+fn packed_codec_matches_python_314_native_half_and_complex_oracles() {
+    let half_big = PackedCodec::new(">e").unwrap();
+    assert_eq!(
+        half_big.encode(&PackedValue::Float(1.5)).unwrap(),
+        [0x3E, 0x00]
+    );
+    assert_eq!(
+        half_big.decode(&[0x3E, 0x00]).unwrap(),
+        PackedValue::Float(1.5)
+    );
+    let half_little = PackedCodec::new("<e").unwrap();
+    assert_eq!(
+        half_little.encode(&PackedValue::Float(-2.25)).unwrap(),
+        [0x80, 0xC0]
+    );
+
+    let complex32 = PackedCodec::new(">F").unwrap();
+    assert_eq!(
+        complex32.encode(&PackedValue::Complex(1.0, 2.0)).unwrap(),
+        [0x3F, 0x80, 0, 0, 0x40, 0, 0, 0]
+    );
+    assert_eq!(
+        complex32
+            .decode(&[0x3F, 0x80, 0, 0, 0x40, 0, 0, 0])
+            .unwrap(),
+        PackedValue::Complex(1.0, 2.0)
+    );
+    let complex64 = PackedCodec::new(">D").unwrap();
+    assert_eq!(
+        complex64.encode(&PackedValue::Complex(1.0, 2.0)).unwrap(),
+        [0x3F, 0xF0, 0, 0, 0, 0, 0, 0, 0x40, 0, 0, 0, 0, 0, 0, 0,]
+    );
+
+    let zero_string = PackedCodec::new("0s").unwrap();
+    assert_eq!(zero_string.size(), 0);
+    assert_eq!(
+        zero_string
+            .encode(&PackedValue::Bytes(b"ignored".to_vec()))
+            .unwrap(),
+        Vec::<u8>::new()
+    );
+    assert_eq!(
+        PackedCodec::new("0p").unwrap().decode(&[]).unwrap(),
+        PackedValue::Bytes(vec![])
+    );
+    assert!(PackedCodec::new(">n").is_err());
+
+    #[cfg(all(
+        target_endian = "little",
+        target_pointer_width = "64",
+        not(target_os = "windows")
+    ))]
+    {
+        let native = PackedCodec::new("@bhi").unwrap();
+        let values = PackedValue::Tuple(vec![
+            PackedValue::Signed(-2),
+            PackedValue::Signed(0x1234),
+            PackedValue::Signed(0x1234_5678),
+        ]);
+        assert_eq!(native.size(), 8);
+        assert_eq!(
+            native.encode(&values).unwrap(),
+            [0xFE, 0, 0x34, 0x12, 0x78, 0x56, 0x34, 0x12]
+        );
+        assert_eq!(
+            native
+                .decode(&[0xFE, 0, 0x34, 0x12, 0x78, 0x56, 0x34, 0x12])
+                .unwrap(),
+            values
+        );
+
+        let long = PackedCodec::new("@bl").unwrap();
+        assert_eq!(long.size(), 16);
+        assert_eq!(
+            long.encode(&PackedValue::Tuple(vec![
+                PackedValue::Signed(-2),
+                PackedValue::Signed(0x1234_5678),
+            ]))
+            .unwrap(),
+            [0xFE, 0, 0, 0, 0, 0, 0, 0, 0x78, 0x56, 0x34, 0x12, 0, 0, 0, 0,]
+        );
+
+        let pointer = PackedCodec::new("@nNP").unwrap();
+        assert_eq!(pointer.size(), 24);
+        assert_eq!(
+            pointer
+                .encode(&PackedValue::Tuple(vec![
+                    PackedValue::Signed(-2),
+                    PackedValue::Unsigned(0x1234_5678),
+                    PackedValue::Unsigned(0x1234),
+                ]))
+                .unwrap(),
+            [
+                0xFE, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x78, 0x56, 0x34, 0x12, 0, 0, 0, 0,
+                0x34, 0x12, 0, 0, 0, 0, 0, 0,
+            ]
+        );
+
+        let tail_alignment = PackedCodec::new("@llh0l").unwrap();
+        assert_eq!(tail_alignment.size(), 24);
+        assert_eq!(
+            tail_alignment
+                .encode(&PackedValue::Tuple(vec![
+                    PackedValue::Signed(1),
+                    PackedValue::Signed(2),
+                    PackedValue::Signed(3),
+                ]))
+                .unwrap(),
+            [1, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0,]
+        );
+    }
+}

@@ -310,9 +310,16 @@ impl<T: IntConvertible> ValueCodec for EnumCodec<T> {
     type Value = T;
 
     fn encode(&self, value: &T) -> Result<Vec<u8>, AdapterError> {
+        let integer = value.to_u64();
+        if self.length < 8 && integer >= (1u64 << (self.length * 8)) {
+            return Err(AdapterError::InvalidValue(format!(
+                "enum value {integer} does not fit in {} bytes",
+                self.length
+            )));
+        }
         let bytes = match self.byte_order {
-            ByteOrder::Little => value.to_u64().to_le_bytes(),
-            ByteOrder::Big => value.to_u64().to_be_bytes(),
+            ByteOrder::Little => integer.to_le_bytes(),
+            ByteOrder::Big => integer.to_be_bytes(),
         };
         Ok(match self.byte_order {
             ByteOrder::Little => bytes[..self.length].to_vec(),
@@ -347,6 +354,7 @@ pub enum PackedValue {
     Signed(i64),
     Unsigned(u64),
     Float(f64),
+    Complex(f64, f64),
     Bytes(Vec<u8>),
     Tuple(Vec<PackedValue>),
 }
@@ -357,8 +365,11 @@ enum FieldKind {
     Bool,
     Signed,
     Unsigned,
+    Float16,
     Float32,
     Float64,
+    Complex32,
+    Complex64,
     Bytes,
     Pascal,
     Char,
@@ -378,41 +389,63 @@ pub struct PackedCodec {
     size: usize,
 }
 
+fn native_byte_order() -> ByteOrder {
+    if cfg!(target_endian = "little") {
+        ByteOrder::Little
+    } else {
+        ByteOrder::Big
+    }
+}
+
+fn append_alignment(
+    fields: &mut Vec<Field>,
+    offset: &mut usize,
+    alignment: usize,
+) -> Result<(), AdapterError> {
+    let padding = (alignment - (*offset % alignment)) % alignment;
+    if padding != 0 {
+        fields.push(Field {
+            kind: FieldKind::Pad,
+            size: padding,
+        });
+        *offset = offset
+            .checked_add(padding)
+            .ok_or_else(|| AdapterError::InvalidFormat("packed size overflow".into()))?;
+    }
+    Ok(())
+}
+
 impl PackedCodec {
     pub fn new(format: &str) -> Result<Self, AdapterError> {
         let mut chars = format.chars().peekable();
-        let byte_order = match chars.peek().copied() {
+        let (byte_order, native) = match chars.peek().copied() {
             Some('<') => {
                 chars.next();
-                ByteOrder::Little
+                (ByteOrder::Little, false)
             }
             Some('>') | Some('!') => {
                 chars.next();
-                ByteOrder::Big
+                (ByteOrder::Big, false)
             }
             Some('=') => {
                 chars.next();
-                if cfg!(target_endian = "little") {
-                    ByteOrder::Little
-                } else {
-                    ByteOrder::Big
-                }
+                (native_byte_order(), false)
             }
             Some('@') => {
-                return Err(AdapterError::InvalidFormat(
-                    "native-aligned '@' formats are not portable".into(),
-                ));
+                chars.next();
+                (native_byte_order(), true)
             }
-            _ => {
-                if cfg!(target_endian = "little") {
-                    ByteOrder::Little
-                } else {
-                    ByteOrder::Big
-                }
-            }
+            _ => (native_byte_order(), true),
         };
 
         let mut fields = Vec::new();
+        let mut offset = 0usize;
+        let native_long_size = if cfg!(target_os = "windows") {
+            4
+        } else {
+            core::mem::size_of::<isize>()
+        };
+        let pointer_size = core::mem::size_of::<usize>();
         while chars.peek().is_some() {
             if chars.peek().is_some_and(|ch| ch.is_whitespace()) {
                 chars.next();
@@ -432,22 +465,44 @@ impl PackedCodec {
             let code = chars
                 .next()
                 .ok_or_else(|| AdapterError::InvalidFormat("missing format code".into()))?;
-            let (kind, size, repeated) = match code {
-                'x' => (FieldKind::Pad, 1, true),
-                '?' => (FieldKind::Bool, 1, true),
-                'b' => (FieldKind::Signed, 1, true),
-                'B' => (FieldKind::Unsigned, 1, true),
-                'h' => (FieldKind::Signed, 2, true),
-                'H' => (FieldKind::Unsigned, 2, true),
-                'i' | 'l' => (FieldKind::Signed, 4, true),
-                'I' | 'L' => (FieldKind::Unsigned, 4, true),
-                'q' => (FieldKind::Signed, 8, true),
-                'Q' => (FieldKind::Unsigned, 8, true),
-                'f' => (FieldKind::Float32, 4, true),
-                'd' => (FieldKind::Float64, 8, true),
-                'c' => (FieldKind::Char, 1, true),
-                's' => (FieldKind::Bytes, count, false),
-                'p' => (FieldKind::Pascal, count, false),
+            let (kind, size, repeated, alignment) = match code {
+                'x' => (FieldKind::Pad, 1, true, 1),
+                '?' => (FieldKind::Bool, 1, true, 1),
+                'b' => (FieldKind::Signed, 1, true, 1),
+                'B' => (FieldKind::Unsigned, 1, true, 1),
+                'h' => (FieldKind::Signed, 2, true, 2),
+                'H' => (FieldKind::Unsigned, 2, true, 2),
+                'i' => (FieldKind::Signed, 4, true, 4),
+                'I' => (FieldKind::Unsigned, 4, true, 4),
+                'l' => (
+                    FieldKind::Signed,
+                    if native { native_long_size } else { 4 },
+                    true,
+                    if native { native_long_size } else { 1 },
+                ),
+                'L' => (
+                    FieldKind::Unsigned,
+                    if native { native_long_size } else { 4 },
+                    true,
+                    if native { native_long_size } else { 1 },
+                ),
+                'q' => (FieldKind::Signed, 8, true, 8),
+                'Q' => (FieldKind::Unsigned, 8, true, 8),
+                'n' if native => (FieldKind::Signed, pointer_size, true, pointer_size),
+                'N' | 'P' if native => (FieldKind::Unsigned, pointer_size, true, pointer_size),
+                'n' | 'N' | 'P' => {
+                    return Err(AdapterError::InvalidFormat(format!(
+                        "format code '{code}' requires native '@' mode"
+                    )))
+                }
+                'e' => (FieldKind::Float16, 2, true, 2),
+                'f' => (FieldKind::Float32, 4, true, 4),
+                'd' => (FieldKind::Float64, 8, true, 8),
+                'F' => (FieldKind::Complex32, 8, true, 4),
+                'D' => (FieldKind::Complex64, 16, true, 8),
+                'c' => (FieldKind::Char, 1, true, 1),
+                's' => (FieldKind::Bytes, count, false, 1),
+                'p' => (FieldKind::Pascal, count, false, 1),
                 other => {
                     return Err(AdapterError::InvalidFormat(format!(
                         "unsupported format code '{other}'"
@@ -455,16 +510,26 @@ impl PackedCodec {
                 }
             };
             if repeated {
-                fields.extend((0..count).map(|_| Field { kind, size }));
+                if count == 0 && native && !matches!(kind, FieldKind::Pad) {
+                    append_alignment(&mut fields, &mut offset, alignment)?;
+                }
+                for _ in 0..count {
+                    if native {
+                        append_alignment(&mut fields, &mut offset, alignment)?;
+                    }
+                    fields.push(Field { kind, size });
+                    offset = offset.checked_add(size).ok_or_else(|| {
+                        AdapterError::InvalidFormat("packed size overflow".into())
+                    })?;
+                }
             } else {
                 fields.push(Field { kind, size });
+                offset = offset
+                    .checked_add(size)
+                    .ok_or_else(|| AdapterError::InvalidFormat("packed size overflow".into()))?;
             }
         }
-        let size = fields.iter().try_fold(0usize, |total, field| {
-            total
-                .checked_add(field.size)
-                .ok_or_else(|| AdapterError::InvalidFormat("packed size overflow".into()))
-        })?;
+        let size = offset;
         let value_count = fields
             .iter()
             .filter(|field| !matches!(field.kind, FieldKind::Pad))
@@ -512,7 +577,7 @@ impl ValueCodec for PackedCodec {
         let mut output = Vec::with_capacity(self.size);
         for field in &self.fields {
             if matches!(field.kind, FieldKind::Pad) {
-                output.push(0);
+                output.resize(output.len() + field.size, 0);
                 continue;
             }
             let value = values[value_index];
@@ -579,11 +644,22 @@ fn encode_field(
             }
             append_integer(output, *value, field.size, order);
         }
+        (FieldKind::Float16, PackedValue::Float(value)) => {
+            append_integer(output, u64::from(f32_to_f16(*value as f32)?), 2, order)
+        }
         (FieldKind::Float32, PackedValue::Float(value)) => {
             append_integer(output, (*value as f32).to_bits() as u64, 4, order)
         }
         (FieldKind::Float64, PackedValue::Float(value)) => {
             append_integer(output, value.to_bits(), 8, order)
+        }
+        (FieldKind::Complex32, PackedValue::Complex(real, imaginary)) => {
+            append_integer(output, (*real as f32).to_bits() as u64, 4, order);
+            append_integer(output, (*imaginary as f32).to_bits() as u64, 4, order);
+        }
+        (FieldKind::Complex64, PackedValue::Complex(real, imaginary)) => {
+            append_integer(output, real.to_bits(), 8, order);
+            append_integer(output, imaginary.to_bits(), 8, order);
         }
         (FieldKind::Char, PackedValue::Bytes(value)) if value.len() == 1 => output.push(value[0]),
         (FieldKind::Bytes, PackedValue::Bytes(value)) => {
@@ -617,10 +693,21 @@ fn decode_field(field: Field, bytes: &[u8], order: ByteOrder) -> PackedValue {
             PackedValue::Signed(((unsigned << shift) as i64) >> shift)
         }
         FieldKind::Unsigned => PackedValue::Unsigned(read_integer(bytes, order)),
+        FieldKind::Float16 => {
+            PackedValue::Float(f16_to_f32(read_integer(bytes, order) as u16) as f64)
+        }
         FieldKind::Float32 => {
             PackedValue::Float(f32::from_bits(read_integer(bytes, order) as u32) as f64)
         }
         FieldKind::Float64 => PackedValue::Float(f64::from_bits(read_integer(bytes, order))),
+        FieldKind::Complex32 => PackedValue::Complex(
+            f32::from_bits(read_integer(&bytes[..4], order) as u32) as f64,
+            f32::from_bits(read_integer(&bytes[4..], order) as u32) as f64,
+        ),
+        FieldKind::Complex64 => PackedValue::Complex(
+            f64::from_bits(read_integer(&bytes[..8], order)),
+            f64::from_bits(read_integer(&bytes[8..], order)),
+        ),
         FieldKind::Char | FieldKind::Bytes => PackedValue::Bytes(bytes.to_vec()),
         FieldKind::Pascal => {
             if bytes.is_empty() {
@@ -654,6 +741,79 @@ fn read_integer(value: &[u8], order: ByteOrder) -> u64 {
         ByteOrder::Little => u64::from_le_bytes(bytes),
         ByteOrder::Big => u64::from_be_bytes(bytes),
     }
+}
+
+fn f32_to_f16(value: f32) -> Result<u16, AdapterError> {
+    let bits = value.to_bits();
+    let sign = ((bits >> 16) & 0x8000) as u16;
+    let exponent = ((bits >> 23) & 0xFF) as i32;
+    let mantissa = bits & 0x7F_FFFF;
+    if exponent == 0xFF {
+        if mantissa == 0 {
+            return Ok(sign | 0x7C00);
+        }
+        let payload = ((mantissa >> 13) as u16) | 0x0200;
+        return Ok(sign | 0x7C00 | payload);
+    }
+
+    let mut half_exponent = exponent - 127 + 15;
+    if half_exponent >= 31 {
+        return Err(AdapterError::InvalidValue(
+            "float is outside the binary16 range".into(),
+        ));
+    }
+    if half_exponent <= 0 {
+        if half_exponent < -10 {
+            return Ok(sign);
+        }
+        let significand = mantissa | 0x80_0000;
+        let shift = (14 - half_exponent) as u32;
+        let mut rounded = significand >> shift;
+        let remainder = significand & ((1u32 << shift) - 1);
+        let halfway = 1u32 << (shift - 1);
+        if remainder > halfway || (remainder == halfway && rounded & 1 != 0) {
+            rounded += 1;
+        }
+        return Ok(sign | rounded as u16);
+    }
+
+    let mut rounded = mantissa >> 13;
+    let remainder = mantissa & 0x1FFF;
+    if remainder > 0x1000 || (remainder == 0x1000 && rounded & 1 != 0) {
+        rounded += 1;
+        if rounded == 0x400 {
+            rounded = 0;
+            half_exponent += 1;
+            if half_exponent >= 31 {
+                return Err(AdapterError::InvalidValue(
+                    "float is outside the binary16 range".into(),
+                ));
+            }
+        }
+    }
+    Ok(sign | ((half_exponent as u16) << 10) | rounded as u16)
+}
+
+fn f16_to_f32(value: u16) -> f32 {
+    let sign = (u32::from(value & 0x8000)) << 16;
+    let exponent = u32::from((value >> 10) & 0x1F);
+    let mantissa = u32::from(value & 0x03FF);
+    let bits = match exponent {
+        0 if mantissa == 0 => sign,
+        0 => {
+            let mut mantissa = mantissa;
+            let mut exponent = -14i32;
+            while mantissa & 0x0400 == 0 {
+                mantissa <<= 1;
+                exponent -= 1;
+            }
+            mantissa &= 0x03FF;
+            sign | (((exponent + 127) as u32) << 23) | (mantissa << 13)
+        }
+        0x1F => sign | 0x7F80_0000 | (mantissa << 13),
+        _ => sign | ((exponent + 112) << 23) | (mantissa << 13),
+    };
+    f32::from_bits(bits)
 }
 
 #[derive(Clone, Debug)]

@@ -69,7 +69,8 @@ crate whose behavior is verified against the upstream Python.
 | 52. Complete GATT database definitions and access security | `bumble-gatt` | ✅ include/secondary/descriptor/permission green |
 | 53. Bearer-aware dynamic GATT value accessors | `bumble-gatt` | ✅ read/write/error callbacks green |
 | 54. Typed GATT characteristic and proxy adapters | `bumble-gatt` | ✅ upstream adapter vectors green |
-| 55+. Remaining modules… | — | planned |
+| 55. Complete Python 3.14 packed-value compatibility | `bumble-gatt` | ✅ native/half/complex oracle green |
+| 56+. Remaining modules… | — | planned |
 
 The LE lifecycle is now complete end-to-end through library APIs: **connect →
 discover → read/write → notify → disconnect** between two virtual devices — and
@@ -137,7 +138,8 @@ size, to convey remaining surface.
 |---|---|---|---|
 | `att.py` (1.1k) | `bumble-att` | ✅ | Complete typed catalog for every upstream `ATT_PDU` subclass: discovery, MTU, Read/Blob/Multiple/Multiple Variable/By Type/By Group, Write/Command/Signed, Prepare/Execute Write, notifications/indications, and confirmation. All added forms are Python-oracle pinned; variable tuples and handle sets add safe truncation/shape checks. |
 | `gatt.py` (0.6k), `gatt_server.py` (1.2k) | `bumble-gatt` | 🟡 | Attribute DB, primary/secondary services, include declarations, characteristic descriptors, automatic CCCDs, explicit access/security permissions, bearer-aware dynamic read/write callbacks, primary discovery, read/write/notify, Find_Information/Find_By_Type_Value, MTU-sized Read/Blob, fixed + variable Read Multiple, and atomic Prepare/Execute Write with cancel/rollback. Signed writes are deliberately ignored until a connection CSRK/counter can authenticate them. Deferred: the async bearer/event convenience layer. |
-| `gatt_client.py` (1.2k), `gatt_adapters.py` (0.4k) | `bumble-gatt` | 🟡 | **`GattClient` (slice 18)**: service / characteristic / descriptor discovery, reads (with long-read via Read_Blob), writes (with and without response), and notify/indicate subscriptions (CCCD write + notification/indication handling), over an `AttTransport`. Slice 54 adds typed server/proxy adapters for delegated, packed, mapped, UTF-8, serializable, and enum values, including typed dynamic server state and cached proxy decoding. Deferred: async bearer/event listeners and Python-native-aligned/exotic `struct` formats; all formats used by current Bumble profiles are supported. |
+| `gatt_client.py` (1.2k) | `bumble-gatt` | 🟡 | **`GattClient` (slice 18)**: service / characteristic / descriptor discovery, reads (with long-read via Read_Blob), writes (with and without response), and notify/indicate subscriptions (CCCD write + notification/indication handling), over an `AttTransport`. Deferred: async bearer/event listeners. |
+| `gatt_adapters.py` (0.4k) | `bumble-gatt` | ✅ | Typed server/proxy adapters for delegated, packed, mapped, UTF-8, serializable, and enum values, including typed dynamic server state and cached proxy decoding. `PackedCodec` covers Python 3.14 portable and native-aligned `struct` modes, zero-repeat tail alignment, pointer-sized integers, binary16, and complex32/64, with host-Python oracle vectors. |
 
 ### Security (SMP + crypto)
 | Upstream (LOC) | Rust crate | Status | Notes |
@@ -1236,6 +1238,28 @@ Upstream `gatt_adapters.py` now has a typed synchronous Rust foundation:
 
 The next adapter slice closes Python-native alignment and remaining uncommon
 `struct` codes before moving out of GATT.
+
+## Slice 55 — what's here
+
+The packed adapter now matches the current Python 3.14 `struct` model used by
+upstream:
+
+- An omitted prefix and `@` use native byte order, C sizes, and inter-field
+  alignment. `=`, `<`, `>`, and `!` retain standard sizes without alignment.
+  Native `long`, `ssize_t`/`size_t`, and pointer forms (`l/L`, `n/N`, `P`) use
+  target widths, and zero-repeat fields preserve Python's tail-alignment rule.
+- Binary16 `e` implements round-to-nearest-even conversion and rejects finite
+  overflow. Python 3.14 complex `F`/`D` values serialize real then imaginary
+  components at 32- or 64-bit precision.
+- Zero-length strings/Pascal strings, native padding, signed extension, integer
+  range checks, and enum-width overflow are handled without truncation or
+  indexing hazards.
+- Tests pin byte-for-byte output to the local Python 3.14.3 oracle for native
+  `@bhi`, `@bl`, `@nNP`, `@llh0l`, big/little binary16, and big-endian complex
+  values.
+
+With `gatt_adapters.py` complete, work leaves the GATT model and returns to the
+larger protocol/runtime gaps.
 
 ## Acceptance
 
