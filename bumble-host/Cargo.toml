@@ -18,10 +18,12 @@ bumble-l2cap = { path = "../bumble-l2cap" }
 bumble-att = { path = "../bumble-att" }
 bumble-gatt = { path = "../bumble-gatt" }
 bumble-controller = { path = "../bumble-controller" }
+bumble-crypto = { path = "../bumble-crypto" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 
 [dev-dependencies]
 # The SMP pairing integration tests run the handshake over the link; the
 # Secure Connections test also needs the P-256 key agreement.
 bumble-smp = { path = "../bumble-smp" }
-bumble-crypto = { path = "../bumble-crypto" }
 bumble-hfp = { path = "../bumble-hfp" }

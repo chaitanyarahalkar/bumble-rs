@@ -45,7 +45,13 @@ use bumble_l2cap::{
     L2CAP_LE_SIGNALING_CID, L2CAP_SIGNALING_CID,
 };
 
+mod configuration;
 mod data_queue;
+pub use configuration::{
+    DeviceConfiguration, DeviceConfigurationError, DEVICE_DEFAULT_ADDRESS,
+    DEVICE_DEFAULT_ADVERTISING_INTERVAL, DEVICE_DEFAULT_CLASS_OF_DEVICE,
+    DEVICE_DEFAULT_LE_RPA_TIMEOUT, DEVICE_DEFAULT_NAME,
+};
 pub use data_queue::{DataPacketQueue, DataPacketQueueError};
 
 /// The fixed L2CAP channel id for the Attribute Protocol.
@@ -54,6 +60,12 @@ pub const ATT_CID: u16 = 0x0004;
 pub const EATT_PSM: u16 = 0x0027;
 /// The fixed L2CAP channel id for LE SMP.
 pub const SMP_CID: u16 = 0x0006;
+
+fn advertising_interval_units(milliseconds: f64) -> Option<u16> {
+    let units = (milliseconds / 0.625).trunc();
+    (milliseconds.is_finite() && (0x0020 as f64..=0x4000 as f64).contains(&units))
+        .then_some(units as u16)
+}
 
 /// Stable server context identity for a connection's fixed ATT bearer.
 pub const fn att_bearer_id(connection_handle: u16) -> u64 {
@@ -1290,6 +1302,7 @@ pub struct PeriodicAdvertisement {
 /// A host attached to a controller through a [`HostTransport`]. Owns the
 /// ATT↔L2CAP↔ACL sequencing.
 pub struct Device {
+    pub config: DeviceConfiguration,
     controller_id: usize,
     server: Option<Box<dyn AttRequestHandler>>,
     connection_handle: Option<u16>,
@@ -1371,6 +1384,7 @@ impl Device {
     /// A client-only device (no attribute server).
     pub fn new(controller_id: usize) -> Device {
         Device {
+            config: DeviceConfiguration::default(),
             controller_id,
             server: None,
             connection_handle: None,
@@ -1452,6 +1466,7 @@ impl Device {
     /// (an [`bumble_gatt::AttServer`] or a full [`bumble_gatt::GattServer`]).
     pub fn with_server(controller_id: usize, server: impl AttRequestHandler + 'static) -> Device {
         Device {
+            config: DeviceConfiguration::default(),
             controller_id,
             server: Some(Box::new(server)),
             connection_handle: None,
@@ -1527,6 +1542,35 @@ impl Device {
             acl_packet_queue: DataPacketQueue::new(64).expect("nonzero ACL queue capacity"),
             encrypted_handles: BTreeSet::new(),
         }
+    }
+
+    /// Build a client-only device from a reusable upstream-style configuration.
+    pub fn from_config(controller_id: usize, config: DeviceConfiguration) -> Device {
+        let mut device = Self::new(controller_id);
+        device.config = config;
+        device
+    }
+
+    /// Load a client-only device configuration from a JSON file.
+    pub fn from_config_file(
+        controller_id: usize,
+        filename: impl AsRef<std::path::Path>,
+    ) -> Result<Device, DeviceConfigurationError> {
+        Ok(Self::from_config(
+            controller_id,
+            DeviceConfiguration::from_file(filename)?,
+        ))
+    }
+
+    /// Build a configured device that also owns an ATT request handler.
+    pub fn with_server_and_config(
+        controller_id: usize,
+        config: DeviceConfiguration,
+        server: impl AttRequestHandler + 'static,
+    ) -> Device {
+        let mut device = Self::with_server(controller_id, server);
+        device.config = config;
+        device
     }
 
     pub fn controller_id(&self) -> usize {
@@ -2149,6 +2193,62 @@ impl Device {
             link,
             Command::LeSetAdvertisingData {
                 advertising_data: data.to_vec(),
+            },
+        );
+        self.send_hci_command(
+            link,
+            Command::LeSetAdvertisingEnable {
+                advertising_enable: 1,
+            },
+        );
+        true
+    }
+
+    /// Start legacy advertising with this device's loaded configuration.
+    ///
+    /// This is the synchronous counterpart to upstream `Device.start_advertising()`
+    /// when no per-call data or interval overrides are supplied.
+    pub fn start_configured_advertising(&mut self, link: &mut LocalLink) -> bool {
+        let Some(advertising_interval_min) =
+            advertising_interval_units(self.config.advertising_interval_min)
+        else {
+            return false;
+        };
+        let Some(advertising_interval_max) =
+            advertising_interval_units(self.config.advertising_interval_max)
+        else {
+            return false;
+        };
+        if advertising_interval_min > advertising_interval_max
+            || self.config.advertising_data.len() > 31
+            || self.config.scan_response_data.len() > 31
+        {
+            return false;
+        }
+
+        self.send_hci_command(
+            link,
+            Command::LeSetAdvertisingData {
+                advertising_data: self.config.advertising_data.clone(),
+            },
+        );
+        self.send_hci_command(
+            link,
+            Command::LeSetScanResponseData {
+                scan_response_data: self.config.scan_response_data.clone(),
+            },
+        );
+        self.send_hci_command(
+            link,
+            Command::LeSetAdvertisingParameters {
+                advertising_interval_min,
+                advertising_interval_max,
+                advertising_type: 0,
+                own_address_type: 1,
+                peer_address_type: 0,
+                peer_address: Address::from_bytes([0; 6], bumble::AddressType::PUBLIC_DEVICE),
+                advertising_channel_map: 7,
+                advertising_filter_policy: 0,
             },
         );
         self.send_hci_command(
