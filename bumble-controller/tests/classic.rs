@@ -265,9 +265,39 @@ fn classic_read_remote_supported_features() {
             HciPacket::Event(Event::ReadRemoteSupportedFeaturesComplete {
                 status: 0,
                 connection_handle,
-                ..
+                lmp_features,
             }) if *connection_handle == chandle
+                && *lmp_features == [0, 0, 0, 0, 0x60, 0, 0, 0x80]
         )),
         "expected Read Remote Supported Features Complete, got {done:?}"
     );
+
+    link.handle_command(
+        central,
+        Command::ReadRemoteExtendedFeatures {
+            connection_handle: chandle,
+            page_number: 2,
+        },
+    );
+    let status = link.drain_host_events(central);
+    assert!(status.iter().any(|event| matches!(
+        event,
+        HciPacket::Event(Event::CommandStatus {
+            status: 0,
+            command_opcode,
+            ..
+        }) if *command_opcode == bumble_hci::HCI_READ_REMOTE_EXTENDED_FEATURES_COMMAND
+    )));
+    link.pump_classic();
+    let extended = link.drain_host_events(central);
+    assert!(extended.iter().any(|event| matches!(
+        event,
+        HciPacket::Event(Event::ReadRemoteExtendedFeaturesComplete {
+            status: 0,
+            connection_handle,
+            page_number: 2,
+            maximum_page_number: 3,
+            extended_lmp_features,
+        }) if *connection_handle == chandle && *extended_lmp_features == [0; 8]
+    )));
 }

@@ -62,10 +62,9 @@ fn data_command_is_acknowledged() {
 
 #[test]
 fn status_command_gets_command_status() {
-    // Read_Remote_Extended_Features (0x041C): a Status-category command with NO
-    // functional handler, so it must go through the surface-table Status
-    // fallback and yield a Command Status. (Remote_Name_Request would instead
-    // hit its own explicit handler, so it can't exercise the fallback.)
+    // Read_Remote_Extended_Features (0x041C) is a Status-category command. Its
+    // functional handler rejects this absent handle, but still has to use the
+    // Command Status response shape rather than Command Complete.
     let mut c = ctrl();
     c.handle_command(Command::ReadRemoteExtendedFeatures {
         connection_handle: 0x0001,
@@ -77,7 +76,7 @@ fn status_command_gets_command_status() {
             command_opcode,
             ..
         }) => {
-            assert_eq!(status, 0);
+            assert_eq!(status, 0x02);
             assert_eq!(command_opcode, 0x041C);
         }
         other => panic!("expected Command Status, got {other:?}"),

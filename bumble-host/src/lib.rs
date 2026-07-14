@@ -371,6 +371,20 @@ pub struct ChannelSoundingError {
     pub status: u8,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConnectionFeatureTransport {
+    Le,
+    Classic,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ConnectionFeatureError {
+    pub transport: ConnectionFeatureTransport,
+    pub connection_handle: u16,
+    pub page_number: Option<u8>,
+    pub status: u8,
+}
+
 /// Host-owned metadata for one established LE ACL connection.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LeConnectionInfo {
@@ -380,6 +394,7 @@ pub struct LeConnectionInfo {
     pub parameters: LeConnectionParameters,
     pub classic_mode: u8,
     pub classic_interval: u16,
+    pub peer_le_features: Option<[u8; 8]>,
     pub channel_sounding_capabilities: Option<ChannelSoundingCapabilities>,
     pub channel_sounding_configs: BTreeMap<u8, ChannelSoundingConfig>,
     pub channel_sounding_procedures: BTreeMap<u8, ChannelSoundingProcedure>,
@@ -401,6 +416,8 @@ pub struct ClassicConnectionInfo {
     pub peer_address: Address,
     pub classic_mode: u8,
     pub classic_interval: u16,
+    pub peer_lmp_features: BTreeMap<u8, [u8; 8]>,
+    pub peer_lmp_max_page_number: Option<u8>,
 }
 
 /// One Classic inquiry report, retaining the discovery metadata applications
@@ -797,6 +814,7 @@ pub struct Device {
     l2cap_inbox: Vec<(u16, u16, Vec<u8>)>,
     security_requests: Vec<(u16, u8)>,
     long_term_key_requests: Vec<LongTermKeyRequestInfo>,
+    connection_feature_errors: Vec<ConnectionFeatureError>,
     pending_channel_sounding_configs: BTreeSet<(u16, u8)>,
     channel_sounding_errors: Vec<ChannelSoundingError>,
     channel_sounding_security_results: Vec<(u16, u8)>,
@@ -859,6 +877,7 @@ impl Device {
             l2cap_inbox: Vec::new(),
             security_requests: Vec::new(),
             long_term_key_requests: Vec::new(),
+            connection_feature_errors: Vec::new(),
             pending_channel_sounding_configs: BTreeSet::new(),
             channel_sounding_errors: Vec::new(),
             channel_sounding_security_results: Vec::new(),
@@ -922,6 +941,7 @@ impl Device {
             l2cap_inbox: Vec::new(),
             security_requests: Vec::new(),
             long_term_key_requests: Vec::new(),
+            connection_feature_errors: Vec::new(),
             pending_channel_sounding_configs: BTreeSet::new(),
             channel_sounding_errors: Vec::new(),
             channel_sounding_security_results: Vec::new(),
@@ -991,6 +1011,37 @@ impl Device {
 
     pub fn peer_address(&self) -> Option<&Address> {
         self.peer_address.as_ref()
+    }
+
+    pub fn read_remote_le_features_on_handle(
+        &mut self,
+        link: &mut LocalLink,
+        connection_handle: u16,
+    ) -> bool {
+        if !self.le_connections.contains_key(&connection_handle) {
+            return false;
+        }
+        self.send_hci_command(link, Command::LeReadRemoteFeatures { connection_handle });
+        true
+    }
+
+    pub fn read_remote_classic_features_on_handle(
+        &mut self,
+        link: &mut LocalLink,
+        connection_handle: u16,
+    ) -> bool {
+        if !self.classic_connections.contains_key(&connection_handle) {
+            return false;
+        }
+        self.send_hci_command(
+            link,
+            Command::ReadRemoteSupportedFeatures { connection_handle },
+        );
+        true
+    }
+
+    pub fn take_connection_feature_errors(&mut self) -> Vec<ConnectionFeatureError> {
+        std::mem::take(&mut self.connection_feature_errors)
     }
 
     pub fn request_le_subrate_on_handle(
@@ -2983,6 +3034,7 @@ impl Device {
                 },
                 classic_mode: 0,
                 classic_interval: 0,
+                peer_le_features: None,
                 channel_sounding_capabilities: None,
                 channel_sounding_configs: BTreeMap::new(),
                 channel_sounding_procedures: BTreeMap::new(),
@@ -3067,6 +3119,24 @@ impl Device {
                         connection.parameters.peripheral_latency = peripheral_latency;
                         connection.parameters.continuation_number = continuation_number;
                         connection.parameters.supervision_timeout = supervision_timeout;
+                    }
+                }
+                HciPacket::Event(Event::LeMeta(LeMetaEvent::ReadRemoteFeaturesComplete {
+                    status,
+                    connection_handle,
+                    le_features,
+                })) => {
+                    if let Some(connection) = self.le_connections.get_mut(&connection_handle) {
+                        if status == 0 {
+                            connection.peer_le_features = Some(le_features);
+                        } else {
+                            self.connection_feature_errors.push(ConnectionFeatureError {
+                                transport: ConnectionFeatureTransport::Le,
+                                connection_handle,
+                                page_number: None,
+                                status,
+                            });
+                        }
                     }
                 }
                 HciPacket::Event(Event::LeMeta(
@@ -3523,6 +3593,8 @@ impl Device {
                         .retain(|(handle, _)| *handle != connection_handle);
                     self.long_term_key_requests
                         .retain(|request| request.connection_handle != connection_handle);
+                    self.connection_feature_errors
+                        .retain(|error| error.connection_handle != connection_handle);
                     self.pending_channel_sounding_configs
                         .retain(|(handle, _)| *handle != connection_handle);
                     self.channel_sounding_errors
@@ -3629,6 +3701,73 @@ impl Device {
                         String::from_utf8_lossy(&remote_name[..length]).into_owned(),
                     ));
                 }
+                HciPacket::Event(Event::ReadRemoteSupportedFeaturesComplete {
+                    status,
+                    connection_handle,
+                    lmp_features,
+                }) => {
+                    let mut request_extended_page_zero = false;
+                    if let Some(connection) = self.classic_connections.get_mut(&connection_handle) {
+                        if status == 0 {
+                            connection.peer_lmp_features.insert(0, lmp_features);
+                            request_extended_page_zero = lmp_features[7] & 0x80 != 0;
+                            connection.peer_lmp_max_page_number =
+                                (!request_extended_page_zero).then_some(0);
+                        } else {
+                            self.connection_feature_errors.push(ConnectionFeatureError {
+                                transport: ConnectionFeatureTransport::Classic,
+                                connection_handle,
+                                page_number: None,
+                                status,
+                            });
+                        }
+                    }
+                    if request_extended_page_zero {
+                        self.send_hci_command(
+                            link,
+                            Command::ReadRemoteExtendedFeatures {
+                                connection_handle,
+                                page_number: 0,
+                            },
+                        );
+                    }
+                }
+                HciPacket::Event(Event::ReadRemoteExtendedFeaturesComplete {
+                    status,
+                    connection_handle,
+                    page_number,
+                    maximum_page_number,
+                    extended_lmp_features,
+                }) => {
+                    let mut next_page = None;
+                    if let Some(connection) = self.classic_connections.get_mut(&connection_handle) {
+                        if status == 0 {
+                            connection
+                                .peer_lmp_features
+                                .insert(page_number, extended_lmp_features);
+                            connection.peer_lmp_max_page_number = Some(maximum_page_number);
+                            next_page = page_number
+                                .checked_add(1)
+                                .filter(|page| *page <= maximum_page_number);
+                        } else {
+                            self.connection_feature_errors.push(ConnectionFeatureError {
+                                transport: ConnectionFeatureTransport::Classic,
+                                connection_handle,
+                                page_number: Some(page_number),
+                                status,
+                            });
+                        }
+                    }
+                    if let Some(page_number) = next_page {
+                        self.send_hci_command(
+                            link,
+                            Command::ReadRemoteExtendedFeatures {
+                                connection_handle,
+                                page_number,
+                            },
+                        );
+                    }
+                }
                 HciPacket::Event(Event::ConnectionComplete {
                     status,
                     connection_handle,
@@ -3651,6 +3790,8 @@ impl Device {
                                 peer_address: bd_addr,
                                 classic_mode: 0,
                                 classic_interval: 0,
+                                peer_lmp_features: BTreeMap::new(),
+                                peer_lmp_max_page_number: None,
                             },
                         );
                         let mut manager = ClassicChannelManager::new();

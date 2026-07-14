@@ -29,6 +29,14 @@ pub enum ClassicPdu {
     FeaturesReq,
     /// Features response (`LmpFeaturesRes`).
     FeaturesRes { features: [u8; 8] },
+    /// Extended-features request (`LmpFeaturesReqExt`).
+    FeaturesReqExt { page_number: u8, features: [u8; 8] },
+    /// Extended-features response (`LmpFeaturesResExt`).
+    FeaturesResExt {
+        page_number: u8,
+        max_page_number: u8,
+        features: [u8; 8],
+    },
     /// Enable or disable encryption on an established Classic ACL.
     EncryptionModeReq { enable: bool },
     /// Request an SCO/eSCO logical link over an established Classic ACL.

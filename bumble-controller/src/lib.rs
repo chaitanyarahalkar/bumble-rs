@@ -165,9 +165,15 @@ const LOCAL_SUPPORTED_COMMANDS: [u8; 64] = [
 const LOCAL_LE_FEATURES: [u8; 8] = [0x00, 0x10, 0x00, 0xF0, 0, 0, 0, 0];
 /// PHY value for LE 1M, reported when no specific PHY was requested.
 const LE_1M_PHY: u8 = 1;
-/// The classic LMP features bitmap reported by `Read_Remote_Supported_Features`
-/// (all zero — no optional classic features, an honest report).
-const LMP_FEATURES: [u8; 8] = [0; 8];
+/// The four LMP feature pages exposed by upstream's software-controller
+/// defaults. Page 0 advertises LE Controller support, BR/EDR Not Supported,
+/// and the presence of extended pages; pages 1-3 are initially empty.
+const LMP_FEATURE_PAGES: [[u8; 8]; 4] = [
+    [0x00, 0x00, 0x00, 0x00, 0x60, 0x00, 0x00, 0x80],
+    [0; 8],
+    [0; 8],
+    [0; 8],
+];
 /// Classic ACL link type, reported in classic Connection Complete / Request.
 const LINK_TYPE_ACL: u8 = 0x01;
 /// Classic synchronous link types from the HCI Connection Request/Complete events.
@@ -888,7 +894,7 @@ impl Controller {
                     op_code,
                     ReturnParameters::ReadLocalSupportedFeatures {
                         status: HCI_SUCCESS,
-                        lmp_features: LMP_FEATURES,
+                        lmp_features: LMP_FEATURE_PAGES[0],
                     },
                 );
             }
@@ -1154,6 +1160,10 @@ impl Controller {
             Command::ReadRemoteSupportedFeatures { connection_handle } => {
                 self.handle_read_remote_supported_features(connection_handle)
             }
+            Command::ReadRemoteExtendedFeatures {
+                connection_handle,
+                page_number,
+            } => self.handle_read_remote_extended_features(connection_handle, page_number),
             Command::SniffMode {
                 connection_handle, ..
             } => self.handle_classic_mode_change(HCI_SNIFF_MODE_COMMAND, connection_handle, 0x02),
@@ -2242,6 +2252,37 @@ impl Controller {
         self.queue_classic(self_addr, peer_addr, lmp::ClassicPdu::FeaturesReq);
     }
 
+    /// `Read_Remote_Extended_Features` (classic): request one peer feature page.
+    fn handle_read_remote_extended_features(&mut self, connection_handle: u16, page_number: u8) {
+        let Some(connection) = self
+            .classic_connections
+            .iter()
+            .find(|connection| connection.handle == connection_handle)
+        else {
+            return self.command_status(
+                HCI_READ_REMOTE_EXTENDED_FEATURES_COMMAND,
+                UNKNOWN_CONNECTION_IDENTIFIER_ERROR,
+            );
+        };
+        let (self_address, peer_address) = (
+            connection.self_address.clone(),
+            connection.peer_address.clone(),
+        );
+        let features = LMP_FEATURE_PAGES
+            .get(usize::from(page_number))
+            .copied()
+            .unwrap_or([0; 8]);
+        self.command_status(HCI_READ_REMOTE_EXTENDED_FEATURES_COMMAND, HCI_SUCCESS);
+        self.queue_classic(
+            self_address,
+            peer_address,
+            lmp::ClassicPdu::FeaturesReqExt {
+                page_number,
+                features,
+            },
+        );
+    }
+
     fn handle_set_classic_encryption(&mut self, connection_handle: u16, encryption_enable: u8) {
         let Some(connection) = self
             .classic_connections
@@ -2604,7 +2645,7 @@ impl Controller {
                     self_addr,
                     sender_address.clone(),
                     lmp::ClassicPdu::FeaturesRes {
-                        features: LMP_FEATURES,
+                        features: LMP_FEATURE_PAGES[0],
                     },
                 );
             }
@@ -2620,6 +2661,43 @@ impl Controller {
                             status: HCI_SUCCESS,
                             connection_handle: handle,
                             lmp_features: features,
+                        },
+                    ));
+                }
+            }
+            lmp::ClassicPdu::FeaturesReqExt { page_number, .. } => {
+                let features = LMP_FEATURE_PAGES
+                    .get(usize::from(page_number))
+                    .copied()
+                    .unwrap_or([0; 8]);
+                let self_address = self.public_address.clone();
+                self.queue_classic(
+                    self_address,
+                    sender_address.clone(),
+                    lmp::ClassicPdu::FeaturesResExt {
+                        page_number,
+                        max_page_number: (LMP_FEATURE_PAGES.len() - 1) as u8,
+                        features,
+                    },
+                );
+            }
+            lmp::ClassicPdu::FeaturesResExt {
+                page_number,
+                max_page_number,
+                features,
+            } => {
+                if let Some(connection) = self
+                    .classic_connections
+                    .iter()
+                    .find(|connection| connection.peer_address == *sender_address)
+                {
+                    self.host_queue.push(HciPacket::Event(
+                        Event::ReadRemoteExtendedFeaturesComplete {
+                            status: HCI_SUCCESS,
+                            connection_handle: connection.handle,
+                            page_number,
+                            maximum_page_number: max_page_number,
+                            extended_lmp_features: features,
                         },
                     ));
                 }
