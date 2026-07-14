@@ -9,6 +9,7 @@ mod data_types;
 mod host;
 mod l2cap;
 mod runtime;
+mod security;
 
 // Keep the canonical bt-test-interfaces v0.0.6 documentation verbatim in the
 // generated API, including its deliberately nested list indentation.
@@ -29,3 +30,4 @@ pub use config::{PandoraConfig, ServerConfig};
 pub use host::HostService;
 pub use l2cap::L2capService;
 pub use runtime::PandoraRuntime;
+pub use security::{SecurityService, SecurityStorageService};

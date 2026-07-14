@@ -1,7 +1,12 @@
 use bumble_pandora::config::{DEFAULT_GRPC_PORT, DEFAULT_ROOTCANAL_PORT};
 use bumble_pandora::proto::host_server::HostServer;
 use bumble_pandora::proto::l2cap::l2cap_server::L2capServer;
-use bumble_pandora::{HostService, L2capService, PandoraConfig, PandoraRuntime};
+use bumble_pandora::proto::security_server::SecurityServer;
+use bumble_pandora::proto::security_storage_server::SecurityStorageServer;
+use bumble_pandora::{
+    HostService, L2capService, PandoraConfig, PandoraRuntime, SecurityService,
+    SecurityStorageService,
+};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -83,6 +88,10 @@ async fn run(args: Args) -> Result<(), String> {
     println!("Pandora gRPC server listening on {address}");
     Server::builder()
         .add_service(HostServer::new(HostService::new(runtime.clone())))
+        .add_service(SecurityServer::new(SecurityService::new(runtime.clone())))
+        .add_service(SecurityStorageServer::new(SecurityStorageService::new(
+            runtime.clone(),
+        )))
         .add_service(L2capServer::new(L2capService::new(runtime)))
         .serve_with_shutdown(address, async {
             let _ = tokio::signal::ctrl_c().await;

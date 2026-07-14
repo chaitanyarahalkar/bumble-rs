@@ -1,4 +1,5 @@
 use crate::config::PandoraConfig;
+use bumble::keys::{JsonKeyStore, KeyStore, MemoryKeyStore};
 use bumble::{Address, AddressType};
 use bumble_hci::{Command, ReturnParameters};
 use bumble_host::Device;
@@ -26,12 +27,21 @@ pub(crate) struct L2capChannelEntry {
     pub kind: L2capChannelKind,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ConnectionSecurity {
+    pub authenticated: bool,
+    pub secure_connections: bool,
+    pub link_key_type: Option<u8>,
+}
+
 pub(crate) struct RuntimeState {
     pub host: ExternalHost,
     pub device: Device,
     pub config: PandoraConfig,
     pub public_address: Address,
     pub random_address: Address,
+    pub key_store: Box<dyn KeyStore + Send>,
+    pub connection_security: BTreeMap<u16, ConnectionSecurity>,
     pub waited_classic_connections: BTreeSet<u16>,
     pub classic_discoverable: bool,
     pub classic_connectable: bool,
@@ -72,12 +82,15 @@ impl RuntimeState {
             } => bd_addr,
             response => return Err(format!("unexpected Read BD_ADDR response: {response:?}")),
         };
+        let key_store = create_key_store(&config, &public_address);
         let mut state = Self {
             host,
             device,
             config,
             public_address,
             random_address,
+            key_store,
+            connection_security: BTreeMap::new(),
             waited_classic_connections: BTreeSet::new(),
             classic_discoverable: true,
             classic_connectable: true,
@@ -103,11 +116,19 @@ impl RuntimeState {
             "restoring Pandora random address",
         )?;
         self.waited_classic_connections.clear();
+        self.connection_security.clear();
         self.l2cap_channels.clear();
         self.pending_l2cap_channels.clear();
         self.l2cap_classic_servers.clear();
         self.l2cap_le_servers.clear();
         self.apply_classic_scan_enable()
+    }
+
+    pub fn factory_reset(&mut self) -> Result<(), String> {
+        self.key_store
+            .delete_all()
+            .map_err(|error| error.to_string())?;
+        self.reset()
     }
 
     pub fn apply_classic_scan_enable(&mut self) -> Result<(), String> {
@@ -176,6 +197,25 @@ impl RuntimeState {
     pub fn connection_exists(&self, handle: u16) -> bool {
         self.device.is_connected_on_handle(handle)
             || self.device.classic_connection(handle).is_some()
+    }
+}
+
+fn create_key_store(config: &PandoraConfig, public_address: &Address) -> Box<dyn KeyStore + Send> {
+    let Some(specification) = config.keystore.as_deref() else {
+        return Box::new(MemoryKeyStore::new());
+    };
+    let (kind, filename) = specification
+        .split_once(':')
+        .map_or((specification, None), |(kind, filename)| {
+            (kind, (!filename.is_empty()).then_some(filename))
+        });
+    if kind != "JsonKeyStore" {
+        return Box::new(MemoryKeyStore::new());
+    }
+    let namespace = public_address.to_string(false);
+    match filename {
+        Some(filename) => Box::new(JsonKeyStore::new(Some(&namespace), filename)),
+        None => Box::new(JsonKeyStore::with_default_path(Some(&namespace))),
     }
 }
 

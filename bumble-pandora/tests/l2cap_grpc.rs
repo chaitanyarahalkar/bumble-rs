@@ -20,12 +20,26 @@ use bumble_pandora::proto::l2cap::{
     ReceiveRequest, SendRequest, WaitConnectionRequest as L2capWaitConnectionRequest,
     WaitDisconnectionRequest as L2capWaitDisconnectionRequest,
 };
-use bumble_pandora::proto::{AdvertiseRequest, ConnectLeRequest};
-use bumble_pandora::{HostService, L2capService, PandoraConfig, PandoraRuntime, ServerConfig};
+use bumble_pandora::proto::secure_response;
+use bumble_pandora::proto::security_client::SecurityClient;
+use bumble_pandora::proto::security_server::SecurityServer;
+use bumble_pandora::proto::security_storage_client::SecurityStorageClient;
+use bumble_pandora::proto::security_storage_server::SecurityStorageServer;
+use bumble_pandora::proto::wait_security_request;
+use bumble_pandora::proto::wait_security_response;
+use bumble_pandora::proto::{pairing_event, pairing_event_answer};
+use bumble_pandora::proto::{
+    AdvertiseRequest, ConnectLeRequest, DeleteBondRequest, IsBondedRequest, LeSecurityLevel,
+    PairingEventAnswer, SecureRequest, WaitSecurityRequest,
+};
+use bumble_pandora::{
+    HostService, L2capService, PandoraConfig, PandoraRuntime, SecurityService,
+    SecurityStorageService, ServerConfig,
+};
 use bumble_transport::{PacketSink, PacketSource, TcpServer};
 use std::sync::mpsc;
-use tokio::sync::oneshot;
-use tokio_stream::wrappers::TcpListenerStream;
+use tokio::sync::{mpsc as tokio_mpsc, oneshot};
+use tokio_stream::wrappers::{ReceiverStream, TcpListenerStream};
 use tonic::transport::{Channel, Endpoint, Server};
 
 enum HostInput {
@@ -125,6 +139,10 @@ async fn start_server(
     let server = tokio::spawn(
         Server::builder()
             .add_service(HostServer::new(HostService::new(runtime.clone())))
+            .add_service(SecurityServer::new(SecurityService::new(runtime.clone())))
+            .add_service(SecurityStorageServer::new(SecurityStorageService::new(
+                runtime.clone(),
+            )))
             .add_service(L2capServer::new(L2capService::new(runtime)))
             .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
                 let _ = shutdown_receiver.await;
@@ -139,6 +157,53 @@ async fn channel(endpoint: &str) -> Channel {
         .connect()
         .await
         .expect("connect Pandora client")
+}
+
+async fn answer_pairing_events(
+    mut client: SecurityClient<Channel>,
+) -> (
+    tokio_mpsc::Sender<PairingEventAnswer>,
+    tokio::task::JoinHandle<()>,
+) {
+    let (answer_sender, answer_receiver) = tokio_mpsc::channel(8);
+    let mut events = client
+        .on_pairing(ReceiverStream::new(answer_receiver))
+        .await
+        .expect("open OnPairing stream")
+        .into_inner();
+    let responses = answer_sender.clone();
+    let task = tokio::spawn(async move {
+        while let Ok(Some(event)) = events.message().await {
+            let answer = match event.method.as_ref() {
+                Some(
+                    pairing_event::Method::JustWorks(())
+                    | pairing_event::Method::NumericComparison(_),
+                ) => pairing_event_answer::Answer::Confirm(true),
+                Some(pairing_event::Method::PasskeyEntryRequest(())) => {
+                    pairing_event_answer::Answer::Passkey(123_456)
+                }
+                Some(pairing_event::Method::PinCodeRequest(())) => {
+                    pairing_event_answer::Answer::Pin(b"0000".to_vec())
+                }
+                Some(
+                    pairing_event::Method::PasskeyEntryNotification(_)
+                    | pairing_event::Method::PinCodeNotification(_),
+                )
+                | None => continue,
+            };
+            if responses
+                .send(PairingEventAnswer {
+                    event: Some(event),
+                    answer: Some(answer),
+                })
+                .await
+                .is_err()
+            {
+                return;
+            }
+        }
+    });
+    (answer_sender, task)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -181,6 +246,10 @@ async fn transfers_an_le_credit_sdu_through_two_live_grpc_servers() {
     let mut peripheral_host = HostClient::new(channel(&peripheral_endpoint).await);
     let mut central_l2cap = L2capClient::new(channel(&central_endpoint).await);
     let mut peripheral_l2cap = L2capClient::new(channel(&peripheral_endpoint).await);
+    let (central_pairing_answers, central_pairing_task) =
+        answer_pairing_events(SecurityClient::new(channel(&central_endpoint).await)).await;
+    let (peripheral_pairing_answers, peripheral_pairing_task) =
+        answer_pairing_events(SecurityClient::new(channel(&peripheral_endpoint).await)).await;
 
     let mut advertisements = peripheral_host
         .advertise(AdvertiseRequest {
@@ -218,6 +287,80 @@ async fn transfers_an_le_credit_sdu_through_two_live_grpc_servers() {
         .connection
         .expect("peripheral connection cookie");
     drop(advertisements);
+
+    let mut central_security = SecurityClient::new(channel(&central_endpoint).await);
+    let mut peripheral_security = SecurityClient::new(channel(&peripheral_endpoint).await);
+    let wait_connection = peripheral_connection.clone();
+    let security_wait = tokio::spawn(async move {
+        peripheral_security
+            .wait_security(WaitSecurityRequest {
+                connection: Some(wait_connection),
+                level: Some(wait_security_request::Level::Le(
+                    LeSecurityLevel::LeLevel2 as i32,
+                )),
+            })
+            .await
+            .expect("wait for LE security")
+            .into_inner()
+    });
+    let security = central_security
+        .secure(SecureRequest {
+            connection: Some(central_connection.clone()),
+            level: Some(bumble_pandora::proto::secure_request::Level::Le(
+                LeSecurityLevel::LeLevel2 as i32,
+            )),
+        })
+        .await
+        .expect("secure LE connection")
+        .into_inner();
+    assert!(matches!(
+        security.result,
+        Some(secure_response::Result::Success(()))
+    ));
+    assert!(matches!(
+        security_wait.await.expect("join security wait").result,
+        Some(wait_security_response::Result::Success(()))
+    ));
+
+    let central_address = Address::parse("C4:F2:17:1A:1D:AA", AddressType::RANDOM_DEVICE)
+        .expect("parse central address");
+    let mut central_storage = SecurityStorageClient::new(channel(&central_endpoint).await);
+    let mut peripheral_storage = SecurityStorageClient::new(channel(&peripheral_endpoint).await);
+    assert!(central_storage
+        .is_bonded(IsBondedRequest {
+            address: Some(bumble_pandora::proto::is_bonded_request::Address::Random(
+                peripheral_address.address_bytes().to_vec(),
+            )),
+        })
+        .await
+        .expect("query central bond")
+        .into_inner());
+    assert!(peripheral_storage
+        .is_bonded(IsBondedRequest {
+            address: Some(bumble_pandora::proto::is_bonded_request::Address::Random(
+                central_address.address_bytes().to_vec(),
+            )),
+        })
+        .await
+        .expect("query peripheral bond")
+        .into_inner());
+    central_storage
+        .delete_bond(DeleteBondRequest {
+            address: Some(bumble_pandora::proto::delete_bond_request::Address::Random(
+                peripheral_address.address_bytes().to_vec(),
+            )),
+        })
+        .await
+        .expect("delete central bond");
+    assert!(!central_storage
+        .is_bonded(IsBondedRequest {
+            address: Some(bumble_pandora::proto::is_bonded_request::Address::Random(
+                peripheral_address.address_bytes().to_vec(),
+            )),
+        })
+        .await
+        .expect("query deleted central bond")
+        .into_inner());
 
     let channel_request = CreditBasedChannelRequest {
         spsm: 0x80,
@@ -326,9 +469,27 @@ async fn transfers_an_le_credit_sdu_through_two_live_grpc_servers() {
         Some(wait_disconnection_response::Result::Success(()))
     ));
 
+    peripheral_host
+        .factory_reset(())
+        .await
+        .expect("factory reset peripheral");
+    assert!(!peripheral_storage
+        .is_bonded(IsBondedRequest {
+            address: Some(bumble_pandora::proto::is_bonded_request::Address::Random(
+                central_address.address_bytes().to_vec(),
+            )),
+        })
+        .await
+        .expect("query factory-reset bond")
+        .into_inner());
+
     drop(central_host);
     drop(peripheral_host);
     drop(central_l2cap);
+    drop(central_pairing_answers);
+    drop(peripheral_pairing_answers);
+    central_pairing_task.abort();
+    peripheral_pairing_task.abort();
     central_shutdown.send(()).expect("stop central gRPC server");
     peripheral_shutdown
         .send(())

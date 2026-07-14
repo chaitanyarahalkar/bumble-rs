@@ -441,7 +441,7 @@ fn stop_advertising(state: &mut RuntimeState, legacy: bool) {
 impl Host for HostService {
     async fn factory_reset(&self, _: Request<()>) -> Result<Response<()>, Status> {
         self.runtime
-            .blocking(|state| state.reset().map_err(internal))
+            .blocking(|state| state.factory_reset().map_err(internal))
             .await?;
         if let Some(shutdown) = self.shutdown.clone() {
             tokio::spawn(async move {

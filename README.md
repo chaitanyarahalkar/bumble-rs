@@ -247,7 +247,7 @@ size, to convey remaining surface.
 | `apps/usb_probe.py` | `bumble-usb-probe` (`bumble-transport`) | ✅ | Runnable libusb device inventory with upstream `--verbose`, `--hci-only`, manufacturer, and product filters; device/interface-level Bluetooth HCI classification; stable index, VID/PID, duplicate, and serial transport names; string-descriptor error tolerance; and verbose configuration/interface/endpoint details including isochronous packet sizes. |
 | `apps/ble_rpa_tool.py` | `bumble-rpa-tool` (`bumble-smp`) | ✅ | Runnable `gen-irk`, `gen-rpa`, and `verify-rpa` commands backed by the OS RNG and the real SMP `ah` primitive. Flexible Python-style hex input, address validation, colored verification results, and malformed/extra argument errors are covered. |
 | `apps/unbond.py` | `bumble-unbond` (`bumble-transport`) | ✅ | File-backed and external-controller list/delete modes are runnable with upstream-style colored key rendering and `!!! pairing not found` behavior. Controller mode resets HCI, discovers the public BD_ADDR, falls back to the configured random address, reproduces `JsonKeyStore[:filename]` namespace/path selection, and uses an in-memory store for absent or unknown keystore types. |
-| `apps/pandora_server.py` + `pandora/` | `bumble-pandora` | 🟡 | Canonical bt-test-interfaces v0.0.6 protobufs, the runnable server/configuration surface, exact Pandora data-type conversion, and every upstream Host and L2CAP RPC are ported. Host and LE CoC are verified through real gRPC clients and the two-controller software radio. Security and SecurityStorage remain. |
+| `apps/pandora_server.py` + `pandora/` | `bumble-pandora` | ✅ | Canonical bt-test-interfaces v0.0.6 protobufs, the runnable server/configuration surface, exact Pandora data-type conversion, and every upstream Host, Security, SecurityStorage, and L2CAP RPC are ported. Host, LE Security/bond storage, and LE CoC are verified through real gRPC clients and the two-controller software radio; Classic Security uses a reactive scripted-HCI proof because upstream's software controller intentionally has no Classic-authentication handler. |
 
 ### Roughly where that leaves things
 
@@ -3034,6 +3034,29 @@ runtime:
   the channel, and complete the peer's disconnection wait over the TCP HCI
   transports.
 
+## Slice 140 — what's here
+
+Pandora now exposes the complete canonical Security and SecurityStorage gRPC
+surface on the same controller-backed runtime:
+
+- `Secure` and `WaitSecurity` validate transport-specific connection cookies,
+  evaluate every Classic Level 0–4 and LE Level 1–4 predicate, drive LE or
+  Classic pairing, and report the protocol's exact success/failure variants.
+- `OnPairing` enforces its pre-connection/single-stream contract and bridges
+  Just Works, Numeric Comparison, passkey entry/display, and legacy PIN input
+  between tonic streams and the synchronous pairing delegates.
+- Memory and namespaced JSON key stores back `IsBonded` and `DeleteBond`;
+  successful pairing persists bonds, Host `FactoryReset` deletes every bond,
+  and ordinary reset preserves them.
+- The runnable server registers Host, Security, SecurityStorage, and L2CAP
+  together. A live two-controller gRPC test pairs and encrypts both sides over
+  LE, exercises pairing-event answers, queries/deletes bonds, factory-resets
+  storage, then transfers an LE credit-channel SDU. A reactive scripted-HCI
+  test proves the Classic Secure RPC through SSP authentication, link
+  encryption, and link-key persistence. The scripted boundary is deliberate:
+  upstream Bumble's software controller also has no Classic-authentication
+  command handler.
+
 ## Acceptance
 
 The port's contract is the upstream Python test suite, ported 1:1:
@@ -3225,9 +3248,9 @@ bumble-rs/
 │   ├── tests/bass_cap.rs      # BASS wire/live state + CAS included CSIS
 │   ├── tests/hap.rs           # encrypted presets, changes, wrap, synchronization
 │   └── tests/apple_profiles.rs # AMS/ANCS 128-bit GATT + client/data flows
-├── bumble-pandora/            # slices 138-139 Pandora Host + L2CAP services
+├── bumble-pandora/            # slices 138-140 complete Pandora services
 │   ├── proto/pandora/{host,security,l2cap}.proto # canonical v0.0.6 interfaces
-│   ├── src/{config,data_types,runtime,host,l2cap}.rs # external-HCI services
+│   ├── src/{config,data_types,runtime,host,security,l2cap}.rs # external-HCI services
 │   ├── src/bin/bumble-pandora-server.rs # runnable conformance server
 │   └── tests/{host_grpc,l2cap_grpc}.rs # live tonic → controller proofs
 └── docs/superpowers/          # design specs + implementation plans
