@@ -1,7 +1,7 @@
 use bumble::{Address, AddressType};
 use bumble_att::AttPdu;
 use bumble_controller::{Controller, LocalLink};
-use bumble_host::{pump, Device, ExtendedAdvertisingConfig};
+use bumble_host::{pump, Device, ExtendedAdvertisingConfig, LeSubrateRequestParameters};
 
 fn address(value: &str) -> Address {
     Address::parse(value, AddressType::RANDOM_DEVICE).unwrap()
@@ -48,6 +48,57 @@ fn device_api_advertises_scans_connects_and_disconnects_without_raw_hci() {
     assert!(!devices[0].is_connected());
     assert!(!devices[1].is_connected());
     devices[1].stop_advertising(&mut link);
+}
+
+#[test]
+fn device_tracks_sniff_mode_and_le_subrate_changes() {
+    let central_address = address("C4:F2:17:1A:1D:AA");
+    let peripheral_address = address("C4:F2:17:1A:1D:BB");
+    let mut link = LocalLink::new();
+    let central_id = link.add_controller(Controller::new(
+        "central",
+        public_address("00:00:00:00:00:01/P"),
+    ));
+    let peripheral_id = link.add_controller(Controller::new(
+        "peripheral",
+        public_address("00:00:00:00:00:02/P"),
+    ));
+    let mut devices = [Device::new(central_id), Device::new(peripheral_id)];
+    devices[0].set_random_address(&mut link, central_address);
+    devices[1].set_random_address(&mut link, peripheral_address.clone());
+    assert!(devices[1].start_advertising(&mut link, &[]));
+    devices[0].connect_le(&mut link, peripheral_address);
+    pump(&mut link, &mut devices);
+    let handle = devices[0].connection_handle().unwrap();
+
+    let subrate = LeSubrateRequestParameters {
+        subrate_min: 2,
+        subrate_max: 2,
+        max_latency: 2,
+        continuation_number: 1,
+        supervision_timeout: 2,
+    };
+    assert!(devices[0].request_le_subrate_on_handle(&mut link, handle, subrate));
+    pump(&mut link, &mut devices);
+    let connection = devices[0].le_connection(handle).unwrap();
+    assert_eq!(connection.parameters.subrate_factor, 2);
+    assert_eq!(connection.parameters.peripheral_latency, 2);
+    assert_eq!(connection.parameters.continuation_number, 1);
+    assert_eq!(connection.parameters.supervision_timeout, 2);
+
+    assert!(devices[0].enter_sniff_mode_on_handle(&mut link, handle, 2, 2, 2));
+    pump(&mut link, &mut devices);
+    let connection = devices[0].le_connection(handle).unwrap();
+    assert_eq!(connection.classic_mode, 0x02);
+    assert_eq!(connection.classic_interval, 2);
+
+    assert!(devices[0].exit_sniff_mode_on_handle(&mut link, handle));
+    pump(&mut link, &mut devices);
+    let connection = devices[0].le_connection(handle).unwrap();
+    assert_eq!(connection.classic_mode, 0x00);
+    assert_eq!(connection.classic_interval, 2);
+    assert!(!devices[0].request_le_subrate_on_handle(&mut link, 0x0FFF, subrate));
+    assert!(!devices[0].enter_sniff_mode_on_handle(&mut link, 0x0FFF, 2, 2, 2));
 }
 
 #[test]

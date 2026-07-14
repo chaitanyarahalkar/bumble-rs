@@ -28,6 +28,9 @@
 //! `LE_Read_Buffer_Size`, `LE_Read_Local_Supported_Features`, `LE_Rand`) and the
 //! per-connection `LE_Set_Data_Length` / `LE_Set_PHY` requests, which report
 //! back through `LE_Data_Length_Change` / `LE_PHY_Update_Complete`.
+//! `Sniff_Mode` / `Exit_Sniff_Mode` and `LE_Subrate_Request` likewise emit the
+//! deterministic Mode Change and LE Subrate Change events used by upstream's
+//! software-controller tests, including its parameter validation.
 //! The LE resolving-list commands also hold real IRK state: an initiator may
 //! target a bonded identity while the peer advertises with an RPA, and the
 //! central receives the resolved identity while link routing retains the RPA.
@@ -1038,6 +1041,33 @@ impl Controller {
             Command::LeReadRemoteFeatures { connection_handle } => {
                 self.handle_read_remote_features(connection_handle)
             }
+            Command::LeSetDefaultSubrate {
+                subrate_min,
+                subrate_max,
+                max_latency,
+                continuation_number,
+                ..
+            } => self.handle_set_default_subrate(
+                subrate_min,
+                subrate_max,
+                max_latency,
+                continuation_number,
+            ),
+            Command::LeSubrateRequest {
+                connection_handle,
+                subrate_min,
+                subrate_max,
+                max_latency,
+                continuation_number,
+                supervision_timeout,
+            } => self.handle_subrate_request(
+                connection_handle,
+                subrate_min,
+                subrate_max,
+                max_latency,
+                continuation_number,
+                supervision_timeout,
+            ),
             Command::LeSetCigParameters { cig_id, cis_id, .. } => {
                 self.handle_set_cig_parameters(cig_id, &cis_id)
             }
@@ -1124,6 +1154,14 @@ impl Controller {
             Command::ReadRemoteSupportedFeatures { connection_handle } => {
                 self.handle_read_remote_supported_features(connection_handle)
             }
+            Command::SniffMode {
+                connection_handle, ..
+            } => self.handle_classic_mode_change(HCI_SNIFF_MODE_COMMAND, connection_handle, 0x02),
+            Command::ExitSniffMode { connection_handle } => self.handle_classic_mode_change(
+                HCI_EXIT_SNIFF_MODE_COMMAND,
+                connection_handle,
+                0x00,
+            ),
             Command::EnhancedSetupSynchronousConnection {
                 connection_handle,
                 transmit_coding_format,
@@ -1599,6 +1637,91 @@ impl Controller {
             }
         };
         self.queue_ll(self_addr, peer_addr, req);
+    }
+
+    fn valid_subrate_parameters(
+        subrate_min: u16,
+        subrate_max: u16,
+        max_latency: u16,
+        continuation_number: u16,
+    ) -> bool {
+        u32::from(subrate_max) * u32::from(max_latency) <= 500
+            && subrate_min <= subrate_max
+            && continuation_number < subrate_max
+    }
+
+    /// Validate the controller-wide defaults exactly as upstream's software
+    /// controller does. The simplified controller intentionally does not retain
+    /// them because the corresponding request handler reports fixed negotiated
+    /// values, matching upstream.
+    fn handle_set_default_subrate(
+        &mut self,
+        subrate_min: u16,
+        subrate_max: u16,
+        max_latency: u16,
+        continuation_number: u16,
+    ) {
+        let status = if Self::valid_subrate_parameters(
+            subrate_min,
+            subrate_max,
+            max_latency,
+            continuation_number,
+        ) {
+            HCI_SUCCESS
+        } else {
+            INVALID_COMMAND_PARAMETERS
+        };
+        self.ack(HCI_LE_SET_DEFAULT_SUBRATE_COMMAND, status);
+    }
+
+    /// `LE_Subrate_Request` completes asynchronously with the deterministic
+    /// values used by upstream Bumble's software controller.
+    fn handle_subrate_request(
+        &mut self,
+        connection_handle: u16,
+        subrate_min: u16,
+        subrate_max: u16,
+        max_latency: u16,
+        continuation_number: u16,
+        supervision_timeout: u16,
+    ) {
+        if !Self::valid_subrate_parameters(
+            subrate_min,
+            subrate_max,
+            max_latency,
+            continuation_number,
+        ) {
+            self.command_status(HCI_LE_SUBRATE_REQUEST_COMMAND, INVALID_COMMAND_PARAMETERS);
+            return;
+        }
+        self.command_status(HCI_LE_SUBRATE_REQUEST_COMMAND, HCI_SUCCESS);
+        self.host_queue.push(HciPacket::Event(Event::LeMeta(
+            LeMetaEvent::SubrateChange {
+                status: HCI_SUCCESS,
+                connection_handle,
+                subrate_factor: 2,
+                peripheral_latency: 2,
+                continuation_number,
+                supervision_timeout,
+            },
+        )));
+    }
+
+    /// Upstream models Sniff and Active transitions locally: Command Status is
+    /// followed immediately by a Mode Change event with a fixed interval.
+    fn handle_classic_mode_change(
+        &mut self,
+        command_opcode: u16,
+        connection_handle: u16,
+        current_mode: u8,
+    ) {
+        self.command_status(command_opcode, HCI_SUCCESS);
+        self.host_queue.push(HciPacket::Event(Event::ModeChange {
+            status: HCI_SUCCESS,
+            connection_handle,
+            current_mode,
+            interval: 2,
+        }));
     }
 
     /// `LE_Set_CIG_Parameters` (central): allocate a CIS connection handle per

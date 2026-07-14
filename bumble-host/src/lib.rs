@@ -172,12 +172,34 @@ pub struct SynchronousConnectionInfo {
     pub air_mode: u8,
 }
 
+/// Current HCI connection parameters for one established LE ACL.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LeConnectionParameters {
+    pub connection_interval: u16,
+    pub peripheral_latency: u16,
+    pub supervision_timeout: u16,
+    pub subrate_factor: u16,
+    pub continuation_number: u16,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LeSubrateRequestParameters {
+    pub subrate_min: u16,
+    pub subrate_max: u16,
+    pub max_latency: u16,
+    pub continuation_number: u16,
+    pub supervision_timeout: u16,
+}
+
 /// Host-owned metadata for one established LE ACL connection.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LeConnectionInfo {
     pub connection_handle: u16,
     pub role: u8,
     pub peer_address: Address,
+    pub parameters: LeConnectionParameters,
+    pub classic_mode: u8,
+    pub classic_interval: u16,
 }
 
 /// Controller request for the key needed to complete LE link encryption.
@@ -194,6 +216,8 @@ pub struct ClassicConnectionInfo {
     pub connection_handle: u16,
     pub role: u8,
     pub peer_address: Address,
+    pub classic_mode: u8,
+    pub classic_interval: u16,
 }
 
 /// One Classic inquiry report, retaining the discovery metadata applications
@@ -775,6 +799,69 @@ impl Device {
 
     pub fn peer_address(&self) -> Option<&Address> {
         self.peer_address.as_ref()
+    }
+
+    pub fn request_le_subrate_on_handle(
+        &mut self,
+        link: &mut LocalLink,
+        connection_handle: u16,
+        parameters: LeSubrateRequestParameters,
+    ) -> bool {
+        if !self.le_connections.contains_key(&connection_handle) {
+            return false;
+        }
+        self.send_hci_command(
+            link,
+            Command::LeSubrateRequest {
+                connection_handle,
+                subrate_min: parameters.subrate_min,
+                subrate_max: parameters.subrate_max,
+                max_latency: parameters.max_latency,
+                continuation_number: parameters.continuation_number,
+                supervision_timeout: parameters.supervision_timeout,
+            },
+        );
+        true
+    }
+
+    pub fn enter_sniff_mode_on_handle(
+        &mut self,
+        link: &mut LocalLink,
+        connection_handle: u16,
+        interval: u16,
+        attempt: u16,
+        timeout: u16,
+    ) -> bool {
+        if !self.le_connections.contains_key(&connection_handle)
+            && !self.classic_connections.contains_key(&connection_handle)
+        {
+            return false;
+        }
+        self.send_hci_command(
+            link,
+            Command::SniffMode {
+                connection_handle,
+                sniff_max_interval: interval,
+                sniff_min_interval: interval,
+                sniff_attempt: attempt,
+                sniff_timeout: timeout,
+            },
+        );
+        true
+    }
+
+    pub fn exit_sniff_mode_on_handle(
+        &mut self,
+        link: &mut LocalLink,
+        connection_handle: u16,
+    ) -> bool {
+        if !self.le_connections.contains_key(&connection_handle)
+            && !self.classic_connections.contains_key(&connection_handle)
+        {
+            return false;
+        }
+        self.send_hci_command(link, Command::ExitSniffMode { connection_handle });
+        true
     }
 
     pub fn set_random_address(&mut self, link: &mut LocalLink, address: Address) {
@@ -2488,6 +2575,9 @@ impl Device {
         connection_handle: u16,
         role: u8,
         peer_address: Address,
+        connection_interval: u16,
+        peripheral_latency: u16,
+        supervision_timeout: u16,
     ) {
         self.le_connections.insert(
             connection_handle,
@@ -2495,6 +2585,15 @@ impl Device {
                 connection_handle,
                 role,
                 peer_address,
+                parameters: LeConnectionParameters {
+                    connection_interval,
+                    peripheral_latency,
+                    supervision_timeout,
+                    subrate_factor: 1,
+                    continuation_number: 0,
+                },
+                classic_mode: 0,
+                classic_interval: 0,
             },
         );
         let mut manager = LeCreditChannelManager::new();
@@ -2522,14 +2621,27 @@ impl Device {
                     connection_handle,
                     role,
                     peer_address,
+                    connection_interval,
+                    peripheral_latency,
+                    supervision_timeout,
                     ..
-                })) => self.on_le_connection_complete(connection_handle, role, peer_address),
+                })) => self.on_le_connection_complete(
+                    connection_handle,
+                    role,
+                    peer_address,
+                    connection_interval,
+                    peripheral_latency,
+                    supervision_timeout,
+                ),
                 HciPacket::Event(Event::LeMeta(
                     LeMetaEvent::EnhancedConnectionComplete {
                         status: 0,
                         connection_handle,
                         role,
                         peer_address,
+                        connection_interval,
+                        peripheral_latency,
+                        supervision_timeout,
                         ..
                     }
                     | LeMetaEvent::EnhancedConnectionCompleteV2 {
@@ -2537,9 +2649,34 @@ impl Device {
                         connection_handle,
                         role,
                         peer_address,
+                        connection_interval,
+                        peripheral_latency,
+                        supervision_timeout,
                         ..
                     },
-                )) => self.on_le_connection_complete(connection_handle, role, peer_address),
+                )) => self.on_le_connection_complete(
+                    connection_handle,
+                    role,
+                    peer_address,
+                    connection_interval,
+                    peripheral_latency,
+                    supervision_timeout,
+                ),
+                HciPacket::Event(Event::LeMeta(LeMetaEvent::SubrateChange {
+                    status: 0,
+                    connection_handle,
+                    subrate_factor,
+                    peripheral_latency,
+                    continuation_number,
+                    supervision_timeout,
+                })) => {
+                    if let Some(connection) = self.le_connections.get_mut(&connection_handle) {
+                        connection.parameters.subrate_factor = subrate_factor;
+                        connection.parameters.peripheral_latency = peripheral_latency;
+                        connection.parameters.continuation_number = continuation_number;
+                        connection.parameters.supervision_timeout = supervision_timeout;
+                    }
+                }
                 HciPacket::Event(Event::LeMeta(LeMetaEvent::AdvertisingReport { reports })) => {
                     self.advertising_reports.extend(reports);
                 }
@@ -2927,6 +3064,8 @@ impl Device {
                                 connection_handle,
                                 role,
                                 peer_address: bd_addr,
+                                classic_mode: 0,
+                                classic_interval: 0,
                             },
                         );
                         let mut manager = ClassicChannelManager::new();
@@ -3002,6 +3141,21 @@ impl Device {
                             status,
                             connection_handle,
                         })
+                }
+                HciPacket::Event(Event::ModeChange {
+                    status: 0,
+                    connection_handle,
+                    current_mode,
+                    interval,
+                }) => {
+                    if let Some(connection) = self.le_connections.get_mut(&connection_handle) {
+                        connection.classic_mode = current_mode;
+                        connection.classic_interval = interval;
+                    }
+                    if let Some(connection) = self.classic_connections.get_mut(&connection_handle) {
+                        connection.classic_mode = current_mode;
+                        connection.classic_interval = interval;
+                    }
                 }
                 HciPacket::Event(Event::PinCodeRequest { bd_addr }) => self
                     .classic_pairing_events
