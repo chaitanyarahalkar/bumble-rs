@@ -7,9 +7,15 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::path::Path;
 
-use bumble::{Address, AddressType};
+use bumble::{Address, AddressType, Uuid};
+use bumble_gatt::{
+    permissions, properties, CharacteristicDefinition, DescriptorDefinition, GattServer,
+    ServiceDefinition,
+};
+use bumble_profiles::gap::GenericAccessService;
+use bumble_profiles::gatt_service::{GenericAttributeProfileService, EATT_SUPPORTED};
 use serde::Deserialize;
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 pub const DEVICE_DEFAULT_NAME: &str = "Bumble";
 pub const DEVICE_DEFAULT_ADDRESS: &str = "00:00:00:00:00:00";
@@ -152,6 +158,40 @@ impl Default for DeviceConfiguration {
 }
 
 impl DeviceConfiguration {
+    pub(crate) fn build_gatt_server(&self) -> Result<GattServer, DeviceConfigurationError> {
+        let mut definitions = self
+            .gatt_services
+            .iter()
+            .enumerate()
+            .map(|(index, service)| parse_gatt_service(index, service))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        if self.gap_service_enabled {
+            definitions.push(
+                GenericAccessService::from_packed_appearance(self.name.clone(), 0).definition(),
+            );
+        }
+
+        let gatt_service = self
+            .gatt_service_enabled
+            .then_some(GenericAttributeProfileService {
+                server_supported_features: self.eatt_enabled.then_some(EATT_SUPPORTED),
+                ..GenericAttributeProfileService::default()
+            });
+        if let Some(service) = gatt_service {
+            definitions.push(service.definition());
+        }
+
+        let mut server = GattServer::from_definitions(definitions)
+            .map_err(|error| invalid_gatt_configuration("database", error.to_string()))?;
+        if let Some(service) = gatt_service {
+            service
+                .bind_database_hash(&mut server)
+                .map_err(|error| invalid_gatt_configuration("database_hash", error.to_string()))?;
+        }
+        Ok(server)
+    }
+
     pub fn load_from_json_value(&mut self, value: &Value) -> Result<(), DeviceConfigurationError> {
         let clear_keystore = value.get("keystore").is_some_and(Value::is_null);
         let clear_identity_address_type = value
@@ -290,6 +330,214 @@ impl DeviceConfiguration {
         let mut config = Self::default();
         config.load_from_file(filename)?;
         Ok(config)
+    }
+}
+
+fn parse_gatt_service(
+    service_index: usize,
+    value: &Value,
+) -> Result<ServiceDefinition, DeviceConfigurationError> {
+    let path = format!("[{service_index}]");
+    let service = gatt_object(value, &path)?;
+    let uuid = gatt_uuid(service, "uuid", &path)?;
+    let characteristics = gatt_array(service, "characteristics", &path)?
+        .iter()
+        .enumerate()
+        .map(|(index, value)| {
+            parse_gatt_characteristic(value, &format!("{path}.characteristics[{index}]"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(ServiceDefinition {
+        uuid,
+        primary: true,
+        included_services: Vec::new(),
+        characteristics,
+    })
+}
+
+fn parse_gatt_characteristic(
+    value: &Value,
+    path: &str,
+) -> Result<CharacteristicDefinition, DeviceConfigurationError> {
+    let characteristic = gatt_object(value, path)?;
+    let descriptors = gatt_array(characteristic, "descriptors", path)?
+        .iter()
+        .enumerate()
+        .map(|(index, value)| parse_gatt_descriptor(value, &format!("{path}.descriptors[{index}]")))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(CharacteristicDefinition {
+        uuid: gatt_uuid(characteristic, "uuid", path)?,
+        properties: gatt_named_bits(
+            characteristic.get("properties"),
+            "properties",
+            path,
+            &[
+                ("BROADCAST", properties::BROADCAST),
+                ("READ", properties::READ),
+                ("WRITE_WITHOUT_RESPONSE", properties::WRITE_WITHOUT_RESPONSE),
+                ("WRITE", properties::WRITE),
+                ("NOTIFY", properties::NOTIFY),
+                ("INDICATE", properties::INDICATE),
+                (
+                    "AUTHENTICATED_SIGNED_WRITES",
+                    properties::AUTHENTICATED_SIGNED_WRITES,
+                ),
+                ("EXTENDED_PROPERTIES", properties::EXTENDED_PROPERTIES),
+            ],
+            false,
+        )?,
+        permissions: gatt_named_bits(
+            characteristic.get("permissions"),
+            "permissions",
+            path,
+            &permission_names(),
+            true,
+        )?,
+        value: Vec::new(),
+        descriptors,
+    })
+}
+
+fn parse_gatt_descriptor(
+    value: &Value,
+    path: &str,
+) -> Result<DescriptorDefinition, DeviceConfigurationError> {
+    let descriptor = gatt_object(value, path)?;
+    if descriptor.get("permission").is_some_and(json_truthy) {
+        return Err(invalid_gatt_configuration(
+            path,
+            "the key 'permission' must be renamed to 'permissions'",
+        ));
+    }
+    Ok(DescriptorDefinition {
+        uuid: gatt_uuid(descriptor, "descriptor_type", path)?,
+        permissions: gatt_named_bits(
+            descriptor.get("permissions"),
+            "permissions",
+            path,
+            &permission_names(),
+            true,
+        )?,
+        value: Vec::new(),
+    })
+}
+
+fn permission_names() -> [(&'static str, u8); 8] {
+    [
+        ("READABLE", permissions::READABLE),
+        ("WRITEABLE", permissions::WRITEABLE),
+        (
+            "READ_REQUIRES_ENCRYPTION",
+            permissions::READ_REQUIRES_ENCRYPTION,
+        ),
+        (
+            "WRITE_REQUIRES_ENCRYPTION",
+            permissions::WRITE_REQUIRES_ENCRYPTION,
+        ),
+        (
+            "READ_REQUIRES_AUTHENTICATION",
+            permissions::READ_REQUIRES_AUTHENTICATION,
+        ),
+        (
+            "WRITE_REQUIRES_AUTHENTICATION",
+            permissions::WRITE_REQUIRES_AUTHENTICATION,
+        ),
+        (
+            "READ_REQUIRES_AUTHORIZATION",
+            permissions::READ_REQUIRES_AUTHORIZATION,
+        ),
+        (
+            "WRITE_REQUIRES_AUTHORIZATION",
+            permissions::WRITE_REQUIRES_AUTHORIZATION,
+        ),
+    ]
+}
+
+fn gatt_object<'a>(
+    value: &'a Value,
+    path: &str,
+) -> Result<&'a Map<String, Value>, DeviceConfigurationError> {
+    value
+        .as_object()
+        .ok_or_else(|| invalid_gatt_configuration(path, "expected an object"))
+}
+
+fn gatt_array<'a>(
+    object: &'a Map<String, Value>,
+    field: &str,
+    path: &str,
+) -> Result<&'a [Value], DeviceConfigurationError> {
+    match object.get(field) {
+        None => Ok(&[]),
+        Some(Value::Array(values)) => Ok(values),
+        Some(_) => Err(invalid_gatt_configuration(
+            &format!("{path}.{field}"),
+            "expected an array",
+        )),
+    }
+}
+
+fn gatt_uuid(
+    object: &Map<String, Value>,
+    field: &str,
+    path: &str,
+) -> Result<Uuid, DeviceConfigurationError> {
+    let field_path = format!("{path}.{field}");
+    let value = object
+        .get(field)
+        .and_then(Value::as_str)
+        .ok_or_else(|| invalid_gatt_configuration(&field_path, "expected a UUID string"))?;
+    Uuid::parse(value).map_err(|error| invalid_gatt_configuration(&field_path, error.to_string()))
+}
+
+fn gatt_named_bits(
+    value: Option<&Value>,
+    field: &str,
+    path: &str,
+    names: &[(&str, u8)],
+    allow_number: bool,
+) -> Result<u8, DeviceConfigurationError> {
+    let field_path = format!("{path}.{field}");
+    let value = value.ok_or_else(|| invalid_gatt_configuration(&field_path, "missing field"))?;
+    if allow_number {
+        if let Some(value) = value.as_u64() {
+            return u8::try_from(value).map_err(|_| {
+                invalid_gatt_configuration(&field_path, "numeric bits must fit in one byte")
+            });
+        }
+    }
+    let value = value
+        .as_str()
+        .ok_or_else(|| invalid_gatt_configuration(&field_path, "expected a flag-name string"))?;
+    value
+        .replace('|', ",")
+        .split(',')
+        .try_fold(0, |bits, name| {
+            names
+                .iter()
+                .find_map(|(candidate, value)| (*candidate == name).then_some(*value))
+                .map(|value| bits | value)
+                .ok_or_else(|| {
+                    invalid_gatt_configuration(&field_path, format!("unknown flag {name:?}"))
+                })
+        })
+}
+
+fn invalid_gatt_configuration(path: &str, message: impl Into<String>) -> DeviceConfigurationError {
+    DeviceConfigurationError::InvalidField {
+        field: "gatt_services",
+        message: format!("{path}: {}", message.into()),
+    }
+}
+
+fn json_truthy(value: &Value) -> bool {
+    match value {
+        Value::Null => false,
+        Value::Bool(value) => *value,
+        Value::Number(value) => value.as_f64().is_some_and(|value| value != 0.0),
+        Value::String(value) => !value.is_empty(),
+        Value::Array(value) => !value.is_empty(),
+        Value::Object(value) => !value.is_empty(),
     }
 }
 

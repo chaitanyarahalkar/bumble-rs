@@ -11,7 +11,8 @@ use bumble_gatt::{
     GATT_PRIMARY_SERVICE_UUID,
 };
 use bumble_hci::Command;
-use bumble_host::{pump, Device};
+use bumble_host::{pump, Device, DeviceConfiguration};
+use bumble_l2cap::{LeCreditBasedChannelSpec, CREDIT_BASED_CONNECTION_ALL_SUCCESSFUL};
 
 fn addr(s: &str) -> Address {
     Address::parse(s, AddressType::RANDOM_DEVICE).unwrap()
@@ -248,6 +249,120 @@ fn gatt_discovery_and_read_end_to_end() {
         AttPdu::ReadResponse {
             attribute_value: b"bumble-rs".to_vec()
         }
+    );
+}
+
+#[test]
+fn configured_gatt_gap_gatt_and_eatt_are_live() {
+    let mut link = LocalLink::new();
+    let central_id = link.add_controller(Controller::new("C", addr("00:00:00:00:00:01")));
+    let peripheral_id = link.add_controller(Controller::new("P", addr("00:00:00:00:00:02")));
+    let config = DeviceConfiguration::from_json_str(
+        r#"{
+            "name": "Configured GATT",
+            "eatt_enabled": true,
+            "gatt_services": [{
+                "uuid": "180F",
+                "characteristics": [{
+                    "uuid": "2A19",
+                    "properties": "READ|WRITE",
+                    "permissions": "READABLE|WRITEABLE",
+                    "descriptors": [{
+                        "descriptor_type": "2901",
+                        "permissions": "READABLE"
+                    }]
+                }]
+            }]
+        }"#,
+    )
+    .unwrap();
+    let mut devices = [
+        Device::new(central_id),
+        Device::from_config(peripheral_id, config).unwrap(),
+    ];
+    assert!(devices[1].has_server());
+
+    connect(&mut link, central_id, peripheral_id);
+    pump(&mut link, &mut devices);
+
+    // The configured service is installed first: service declaration 1,
+    // characteristic declaration 2, value 3, and user-description descriptor 4.
+    assert_eq!(
+        request(
+            &mut link,
+            &mut devices,
+            0,
+            AttPdu::WriteRequest {
+                attribute_handle: 3,
+                attribute_value: vec![87],
+            },
+        ),
+        AttPdu::WriteResponse
+    );
+    assert_eq!(
+        request(
+            &mut link,
+            &mut devices,
+            0,
+            AttPdu::ReadRequest {
+                attribute_handle: 3,
+            },
+        ),
+        AttPdu::ReadResponse {
+            attribute_value: vec![87],
+        }
+    );
+    assert_eq!(
+        request(
+            &mut link,
+            &mut devices,
+            0,
+            AttPdu::ReadRequest {
+                attribute_handle: 4,
+            },
+        ),
+        AttPdu::ReadResponse {
+            attribute_value: Vec::new(),
+        }
+    );
+
+    // The enabled default GAP and GATT services follow the configured service.
+    let services = request(
+        &mut link,
+        &mut devices,
+        0,
+        AttPdu::ReadByGroupTypeRequest {
+            starting_handle: 1,
+            ending_handle: u16::MAX,
+            attribute_group_type: Uuid::from_16_bits(GATT_PRIMARY_SERVICE_UUID),
+        },
+    );
+    let AttPdu::ReadByGroupTypeResponse {
+        attribute_data_list,
+        ..
+    } = services
+    else {
+        panic!("expected configured primary services");
+    };
+    assert_eq!(attribute_data_list[4..6], [0x0F, 0x18]);
+    assert_eq!(attribute_data_list[10..12], [0x00, 0x18]);
+    assert_eq!(attribute_data_list[16..18], [0x01, 0x18]);
+
+    // eatt_enabled registers the standard EATT SPSM for future connections.
+    let central_handle = devices[0].connection_handle().unwrap();
+    let source_cids = devices[0]
+        .connect_eatt(
+            &mut link,
+            central_handle,
+            LeCreditBasedChannelSpec::default(),
+            1,
+        )
+        .unwrap();
+    pump(&mut link, &mut devices);
+    assert_eq!(source_cids.len(), 1);
+    assert_eq!(
+        devices[0].le_credit_connection_result(central_handle, source_cids[0]),
+        Some(CREDIT_BASED_CONNECTION_ALL_SUCCESSFUL)
     );
 }
 

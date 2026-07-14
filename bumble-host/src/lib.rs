@@ -1637,22 +1637,31 @@ impl Device {
         }
     }
 
-    /// Build a client-only device from a reusable upstream-style configuration.
-    pub fn from_config(controller_id: usize, config: DeviceConfiguration) -> Device {
-        let mut device = Self::new(controller_id);
-        device.install_configuration(config);
-        device
+    /// Build an upstream-style configured device with its GATT/ATT server.
+    pub fn from_config(
+        controller_id: usize,
+        config: DeviceConfiguration,
+    ) -> Result<Device, DeviceConfigurationError> {
+        let eatt_enabled = config.eatt_enabled;
+        let server = config.build_gatt_server()?;
+        let mut device = Self::with_server_and_config(controller_id, config, server);
+        if eatt_enabled {
+            device
+                .register_eatt_server(LeCreditBasedChannelSpec::default())
+                .map_err(|error| DeviceConfigurationError::InvalidField {
+                    field: "eatt_enabled",
+                    message: error.to_string(),
+                })?;
+        }
+        Ok(device)
     }
 
-    /// Load a client-only device configuration from a JSON file.
+    /// Load an upstream-style configured device and GATT server from a JSON file.
     pub fn from_config_file(
         controller_id: usize,
         filename: impl AsRef<std::path::Path>,
     ) -> Result<Device, DeviceConfigurationError> {
-        Ok(Self::from_config(
-            controller_id,
-            DeviceConfiguration::from_file(filename)?,
-        ))
+        Self::from_config(controller_id, DeviceConfiguration::from_file(filename)?)
     }
 
     /// Build a configured device that also owns an ATT request handler.

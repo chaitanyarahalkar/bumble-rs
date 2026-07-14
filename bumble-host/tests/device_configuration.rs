@@ -266,7 +266,7 @@ fn privacy_and_optional_le_features_follow_power_on_configuration() {
         le_shorter_connection_intervals_enabled: true,
         ..DeviceConfiguration::default()
     };
-    let mut device = Device::from_config(0, config);
+    let mut device = Device::from_config(0, config).unwrap();
     let mut transport = CapturingTransport::default();
 
     device.power_on(&mut transport).unwrap();
@@ -324,7 +324,7 @@ fn classic_power_on_matches_upstream_visibility_and_security_order() {
         discoverable: true,
         ..DeviceConfiguration::default()
     };
-    let mut device = Device::from_config(4, config);
+    let mut device = Device::from_config(4, config).unwrap();
     let mut transport = CapturingTransport::default();
 
     device.power_on(&mut transport).unwrap();
@@ -404,7 +404,7 @@ fn configured_power_on_is_live_against_the_software_controller() {
         le_shorter_connection_intervals_enabled: true,
         ..DeviceConfiguration::default()
     };
-    let mut device = Device::from_config(controller_id, config);
+    let mut device = Device::from_config(controller_id, config).unwrap();
 
     device.power_on(&mut link).unwrap();
     pump(&mut link, std::slice::from_mut(&mut device));
@@ -442,7 +442,7 @@ fn power_on_validation_is_atomic() {
         irk: vec![0; 15],
         ..DeviceConfiguration::default()
     };
-    let mut device = Device::from_config(0, config);
+    let mut device = Device::from_config(0, config).unwrap();
     let mut transport = CapturingTransport::default();
     assert_eq!(
         device.power_on(&mut transport),
@@ -455,7 +455,7 @@ fn power_on_validation_is_atomic() {
         class_of_device: 0x0100_0000,
         ..DeviceConfiguration::default()
     };
-    let mut device = Device::from_config(0, config);
+    let mut device = Device::from_config(0, config).unwrap();
     assert_eq!(
         device.power_on(&mut transport),
         Err(DevicePowerError::ClassOfDeviceOutOfRange { value: 0x0100_0000 })
@@ -477,4 +477,32 @@ fn invalid_typed_and_hex_fields_are_reported() {
         DeviceConfiguration::from_json_str("[]"),
         Err(DeviceConfigurationError::Json(_))
     ));
+}
+
+#[test]
+fn invalid_configured_gatt_definitions_are_reported_with_paths() {
+    for (json, expected) in [
+        (
+            r#"{"gatt_services":[{"uuid":"180F","characteristics":[{"uuid":"2A19","properties":"READ|MISSING","permissions":"READABLE"}]}]}"#,
+            "[0].characteristics[0].properties: unknown flag \"MISSING\"",
+        ),
+        (
+            r#"{"gatt_services":[{"uuid":"180F","characteristics":[{"uuid":"2A19","properties":"READ","permissions":"READABLE","descriptors":[{"descriptor_type":"2901","permission":"READABLE","permissions":"READABLE"}]}]}]}"#,
+            "the key 'permission' must be renamed to 'permissions'",
+        ),
+        (
+            r#"{"gatt_services":[{"uuid":"not-a-uuid"}]}"#,
+            "[0].uuid: invalid argument",
+        ),
+    ] {
+        let config = DeviceConfiguration::from_json_str(json).unwrap();
+        let error = match Device::from_config(0, config) {
+            Ok(_) => panic!("invalid configured GATT database was accepted"),
+            Err(error) => error,
+        };
+        assert!(
+            error.to_string().contains(expected),
+            "{error} did not contain {expected:?}"
+        );
+    }
 }

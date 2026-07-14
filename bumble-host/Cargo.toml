@@ -17,6 +17,7 @@ bumble-hci = { path = "../bumble-hci" }
 bumble-l2cap = { path = "../bumble-l2cap" }
 bumble-att = { path = "../bumble-att" }
 bumble-gatt = { path = "../bumble-gatt" }
+bumble-profiles = { path = "../bumble-profiles" }
 bumble-controller = { path = "../bumble-controller" }
 bumble-crypto = { path = "../bumble-crypto" }
 bumble-smp = { path = "../bumble-smp" }
