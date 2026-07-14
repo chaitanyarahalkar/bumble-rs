@@ -7,6 +7,7 @@
 pub mod config;
 mod data_types;
 mod host;
+mod l2cap;
 mod runtime;
 
 // Keep the canonical bt-test-interfaces v0.0.6 documentation verbatim in the
@@ -26,4 +27,5 @@ pub mod proto {
 
 pub use config::{PandoraConfig, ServerConfig};
 pub use host::HostService;
+pub use l2cap::L2capService;
 pub use runtime::PandoraRuntime;

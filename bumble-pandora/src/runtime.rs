@@ -3,7 +3,7 @@ use bumble::{Address, AddressType};
 use bumble_hci::{Command, ReturnParameters};
 use bumble_host::Device;
 use bumble_transport::{open_split_transport, CommandResponse, ExternalHost, ExternalHostActivity};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tonic::Status;
@@ -11,6 +11,20 @@ use tonic::Status;
 pub(crate) const COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
 pub(crate) const PROCEDURE_TIMEOUT: Duration = Duration::from_secs(30);
 pub(crate) const POLL_INTERVAL: Duration = Duration::from_millis(10);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum L2capChannelKind {
+    Classic,
+    LeCredit,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct L2capChannelEntry {
+    pub connection_handle: u16,
+    pub source_cid: u16,
+    pub psm: u32,
+    pub kind: L2capChannelKind,
+}
 
 pub(crate) struct RuntimeState {
     pub host: ExternalHost,
@@ -21,6 +35,10 @@ pub(crate) struct RuntimeState {
     pub waited_classic_connections: BTreeSet<u16>,
     pub classic_discoverable: bool,
     pub classic_connectable: bool,
+    pub l2cap_channels: BTreeMap<Vec<u8>, L2capChannelEntry>,
+    pub pending_l2cap_channels: Vec<L2capChannelEntry>,
+    pub l2cap_classic_servers: BTreeSet<u32>,
+    pub l2cap_le_servers: BTreeSet<u16>,
 }
 
 impl RuntimeState {
@@ -63,6 +81,10 @@ impl RuntimeState {
             waited_classic_connections: BTreeSet::new(),
             classic_discoverable: true,
             classic_connectable: true,
+            l2cap_channels: BTreeMap::new(),
+            pending_l2cap_channels: Vec::new(),
+            l2cap_classic_servers: BTreeSet::new(),
+            l2cap_le_servers: BTreeSet::new(),
         };
         state.apply_classic_scan_enable()?;
         Ok(state)
@@ -81,6 +103,10 @@ impl RuntimeState {
             "restoring Pandora random address",
         )?;
         self.waited_classic_connections.clear();
+        self.l2cap_channels.clear();
+        self.pending_l2cap_channels.clear();
+        self.l2cap_classic_servers.clear();
+        self.l2cap_le_servers.clear();
         self.apply_classic_scan_enable()
     }
 
