@@ -57,7 +57,7 @@ pub use hci_socket::{
 };
 pub use host::{
     ClassicCtkdPairingSession, ClassicPairingSession, ExternalAttTransport, ExternalControllerInfo,
-    ExternalHost, ExternalHostActivity, ExternalHostState, LePairingSession,
+    ExternalEattTransport, ExternalHost, ExternalHostActivity, ExternalHostState, LePairingSession,
     LocalControllerVersion,
 };
 #[cfg(unix)]

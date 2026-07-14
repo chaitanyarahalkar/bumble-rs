@@ -127,6 +127,7 @@ crate whose behavior is verified against the upstream Python.
 | 151. Typed Device lifecycle listeners | `bumble-host` | ✅ ordered journal/listeners + connection failures + non-destructive disconnection failures green |
 | 152. Multi-listener GATT subscriptions | `bumble-gatt` | ✅ ordered notify/indicate callbacks + last-subscriber/forced CCCD cleanup green |
 | 153. USB SCO/eSCO isochronous transport | `bumble-transport` | ✅ alternate selection + fragmented input + multi-packet output green |
+| 154. Enhanced ATT bearers | `bumble-gatt` / `bumble-host` / `bumble-transport` | ✅ LE CoC read/write + bearer-scoped CCCDs/MTUs/queues + notify/indicate fan-out green |
 | 103+. Repository completion audit and remaining gaps | workspace | in progress |
 
 The LE lifecycle is now complete end-to-end through library APIs: **connect →
@@ -184,8 +185,8 @@ size, to convey remaining surface.
 | `controller.py` (2.8k) | `bumble-controller` | ✅ | **Complete upstream command surface**: every one of the 93 generated handlers gets the matching Command Complete/Status shape; all 31 data commands provide their upstream state/default payloads; every stateful configuration handler retains its values; the ten remaining table fallbacks correspond exactly to upstream no-ops or TODO acknowledgements; and commands upstream also does not handle receive Unknown HCI Command. **Functionally simulated**: legacy, extended, and periodic LE advertising/scanning/synchronization; multi-set parameters/random addresses/fragmented data/scan responses; sync create/cancel/terminate, receive control, and PAST sync/set-info transfer over ACL; IRK resolving-list offload with identity-targeted RPA connections; ACL routing with PB/BC preservation and Number Of Completed Packets flow events; disconnection; event masks, Classic scan mode, default PHY, local name, suggested data length, synchronous flow control, and LE/SSP host features; per-connection data length, PHY, LE subrate, and Sniff/Active mode changes; and — via LL control-PDU exchange — **encryption start**, **remote features**, and **CIS establishment**. CIG removal validates its identifier; CIS links retain Setup/Remove ISO data paths and route HCI ISO fragments with handle translation and completed-packet events. Classic connection/name/base and extended feature-page exchange, accept-time and explicit role switching, and SCO/eSCO request/accept/reject/disconnect are live. Upstream's own LTK-verification TODO and absent Classic-authentication/remote-version handlers remain the boundary. |
 | `link.py` (0.15k) | `bumble-controller` | ✅ | Complete in-process link bus for advertising, ACL, LL-control, Classic LMP, synchronous, and ISO traffic. Rust's explicit deterministic pumps are the scheduling equivalent of upstream's `asyncio.call_soon`: connect, feature/encryption/CIS procedures, and ACL/Classic/SCO/CIS teardown all cross the queued PDU path before the peer observes them. No serialized radio transport is deferred here—upstream explicitly defines these objects as context-aware in-process messages without a real physical transport. |
 | `ll.py` (0.2k) | `bumble-controller::ll` | ✅ | Complete upstream LL model surface: all 61 control opcodes plus every concrete control PDU (`TerminateInd`, `EncReq`, feature request/response forms, `CisReq`/`CisRsp`/`CisInd`, and `CisTerminateInd`). Advertising/connect behavior is carried by the controller's typed in-process advertising envelope. CIS termination removes peripheral state but preserves and unbinds the central handle, matching upstream so the same configured CIG can establish it again. |
-| `host.py` (2.1k) | `bumble-host` | 🟡 | `Device` glue (ATT↔L2CAP↔ACL sequencing + pairing transport), controller-buffer-sized outbound ACL fragmentation, per-connection inbound reassembly, a global/per-handle `DataPacketQueue` driven by Number Of Completed Packets, handle-indexed LE and Classic connection ownership, live LE signaling/credit-channel managers, LE/Classic encryption and remote-feature completion routing, resolving-list programming, Classic and LE L2CAP, Channel Sounding completion routing, plus connected and broadcast ISO audio APIs. LE connection update/rate/subrate, data-length, PHY, and RSSI completions update per-handle state and enter a correlated result journal, including command-status failures. A typed `DeviceEvent` journal and synchronous listener registry now route LE/Classic/SCO lifecycle, discovery, pairing, encryption, and connection-control outcomes after state mutation; failed disconnects preserve all per-handle state. The host pump advances LL, LMP, periodic-sync-transfer, BIG termination, and HCI/ACL traffic. Deferred: narrower awaitable convenience wrappers. |
-| `device.py` (7.0k) | `bumble-host` | 🟡 | High-level legacy, extended, and periodic LE advertising; active/passive scan reports; periodic sync create/cancel/terminate, fragmented-report assembly, and PAST sync/set-info transfer; identity/RPA-aware legacy and extended connection setup; handle-indexed LE/Classic peer, role, connection parameters/rate/subrate, negotiated data length, PHY and RSSI, remote LE and multi-page LMP features, Sniff/Active, and Channel Sounding capability/config/procedure state; and disconnect run through `Device` without raw HCI. `add_event_listener`/`remove_event_listener` and the ordered `take_device_events` journal provide the upstream lifecycle/discovery listener surface without forcing an async runtime. The upstream update, Bluetooth 6.2 rate, data-length, PHY read/set/default, RSSI, default-rate, and default-subrate conveniences all have handle-safe command APIs; explicit result events replace their futures. Extended and periodic data fragment across HCI commands up to the controller's 1650-byte limit. ATT/L2CAP, encryption, PAST, and ISO operations have explicit handle-selecting forms while legacy convenience calls use a selectable current connection. CIG/CIS and BIG/BIS creation, synchronization, data-path management, sequence numbering, 960-byte ISO fragmentation, and receive-side SDU reassembly are live. GATT/ATT, SMP, Classic, and synchronous operations are also exposed by the same type. Deferred: narrower awaitable convenience wrappers. |
+| `host.py` (2.1k) | `bumble-host` | 🟡 | `Device` glue (ATT/EATT↔L2CAP↔ACL sequencing + pairing transport), controller-buffer-sized outbound ACL fragmentation, per-connection inbound reassembly, a global/per-handle `DataPacketQueue` driven by Number Of Completed Packets, handle-indexed LE and Classic connection ownership, live LE signaling/credit-channel managers, LE/Classic encryption and remote-feature completion routing, resolving-list programming, Classic and LE L2CAP, Channel Sounding completion routing, plus connected and broadcast ISO audio APIs. Fixed ATT and EATT requests share the server while retaining bearer-scoped context, inboxes, CCCDs, MTUs, queued writes, and indication confirmations. LE connection update/rate/subrate, data-length, PHY, and RSSI completions update per-handle state and enter a correlated result journal, including command-status failures. A typed `DeviceEvent` journal and synchronous listener registry now route LE/Classic/SCO lifecycle, discovery, pairing, encryption, and connection-control outcomes after state mutation; failed disconnects preserve all per-handle state. The host pump advances LL, LMP, periodic-sync-transfer, BIG termination, and HCI/ACL traffic. Deferred: narrower awaitable convenience wrappers. |
+| `device.py` (7.0k) | `bumble-host` | 🟡 | High-level legacy, extended, and periodic LE advertising; active/passive scan reports; periodic sync create/cancel/terminate, fragmented-report assembly, and PAST sync/set-info transfer; identity/RPA-aware legacy and extended connection setup; handle-indexed LE/Classic peer, role, connection parameters/rate/subrate, negotiated data length, PHY and RSSI, remote LE and multi-page LMP features, Sniff/Active, and Channel Sounding capability/config/procedure state; and disconnect run through `Device` without raw HCI. `add_event_listener`/`remove_event_listener` and the ordered `take_device_events` journal provide the upstream lifecycle/discovery listener surface without forcing an async runtime. The upstream update, Bluetooth 6.2 rate, data-length, PHY read/set/default, RSSI, default-rate, and default-subrate conveniences all have handle-safe command APIs; explicit result events replace their futures. Extended and periodic data fragment across HCI commands up to the controller's 1650-byte limit. ATT, EATT, L2CAP, encryption, PAST, and ISO operations have explicit handle-selecting forms while legacy convenience calls use a selectable current connection. CIG/CIS and BIG/BIS creation, synchronization, data-path management, sequence numbering, 960-byte ISO fragmentation, and receive-side SDU reassembly are live. GATT/ATT, SMP, Classic, and synchronous operations are also exposed by the same type. Deferred: narrower awaitable convenience wrappers. |
 | `lmp.py` (0.4k) | `bumble-controller::lmp` | ✅ | Complete open 88-opcode catalog and byte codec for all 18 registered packet classes: base/extended accept/reject, `AuRand`, detach, SCO/eSCO setup/removal, host connection, switch, fragmented-name, and base/extended feature packets, plus unknown-opcode payload preservation and bounded truncation/length errors. Payload layouts are pinned to upstream's field serializer; two-byte escape opcodes use their intended `0x7Fxx` wire values. The controller's in-process semantic variants drive every LMP family upstream actually handles through `pump_classic`. Upstream's controller leaves `AuRand`/authentication unhandled, so no synthetic authentication flow is claimed. |
 
 ### L2CAP
@@ -197,8 +198,8 @@ size, to convey remaining surface.
 | Upstream (LOC) | Rust crate | Status | Notes |
 |---|---|---|---|
 | `att.py` (1.1k) | `bumble-att` | ✅ | Complete typed catalog for every upstream `ATT_PDU` subclass: discovery, MTU, Read/Blob/Multiple/Multiple Variable/By Type/By Group, Write/Command/Signed, Prepare/Execute Write, notifications/indications, and confirmation. Signed Write separates value/counter/MAC, computes the CSRK AES-CMAC, and provides monotonic signer/verifier state. All added forms are Python-oracle or independent CMAC-vector pinned; variable tuples and handle sets add safe truncation/shape checks. |
-| `gatt.py` (0.6k), `gatt_server.py` (1.2k) | `bumble-gatt` | 🟡 | Attribute DB, primary/secondary services, include declarations, characteristic descriptors, automatic CCCDs, explicit access/security permissions, bearer-aware dynamic read/write callbacks, primary discovery, read/write/notify, Find_Information/Find_By_Type_Value, MTU-sized Read/Blob, fixed + variable Read Multiple, atomic Prepare/Execute Write with cancel/rollback, and authenticated signed-write client/server handling with replay protection. Deferred: the async bearer convenience layer. |
-| `gatt_client.py` (1.2k) | `bumble-gatt` | 🟡 | **`GattClient` (slices 18/152)**: primary/secondary/included service, characteristic, and descriptor discovery; reads (with long-read via Read_Blob); writes (with and without response); and notify/indicate subscriptions over an `AttTransport`. Stable listener IDs support multiple ordered callbacks per value handle; cache updates precede delivery, removal preserves the CCCD while any implicit or explicit subscriber remains, last-subscriber removal clears it, and forced unsubscribe writes zero without local state. Included-service discovery resolves both compact 16-bit and readback-based 128-bit declarations. Deferred: async bearer scheduling. |
+| `gatt.py` (0.6k), `gatt_server.py` (1.2k) | `bumble-gatt` / `bumble-host` | ✅ | Attribute DB, primary/secondary services, include declarations, characteristic descriptors, automatic bearer-scoped CCCDs, explicit access/security permissions, bearer-aware dynamic read/write callbacks, primary discovery, read/write/notify, Find_Information/Find_By_Type_Value, per-bearer MTU-sized Read/Blob, fixed + variable Read Multiple, per-bearer atomic Prepare/Execute Write with cancel/rollback, authenticated signed writes with replay protection, and EATT registration/routing over enhanced LE credit channels. Notification and indication fan-out honors each fixed/enhanced bearer subscription; confirmation and disconnect cleanup are bearer-local. |
+| `gatt_client.py` (1.2k) | `bumble-gatt` / `bumble-transport` | ✅ | **`GattClient` (slices 18/152/154)**: primary/secondary/included service, characteristic, and descriptor discovery; reads (with long-read via Read_Blob); writes (with and without response); and notify/indicate subscriptions over an `AttTransport`. Stable listener IDs support multiple ordered callbacks per value handle; cache updates precede delivery, removal preserves the CCCD while any implicit or explicit subscriber remains, last-subscriber removal clears it, and forced unsubscribe writes zero without local state. Included-service discovery resolves both compact 16-bit and readback-based 128-bit declarations. `ExternalEattTransport::connect` performs the enhanced LE credit-channel handshake and drives the same client over a real controller; Rust's synchronous polling replaces upstream async scheduling. |
 | `gatt_adapters.py` (0.4k) | `bumble-gatt` | ✅ | Typed server/proxy adapters for delegated, packed, mapped, UTF-8, serializable, and enum values, including typed dynamic server state and cached proxy decoding. `PackedCodec` covers Python 3.14 portable and native-aligned `struct` modes, zero-repeat tail alignment, pointer-sized integers, binary16, and complex32/64, with host-Python oracle vectors. |
 
 ### Security (SMP + crypto)
@@ -571,8 +572,9 @@ real `GattServer` end-to-end — discover → read (short and long) → write (w
 and without response) → subscribe → notify/indicate. The nine ATT PDUs the
 client needs (Find_Information, Find_By_Type_Value, Read_Blob, Write_Command,
 Handle_Value_Indication/Confirmation) were added to `bumble-att` and
-oracle-pinned. Deferred, matching the synchronous port: the async bearer, the
-`gatt_adapters` typed-value proxies, and event listeners.
+oracle-pinned. At this checkpoint the async bearer, `gatt_adapters` typed-value
+proxies, and event listeners were deferred; later slices port the synchronous
+equivalents, including real EATT credit-channel bearers in Slice 154.
 
 ## Slice 19 — what's here
 
@@ -1292,9 +1294,9 @@ Dynamic GATT values complete the synchronous attribute model:
   dynamic values as Attribute Not Long, preserving the static queued-write
   path's atomic rollback guarantee.
 
-The remaining GATT difference is its asynchronous bearer/event convenience
-surface rather than database expressiveness. Porting now continues through the
-larger partial subsystems.
+At this checkpoint the remaining GATT difference was its asynchronous
+bearer/event convenience surface. Slice 154 later closes the protocol gap with
+real EATT bearers while retaining the port's synchronous polling model.
 
 ## Slice 54 — what's here
 
@@ -3328,6 +3330,33 @@ synchronous and mockable:
 - Focused tests cover automatic/explicit/forced endpoint selection, fragmented
   SCO input, output routing, disabled-SCO behavior, and disconnect propagation;
   the complete transport crate remains green.
+
+## Slice 154 — what's here
+
+The completion audit found that EATT was still absent even though the lower LE
+credit-channel runtime already supported the enhanced connection procedure.
+This slice binds GATT to that real transport rather than simulating an extra
+in-process request path:
+
+- `Device::register_eatt_server` and `Device::connect_eatt` use the assigned
+  SPSM `0x0027` and enhanced one-to-five-channel LE credit connection command.
+  ATT SDUs cross normal HCI ACL fragmentation, L2CAP signaling, credit flow,
+  and channel teardown before server dispatch or client delivery.
+- Fixed ATT and every EATT CID receive stable distinct bearer identities.
+  `GattServer` retains negotiated MTU, prepared-write queue, and automatic CCCD
+  values per bearer; disconnecting one bearer removes only its state.
+- Notification and indication helpers fan out across the legacy bearer and all
+  EATT bearers on a connection, honoring each bearer's CCCD bits. Values are
+  MTU-truncated per target, outstanding indications are serialized per bearer,
+  and confirmations clear only their matching pending state.
+- `ExternalEattTransport::connect` performs the credit-channel handshake over
+  an external controller and implements `AttTransport`, so the existing
+  high-level `GattClient` runs unchanged on Enhanced ATT.
+- End-to-end software-controller tests cover EATT read/write, two concurrent
+  enhanced bearers plus fixed ATT, subscription isolation, notify/indicate
+  fan-out, confirmations, and unregistered-SPSM refusal. Direct GATT tests pin
+  per-bearer MTU, queued-write, CCCD, and cleanup behavior; an external-host
+  test drives a real `GattClient` request over framed EATT ACL traffic.
 
 ## Acceptance
 

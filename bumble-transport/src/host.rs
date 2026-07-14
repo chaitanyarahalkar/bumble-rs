@@ -10,6 +10,7 @@ use bumble_hci::{
     SynchronousDataPacket,
 };
 use bumble_host::{ClassicPairingEvent, Device, HostTransport};
+use bumble_l2cap::LeCreditBasedChannelSpec;
 use bumble_smp::{
     security_request, AcceptAllDelegate, AuthReq, ClassicCtkdState, IoCapability,
     ManagedPairingState, PairingConfig, PairingConnection, PairingDelegate, PairingDelegateFactory,
@@ -1186,6 +1187,179 @@ impl AttTransport for ExternalAttTransport<'_> {
     }
 }
 
+/// Synchronous Enhanced ATT bearer over an initialized [`ExternalHost`].
+/// Construction performs the enhanced LE credit-based connection procedure;
+/// the resulting transport can be passed directly to [`bumble_gatt::GattClient`].
+pub struct ExternalEattTransport<'a> {
+    host: &'a mut ExternalHost,
+    device: &'a mut Device,
+    connection_handle: u16,
+    source_cid: u16,
+    timeout: Duration,
+    unsolicited: VecDeque<AttPdu>,
+}
+
+impl<'a> ExternalEattTransport<'a> {
+    pub fn connect(
+        host: &'a mut ExternalHost,
+        device: &'a mut Device,
+        connection_handle: u16,
+        spec: LeCreditBasedChannelSpec,
+        timeout: Duration,
+    ) -> Result<Self> {
+        if !device.is_connected_on_handle(connection_handle) {
+            return Err(Error::Remote(format!(
+                "unknown LE connection handle {connection_handle:#06x}"
+            )));
+        }
+        let source_cid = device
+            .connect_eatt(host, connection_handle, spec, 1)
+            .map_err(|error| Error::Remote(error.to_string()))?
+            .into_iter()
+            .next()
+            .expect("one EATT bearer was requested");
+        let deadline = Instant::now() + timeout;
+        loop {
+            device.poll(host);
+            if let Some(result) = device.le_credit_connection_result(connection_handle, source_cid)
+            {
+                if result != 0 {
+                    return Err(Error::Remote(format!(
+                        "EATT connection on handle {connection_handle:#06x} was refused with result {result:#06x}"
+                    )));
+                }
+                break;
+            }
+            if !device.is_connected_on_handle(connection_handle) {
+                return Err(Error::Remote(format!(
+                    "LE connection {connection_handle:#06x} ended while opening EATT"
+                )));
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(Error::Remote(format!(
+                    "timed out opening EATT on handle {connection_handle:#06x}"
+                )));
+            }
+            match host.wait_for_activity(remaining)? {
+                ExternalHostActivity::Packet => {}
+                ExternalHostActivity::Timeout => {
+                    return Err(Error::Remote(format!(
+                        "timed out opening EATT on handle {connection_handle:#06x}"
+                    )))
+                }
+                ExternalHostActivity::Ended => {
+                    return Err(Error::Remote("transport ended while opening EATT".into()))
+                }
+            }
+        }
+        Ok(Self {
+            host,
+            device,
+            connection_handle,
+            source_cid,
+            timeout,
+            unsolicited: VecDeque::new(),
+        })
+    }
+
+    pub fn source_cid(&self) -> u16 {
+        self.source_cid
+    }
+
+    pub fn take_unsolicited(&mut self) -> Vec<AttPdu> {
+        self.unsolicited.drain(..).collect()
+    }
+
+    fn take_response(&mut self, request_opcode: u8) -> Option<AttPdu> {
+        let mut response = None;
+        for pdu in self
+            .device
+            .take_eatt_inbox_on_bearer(self.connection_handle, self.source_cid)
+        {
+            let matches = match &pdu {
+                AttPdu::ErrorResponse {
+                    request_opcode_in_error,
+                    ..
+                } => *request_opcode_in_error == request_opcode,
+                _ => pdu.op_code() == request_opcode.wrapping_add(1),
+            };
+            if response.is_none() && matches {
+                response = Some(pdu);
+            } else {
+                self.unsolicited.push_back(pdu);
+            }
+        }
+        response
+    }
+
+    fn request_result(&mut self, request: &AttPdu) -> Result<AttPdu> {
+        self.device
+            .send_eatt(self.host, self.connection_handle, self.source_cid, request)
+            .map_err(|error| Error::Remote(error.to_string()))?;
+        if request.is_command() {
+            return Ok(AttPdu::WriteResponse);
+        }
+
+        let deadline = Instant::now() + self.timeout;
+        loop {
+            self.device.poll(self.host);
+            if let Some(response) = self.take_response(request.op_code()) {
+                return Ok(response);
+            }
+            if self
+                .device
+                .le_credit_channel(self.connection_handle, self.source_cid)
+                .is_none()
+            {
+                return Err(Error::Remote(format!(
+                    "EATT CID {:#06x} ended before response {:#04x}",
+                    self.source_cid,
+                    request.op_code()
+                )));
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(Error::Remote(format!(
+                    "timed out waiting for EATT response to {:#04x}",
+                    request.op_code()
+                )));
+            }
+            match self.host.wait_for_activity(remaining)? {
+                ExternalHostActivity::Packet => {}
+                ExternalHostActivity::Timeout => {
+                    return Err(Error::Remote(format!(
+                        "timed out waiting for EATT response to {:#04x}",
+                        request.op_code()
+                    )))
+                }
+                ExternalHostActivity::Ended => {
+                    return Err(Error::Remote(format!(
+                        "transport ended before EATT response to {:#04x}",
+                        request.op_code()
+                    )))
+                }
+            }
+        }
+    }
+}
+
+impl AttTransport for ExternalEattTransport<'_> {
+    fn request(&mut self, request: &AttPdu) -> AttPdu {
+        self.request_result(request)
+            .unwrap_or_else(|_| AttPdu::ErrorResponse {
+                request_opcode_in_error: request.op_code(),
+                attribute_handle_in_error: 0,
+                error_code: 0x0E,
+            })
+    }
+
+    fn try_request(&mut self, request: &AttPdu) -> core::result::Result<AttPdu, String> {
+        self.request_result(request)
+            .map_err(|error| error.to_string())
+    }
+}
+
 enum ReaderMessage {
     Packet(Box<HciPacket>),
     Ended,
@@ -1726,6 +1900,7 @@ mod tests {
     use bumble::Address;
     use bumble_hci::{CustomPacket, Event, LeMetaEvent};
     use bumble_host::Device;
+    use bumble_l2cap::{ControlFrame, L2capPdu, L2CAP_LE_SIGNALING_CID};
     use std::collections::BTreeMap;
     use std::sync::{Arc, Mutex};
 
@@ -1785,11 +1960,11 @@ mod tests {
     }
 
     fn att_acl(connection_handle: u16, pdu: AttPdu) -> HciPacket {
-        let payload = pdu.to_bytes();
-        let mut data = Vec::with_capacity(4 + payload.len());
-        data.extend_from_slice(&(payload.len() as u16).to_le_bytes());
-        data.extend_from_slice(&bumble_host::ATT_CID.to_le_bytes());
-        data.extend_from_slice(&payload);
+        l2cap_acl(connection_handle, bumble_host::ATT_CID, pdu.to_bytes())
+    }
+
+    fn l2cap_acl(connection_handle: u16, cid: u16, payload: Vec<u8>) -> HciPacket {
+        let data = L2capPdu::new(cid, payload).to_bytes(false);
         HciPacket::AclData(AclDataPacket {
             connection_handle,
             pb_flag: 0,
@@ -1797,6 +1972,14 @@ mod tests {
             data_total_length: data.len() as u16,
             data,
         })
+    }
+
+    fn eatt_acl(connection_handle: u16, source_cid: u16, pdu: AttPdu) -> HciPacket {
+        let pdu = pdu.to_bytes();
+        let mut sdu = Vec::with_capacity(2 + pdu.len());
+        sdu.extend_from_slice(&(pdu.len() as u16).to_le_bytes());
+        sdu.extend_from_slice(&pdu);
+        l2cap_acl(connection_handle, source_cid, sdu)
     }
 
     #[test]
@@ -2338,6 +2521,110 @@ mod tests {
             .unwrap()
             .iter()
             .any(|packet| matches!(packet, HciPacket::AclData(_))));
+    }
+
+    #[test]
+    fn external_eatt_transport_connects_and_drives_gatt_client() {
+        let address =
+            Address::parse("C4:F2:17:1A:1D:BB", bumble::AddressType::RANDOM_DEVICE).unwrap();
+        let connection = HciPacket::Event(Event::LeMeta(LeMetaEvent::ConnectionComplete {
+            status: 0,
+            connection_handle: 0x123,
+            role: 0,
+            peer_address_type: 1,
+            peer_address: address,
+            connection_interval: 24,
+            peripheral_latency: 0,
+            supervision_timeout: 42,
+            central_clock_accuracy: 0,
+        }));
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let sink = RecordingSink::default();
+        let recorded = sink.clone();
+        let mut host = ExternalHost::new(SplitOpenedTransport {
+            source: Box::new(ChannelSource(receiver)),
+            sink: Box::new(sink),
+            metadata: BTreeMap::new(),
+        });
+        let mut device = Device::new(0);
+        sender.send(connection).unwrap();
+        assert_eq!(
+            host.wait_for_activity(Duration::from_secs(1)).unwrap(),
+            ExternalHostActivity::Packet
+        );
+        assert!(device.poll(&mut host));
+
+        let response_sender = sender.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(10));
+            response_sender
+                .send(l2cap_acl(
+                    0x123,
+                    L2CAP_LE_SIGNALING_CID,
+                    ControlFrame::CreditBasedConnectionResponse {
+                        identifier: 1,
+                        mtu: 128,
+                        mps: 64,
+                        initial_credits: 8,
+                        result: 0,
+                        destination_cid: vec![0x0040],
+                    }
+                    .to_bytes(),
+                ))
+                .unwrap();
+            std::thread::sleep(Duration::from_millis(10));
+            response_sender
+                .send(eatt_acl(
+                    0x123,
+                    0x0040,
+                    AttPdu::HandleValueNotification {
+                        attribute_handle: 7,
+                        attribute_value: vec![0x44],
+                    },
+                ))
+                .unwrap();
+            response_sender
+                .send(eatt_acl(
+                    0x123,
+                    0x0040,
+                    AttPdu::ReadResponse {
+                        attribute_value: vec![1, 2, 3],
+                    },
+                ))
+                .unwrap();
+        });
+
+        let mut transport = ExternalEattTransport::connect(
+            &mut host,
+            &mut device,
+            0x123,
+            LeCreditBasedChannelSpec::default(),
+            Duration::from_secs(1),
+        )
+        .unwrap();
+        assert_eq!(transport.source_cid(), 0x0040);
+        let mut client = bumble_gatt::GattClient::new();
+        assert_eq!(
+            client.read_value(&mut transport, 1, false).unwrap(),
+            vec![1, 2, 3]
+        );
+        assert_eq!(
+            transport.take_unsolicited(),
+            vec![AttPdu::HandleValueNotification {
+                attribute_handle: 7,
+                attribute_value: vec![0x44],
+            }]
+        );
+        assert!(
+            recorded
+                .0
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|packet| matches!(packet, HciPacket::AclData(_)))
+                .count()
+                >= 2
+        );
     }
 
     #[test]

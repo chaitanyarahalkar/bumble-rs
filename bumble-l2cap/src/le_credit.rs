@@ -540,6 +540,11 @@ impl LeCreditChannelManager {
         self.channels.get_mut(&source_cid)
     }
 
+    /// Connected channels in local source-CID order.
+    pub fn channels(&self) -> impl Iterator<Item = &LeCreditBasedChannel> {
+        self.channels.values()
+    }
+
     pub fn connection_result(&self, source_cid: u16) -> Option<u16> {
         self.connection_results.get(&source_cid).copied()
     }

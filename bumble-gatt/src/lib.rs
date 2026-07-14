@@ -29,12 +29,13 @@
 //! talk directly in the crate's `client` integration test.
 //!
 //! Read Multiple/Variable, CSRK-authenticated signed commands with replay
-//! protection, atomic Prepare/Execute queued writes, and ordered multi-listener
-//! notification/indication delivery are supported. The remaining architectural
-//! difference is the async bearer convenience layer.
+//! protection, bearer-local MTU/Prepare/Execute/CCCD state, and ordered
+//! multi-listener notification/indication delivery are supported. The host
+//! binds fixed ATT and Enhanced ATT credit channels to the same server; the
+//! transport crate provides a synchronous external-controller EATT transport.
 
 use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use bumble::Uuid;
 use bumble_att::{codes, AttPdu, SignedWriteVerifier};
@@ -87,6 +88,26 @@ pub mod permissions {
 /// (a bare [`AttServer`] or a full [`GattServer`]) behind one interface.
 pub trait AttRequestHandler: Send {
     fn handle_request(&mut self, request: &AttPdu) -> AttPdu;
+
+    /// Handle a request on a specific ATT bearer. Simple ATT servers can use
+    /// the context-free default; a full GATT server uses the bearer identity
+    /// for MTU, queued-write, security, and CCCD state.
+    fn handle_request_with_context(&mut self, request: &AttPdu, _context: AccessContext) -> AttPdu {
+        self.handle_request(request)
+    }
+
+    /// Return this bearer's CCCD bits for a characteristic value handle.
+    fn subscription_bits(&self, _bearer_id: u64, _value_handle: u16) -> u16 {
+        0
+    }
+
+    /// Negotiated ATT MTU for this bearer.
+    fn bearer_mtu(&self, _bearer_id: u64) -> u16 {
+        ATT_DEFAULT_MTU
+    }
+
+    /// Release state retained for a bearer that has closed.
+    fn remove_bearer(&mut self, _bearer_id: u64) {}
 }
 
 impl AttRequestHandler for AttServer {
@@ -98,6 +119,22 @@ impl AttRequestHandler for AttServer {
 impl AttRequestHandler for GattServer {
     fn handle_request(&mut self, request: &AttPdu) -> AttPdu {
         self.on_request(request)
+    }
+
+    fn handle_request_with_context(&mut self, request: &AttPdu, context: AccessContext) -> AttPdu {
+        self.on_request_with_context(request, context)
+    }
+
+    fn subscription_bits(&self, bearer_id: u64, value_handle: u16) -> u16 {
+        GattServer::subscription_bits(self, bearer_id, value_handle)
+    }
+
+    fn bearer_mtu(&self, bearer_id: u64) -> u16 {
+        self.negotiated_mtu(bearer_id)
+    }
+
+    fn remove_bearer(&mut self, bearer_id: u64) {
+        GattServer::remove_bearer(self, bearer_id);
     }
 }
 
@@ -448,6 +485,41 @@ impl DynamicValue {
     }
 }
 
+fn lock_unpoisoned<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+fn cccd_value(
+    subscriptions: Arc<Mutex<BTreeMap<(u64, u16), u16>>>,
+    value_handle: u16,
+) -> DynamicValue {
+    let reads = Arc::clone(&subscriptions);
+    DynamicValue::read_write(
+        move |context| {
+            Ok(lock_unpoisoned(&reads)
+                .get(&(context.bearer_id, value_handle))
+                .copied()
+                .unwrap_or(0)
+                .to_le_bytes()
+                .to_vec())
+        },
+        move |context, value| {
+            if let Ok(bytes) = <[u8; 2]>::try_from(value) {
+                let bits = u16::from_le_bytes(bytes);
+                let mut subscriptions = lock_unpoisoned(&subscriptions);
+                if bits == 0 {
+                    subscriptions.remove(&(context.bearer_id, value_handle));
+                } else {
+                    subscriptions.insert((context.bearer_id, value_handle), bits);
+                }
+            }
+            Ok(())
+        },
+    )
+}
+
 /// A descriptor in the complete GATT database-definition API.
 #[derive(Clone, Debug)]
 pub struct DescriptorDefinition {
@@ -542,9 +614,13 @@ pub struct GattServer {
     attributes: Vec<Attribute>,
     /// The MTU this server can receive (returned in Exchange MTU Response).
     mtu: u16,
-    /// The negotiated MTU (min of both peers), used to size read responses.
-    negotiated_mtu: u16,
-    prepared_writes: Vec<(u16, u16, Vec<u8>)>,
+    /// Negotiated MTUs by ATT bearer identity. A bearer absent from this map
+    /// still uses the mandatory default MTU.
+    negotiated_mtus: BTreeMap<u64, u16>,
+    /// Queued writes are bearer-local under ATT/EATT.
+    prepared_writes: BTreeMap<u64, Vec<(u16, u16, Vec<u8>)>>,
+    /// CCCD values indexed by bearer and characteristic value handle.
+    subscriptions: Arc<Mutex<BTreeMap<(u64, u16), u16>>>,
     signed_write_verifier: Option<SignedWriteVerifier>,
 }
 
@@ -638,6 +714,7 @@ impl GattServer {
             .map(|service| service.uuid.clone())
             .collect();
 
+        let subscriptions = Arc::new(Mutex::new(BTreeMap::new()));
         let mut attributes: Vec<Attribute> = Vec::new();
         let mut handle = 1u32;
 
@@ -711,13 +788,16 @@ impl GattServer {
                 for descriptor in ch.descriptors {
                     let descriptor_handle = handle;
                     handle += 1;
+                    let is_cccd = descriptor.uuid
+                        == Uuid::from_16_bits(GATT_CLIENT_CHARACTERISTIC_CONFIGURATION_UUID);
                     attributes.push(Attribute {
                         handle: descriptor_handle as u16,
                         type_uuid: descriptor.uuid,
                         end_group_handle: descriptor_handle as u16,
                         permissions: descriptor.permissions,
                         value: descriptor.value,
-                        dynamic_value: None,
+                        dynamic_value: is_cccd
+                            .then(|| cccd_value(Arc::clone(&subscriptions), value_handle as u16)),
                     });
                 }
 
@@ -734,7 +814,10 @@ impl GattServer {
                         end_group_handle: cccd_handle as u16,
                         permissions: permissions::READABLE | permissions::WRITEABLE,
                         value: vec![0x00, 0x00],
-                        dynamic_value: None,
+                        dynamic_value: Some(cccd_value(
+                            Arc::clone(&subscriptions),
+                            value_handle as u16,
+                        )),
                     });
                 }
             }
@@ -744,8 +827,9 @@ impl GattServer {
         Ok(GattServer {
             attributes,
             mtu: ATT_DEFAULT_MTU,
-            negotiated_mtu: ATT_DEFAULT_MTU,
-            prepared_writes: Vec::new(),
+            negotiated_mtus: BTreeMap::new(),
+            prepared_writes: BTreeMap::new(),
+            subscriptions,
             signed_write_verifier: None,
         })
     }
@@ -841,7 +925,40 @@ impl GattServer {
     }
 
     pub fn prepared_write_count(&self) -> usize {
-        self.prepared_writes.len()
+        self.prepared_writes.values().map(Vec::len).sum()
+    }
+
+    /// Configure the maximum ATT MTU this server advertises. Values below the
+    /// mandatory default are rejected.
+    pub fn set_max_mtu(&mut self, mtu: u16) -> bool {
+        if mtu < ATT_DEFAULT_MTU {
+            return false;
+        }
+        self.mtu = mtu;
+        true
+    }
+
+    /// Return a bearer's Client Characteristic Configuration bits for a
+    /// characteristic value handle.
+    pub fn subscription_bits(&self, bearer_id: u64, value_handle: u16) -> u16 {
+        lock_unpoisoned(&self.subscriptions)
+            .get(&(bearer_id, value_handle))
+            .copied()
+            .unwrap_or(0)
+    }
+
+    /// Drop MTU, queued-write, and CCCD state for a closed ATT bearer.
+    pub fn remove_bearer(&mut self, bearer_id: u64) {
+        self.negotiated_mtus.remove(&bearer_id);
+        self.prepared_writes.remove(&bearer_id);
+        lock_unpoisoned(&self.subscriptions).retain(|(id, _), _| *id != bearer_id);
+    }
+
+    fn negotiated_mtu(&self, bearer_id: u64) -> u16 {
+        self.negotiated_mtus
+            .get(&bearer_id)
+            .copied()
+            .unwrap_or(ATT_DEFAULT_MTU)
     }
 
     pub fn set_signed_write_key(&mut self, csrk: [u8; 16], last_counter: Option<u32>) {
@@ -864,7 +981,10 @@ impl GattServer {
     pub fn on_request_with_context(&mut self, request: &AttPdu, context: AccessContext) -> AttPdu {
         match request {
             AttPdu::ExchangeMtuRequest { client_rx_mtu } => {
-                self.negotiated_mtu = (*client_rx_mtu).min(self.mtu).max(ATT_DEFAULT_MTU);
+                self.negotiated_mtus.insert(
+                    context.bearer_id,
+                    (*client_rx_mtu).min(self.mtu).max(ATT_DEFAULT_MTU),
+                );
                 AttPdu::ExchangeMtuResponse {
                     server_rx_mtu: self.mtu,
                 }
@@ -875,7 +995,10 @@ impl GattServer {
                         Ok(value) => AttPdu::ReadResponse {
                             // A Read Response carries at most MTU-1 bytes; longer
                             // values are fetched with Read Blob.
-                            attribute_value: truncate(&value, (self.negotiated_mtu - 1) as usize),
+                            attribute_value: truncate(
+                                &value,
+                                usize::from(self.negotiated_mtu(context.bearer_id) - 1),
+                            ),
                         },
                         Err(code) => error(codes::ATT_READ_REQUEST, *attribute_handle, code),
                     },
@@ -909,7 +1032,9 @@ impl GattServer {
                             ATT_INVALID_OFFSET_ERROR,
                         )
                     } else {
-                        let end = (offset + (self.negotiated_mtu - 1) as usize).min(value.len());
+                        let end = (offset
+                            + usize::from(self.negotiated_mtu(context.bearer_id) - 1))
+                        .min(value.len());
                         AttPdu::ReadBlobResponse {
                             part_attribute_value: value[offset..end].to_vec(),
                         }
@@ -1038,11 +1163,14 @@ impl GattServer {
                         ATT_ATTRIBUTE_NOT_LONG_ERROR,
                     ),
                     Ok(()) => {
-                        self.prepared_writes.push((
-                            *attribute_handle,
-                            *value_offset,
-                            part_attribute_value.clone(),
-                        ));
+                        self.prepared_writes
+                            .entry(context.bearer_id)
+                            .or_default()
+                            .push((
+                                *attribute_handle,
+                                *value_offset,
+                                part_attribute_value.clone(),
+                            ));
                         AttPdu::PrepareWriteResponse {
                             attribute_handle: *attribute_handle,
                             value_offset: *value_offset,
@@ -1057,7 +1185,8 @@ impl GattServer {
     }
 
     fn read_multiple(&self, handles: &[u16], variable: bool, context: AccessContext) -> AttPdu {
-        let mut remaining = usize::from(self.negotiated_mtu - 1);
+        let mtu = self.negotiated_mtu(context.bearer_id);
+        let mut remaining = usize::from(mtu - 1);
         if variable {
             let mut tuples = Vec::new();
             for handle in handles {
@@ -1077,7 +1206,7 @@ impl GattServer {
                         return error(codes::ATT_READ_MULTIPLE_VARIABLE_REQUEST, *handle, code);
                     }
                 };
-                let part = truncate(&value, usize::from(self.negotiated_mtu - 3).min(251));
+                let part = truncate(&value, usize::from(mtu - 3).min(251));
                 if part.len() + 2 > remaining {
                     break;
                 }
@@ -1104,7 +1233,7 @@ impl GattServer {
                     Ok(value) => value,
                     Err(code) => return error(codes::ATT_READ_MULTIPLE_REQUEST, *handle, code),
                 };
-                let part = truncate(&value, usize::from(self.negotiated_mtu - 1).min(251));
+                let part = truncate(&value, usize::from(mtu - 1).min(251));
                 if part.len() > remaining {
                     break;
                 }
@@ -1119,13 +1248,16 @@ impl GattServer {
 
     fn execute_writes(&mut self, flags: u8, context: AccessContext) -> AttPdu {
         if flags == 0 {
-            self.prepared_writes.clear();
+            self.prepared_writes.remove(&context.bearer_id);
             return AttPdu::ExecuteWriteResponse;
         }
         if flags != 1 {
             return error(codes::ATT_EXECUTE_WRITE_REQUEST, 0, ATT_INVALID_PDU_ERROR);
         }
-        let prepared_writes = core::mem::take(&mut self.prepared_writes);
+        let prepared_writes = self
+            .prepared_writes
+            .remove(&context.bearer_id)
+            .unwrap_or_default();
         let mut staged: BTreeMap<u16, Vec<u8>> = self
             .attributes
             .iter()

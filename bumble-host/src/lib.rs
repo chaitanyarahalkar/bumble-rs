@@ -19,8 +19,9 @@
 //!
 //! ## Scope
 //!
-//! ATT traffic over the fixed ATT CID plus raw fixed/dynamic L2CAP channels,
-//! with controller-buffer-sized ACL fragmentation/reassembly. High-level
+//! ATT traffic over both the fixed ATT CID and Enhanced ATT LE credit channels,
+//! plus raw fixed/dynamic L2CAP channels, with controller-buffer-sized ACL
+//! fragmentation/reassembly. High-level
 //! legacy and extended advertising, scanning, and connection setup are also
 //! available, along with periodic advertising/synchronization, CIG/CIS and
 //! BIG/BIS control, PAST transfer, ISO SDU fragmentation/reassembly, and handle-scoped LE
@@ -31,7 +32,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use bumble::Address;
 use bumble_att::AttPdu;
 use bumble_controller::LocalLink as ControllerLocalLink;
-use bumble_gatt::AttRequestHandler;
+use bumble_gatt::{AccessContext, AttRequestHandler, ATT_DEFAULT_MTU};
 use bumble_hci::{
     fragment_l2cap_pdu, AclDataPacket, AclDataPacketAssembler, AdvertisingReport, CodingFormat,
     Command, Event, ExtendedAdvertisingReport, HciPacket, IsoDataPacket, LeMetaEvent,
@@ -49,8 +50,20 @@ pub use data_queue::{DataPacketQueue, DataPacketQueueError};
 
 /// The fixed L2CAP channel id for the Attribute Protocol.
 pub const ATT_CID: u16 = 0x0004;
+/// LE Protocol/Service Multiplexer assigned to Enhanced ATT.
+pub const EATT_PSM: u16 = 0x0027;
 /// The fixed L2CAP channel id for LE SMP.
 pub const SMP_CID: u16 = 0x0006;
+
+/// Stable server context identity for a connection's fixed ATT bearer.
+pub const fn att_bearer_id(connection_handle: u16) -> u64 {
+    connection_handle as u64
+}
+
+/// Stable server context identity for an Enhanced ATT bearer.
+pub const fn eatt_bearer_id(connection_handle: u16, source_cid: u16) -> u64 {
+    (1u64 << 63) | ((connection_handle as u64) << 16) | source_cid as u64
+}
 
 /// Transport-neutral HCI link used by [`Device`].
 ///
@@ -931,6 +944,8 @@ pub struct Device {
     le_credit_managers: BTreeMap<u16, LeCreditChannelManager>,
     le_credit_server_specs: BTreeMap<u16, LeCreditBasedChannelSpec>,
     le_credit_errors: Vec<(u16, String)>,
+    eatt_inbox: Vec<(u16, u16, AttPdu)>,
+    pending_att_indications: BTreeSet<(u16, u16)>,
     classic_connection_handle: Option<u16>,
     classic_connection_role: Option<u8>,
     classic_connections: BTreeMap<u16, ClassicConnectionInfo>,
@@ -1000,6 +1015,8 @@ impl Device {
             le_credit_managers: BTreeMap::new(),
             le_credit_server_specs: BTreeMap::new(),
             le_credit_errors: Vec::new(),
+            eatt_inbox: Vec::new(),
+            pending_att_indications: BTreeSet::new(),
             classic_connection_handle: None,
             classic_connection_role: None,
             classic_connections: BTreeMap::new(),
@@ -1069,6 +1086,8 @@ impl Device {
             le_credit_managers: BTreeMap::new(),
             le_credit_server_specs: BTreeMap::new(),
             le_credit_errors: Vec::new(),
+            eatt_inbox: Vec::new(),
+            pending_att_indications: BTreeSet::new(),
             classic_connection_handle: None,
             classic_connection_role: None,
             classic_connections: BTreeMap::new(),
@@ -3131,6 +3150,17 @@ impl Device {
             .channel(source_cid)
     }
 
+    /// Connected EATT source CIDs on one LE connection.
+    pub fn eatt_bearers(&self, connection_handle: u16) -> Vec<u16> {
+        self.le_credit_managers
+            .get(&connection_handle)
+            .into_iter()
+            .flat_map(LeCreditChannelManager::channels)
+            .filter(|channel| channel.psm == EATT_PSM)
+            .map(|channel| channel.source_cid)
+            .collect()
+    }
+
     pub fn register_le_credit_server(
         &mut self,
         mut spec: LeCreditBasedChannelSpec,
@@ -3164,6 +3194,26 @@ impl Device {
         removed
     }
 
+    /// Register Enhanced ATT on its assigned LE SPSM for existing and future
+    /// connections. Incoming EATT SDUs are routed through this device's ATT
+    /// server with bearer-scoped context.
+    pub fn register_eatt_server(
+        &mut self,
+        mut spec: LeCreditBasedChannelSpec,
+    ) -> bumble_l2cap::Result<u16> {
+        if self.server.is_none() {
+            return Err(L2capError::InvalidPacket(
+                "cannot register EATT without an ATT server".into(),
+            ));
+        }
+        spec.psm = Some(EATT_PSM);
+        self.register_le_credit_server(spec)
+    }
+
+    pub fn unregister_eatt_server(&mut self) -> bool {
+        self.unregister_le_credit_server(EATT_PSM)
+    }
+
     pub fn connect_le_credit_channel(
         &mut self,
         link: &mut LocalLink,
@@ -3191,6 +3241,19 @@ impl Device {
             .connect_enhanced(psm, spec, count)?;
         self.flush_le_credit_manager(link, connection_handle)?;
         Ok(source_cids)
+    }
+
+    /// Open one to five EATT bearers using the enhanced LE credit-based
+    /// connection procedure, matching upstream `Client.connect_eatt()`.
+    pub fn connect_eatt(
+        &mut self,
+        link: &mut LocalLink,
+        connection_handle: u16,
+        mut spec: LeCreditBasedChannelSpec,
+        count: usize,
+    ) -> bumble_l2cap::Result<Vec<u16>> {
+        spec.psm = Some(EATT_PSM);
+        self.connect_enhanced_le_credit_channels(link, connection_handle, EATT_PSM, spec, count)
     }
 
     pub fn reconfigure_le_credit_channels(
@@ -3282,6 +3345,99 @@ impl Device {
         std::iter::from_fn(|| channel.pop_received()).collect()
     }
 
+    /// Send one typed ATT PDU on an established EATT bearer.
+    pub fn send_eatt(
+        &mut self,
+        link: &mut LocalLink,
+        connection_handle: u16,
+        source_cid: u16,
+        pdu: &AttPdu,
+    ) -> bumble_l2cap::Result<()> {
+        let channel = self
+            .le_credit_channel(connection_handle, source_cid)
+            .ok_or_else(|| {
+                L2capError::InvalidPacket(format!("unknown EATT CID {source_cid:#06x}"))
+            })?;
+        if channel.psm != EATT_PSM {
+            return Err(L2capError::InvalidPacket(format!(
+                "CID {source_cid:#06x} is not an EATT bearer"
+            )));
+        }
+        self.send_le_credit_sdu(link, connection_handle, source_cid, &pdu.to_bytes())
+    }
+
+    /// Remove client-bound ATT PDUs received on one EATT bearer.
+    pub fn take_eatt_inbox_on_bearer(
+        &mut self,
+        connection_handle: u16,
+        source_cid: u16,
+    ) -> Vec<AttPdu> {
+        let (matching, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut self.eatt_inbox)
+            .into_iter()
+            .partition(|(handle, cid, _)| *handle == connection_handle && *cid == source_cid);
+        self.eatt_inbox = rest;
+        matching.into_iter().map(|(_, _, pdu)| pdu).collect()
+    }
+
+    /// Remove every client-bound EATT PDU, retaining bearer coordinates.
+    pub fn take_eatt_inbox(&mut self) -> Vec<(u16, u16, AttPdu)> {
+        std::mem::take(&mut self.eatt_inbox)
+    }
+
+    /// Whether a server-sent indication is still awaiting confirmation on a
+    /// fixed (`ATT_CID`) or enhanced (source CID) bearer.
+    pub fn indication_pending(&self, connection_handle: u16, source_cid: u16) -> bool {
+        self.pending_att_indications
+            .contains(&(connection_handle, source_cid))
+    }
+
+    /// Notify every subscribed fixed or enhanced ATT bearer on one connection.
+    pub fn notify_subscribers_on_handle(
+        &mut self,
+        link: &mut LocalLink,
+        connection_handle: u16,
+        value_handle: u16,
+        value: &[u8],
+        force: bool,
+    ) -> bumble_l2cap::Result<usize> {
+        self.send_subscribed_value(link, connection_handle, value_handle, value, force, false)
+    }
+
+    /// Indicate to every subscribed fixed or enhanced ATT bearer on one
+    /// connection. A bearer with an outstanding indication is left untouched.
+    pub fn indicate_subscribers_on_handle(
+        &mut self,
+        link: &mut LocalLink,
+        connection_handle: u16,
+        value_handle: u16,
+        value: &[u8],
+        force: bool,
+    ) -> bumble_l2cap::Result<usize> {
+        self.send_subscribed_value(link, connection_handle, value_handle, value, force, true)
+    }
+
+    /// Notify every subscribed bearer on every LE connection.
+    pub fn notify_subscribers(
+        &mut self,
+        link: &mut LocalLink,
+        value_handle: u16,
+        value: &[u8],
+        force: bool,
+    ) -> bumble_l2cap::Result<usize> {
+        self.send_subscribed_value_on_all_connections(link, value_handle, value, force, false)
+    }
+
+    /// Indicate to every subscribed bearer on every LE connection.
+    pub fn indicate_subscribers(
+        &mut self,
+        link: &mut LocalLink,
+        value_handle: u16,
+        value: &[u8],
+        force: bool,
+    ) -> bumble_l2cap::Result<usize> {
+        self.send_subscribed_value_on_all_connections(link, value_handle, value, force, true)
+    }
+
     pub fn disconnect_le_credit_channel(
         &mut self,
         link: &mut LocalLink,
@@ -3295,6 +3451,100 @@ impl Device {
 
     pub fn take_le_credit_errors(&mut self) -> Vec<(u16, String)> {
         std::mem::take(&mut self.le_credit_errors)
+    }
+
+    fn send_subscribed_value_on_all_connections(
+        &mut self,
+        link: &mut LocalLink,
+        value_handle: u16,
+        value: &[u8],
+        force: bool,
+        indicate: bool,
+    ) -> bumble_l2cap::Result<usize> {
+        let handles: Vec<u16> = self.le_connections.keys().copied().collect();
+        let mut sent = 0;
+        for handle in handles {
+            sent +=
+                self.send_subscribed_value(link, handle, value_handle, value, force, indicate)?;
+        }
+        Ok(sent)
+    }
+
+    fn send_subscribed_value(
+        &mut self,
+        link: &mut LocalLink,
+        connection_handle: u16,
+        value_handle: u16,
+        value: &[u8],
+        force: bool,
+        indicate: bool,
+    ) -> bumble_l2cap::Result<usize> {
+        let server = self.server.as_ref().ok_or_else(|| {
+            L2capError::InvalidPacket("cannot send subscribers without an ATT server".into())
+        })?;
+        let required_bit = if indicate { 0x0002 } else { 0x0001 };
+        let mut bearers = vec![ATT_CID];
+        if let Some(manager) = self.le_credit_managers.get(&connection_handle) {
+            bearers.extend(
+                manager
+                    .channels()
+                    .filter(|channel| channel.psm == EATT_PSM)
+                    .map(|channel| channel.source_cid),
+            );
+        }
+        let targets: Vec<(u16, usize)> = bearers
+            .into_iter()
+            .filter_map(|source_cid| {
+                let bearer_id = if source_cid == ATT_CID {
+                    att_bearer_id(connection_handle)
+                } else {
+                    eatt_bearer_id(connection_handle, source_cid)
+                };
+                let subscribed = server.subscription_bits(bearer_id, value_handle);
+                (force || subscribed & required_bit != 0).then(|| {
+                    let mtu = server.bearer_mtu(bearer_id).max(ATT_DEFAULT_MTU);
+                    (source_cid, usize::from(mtu.saturating_sub(3)))
+                })
+            })
+            .collect();
+
+        let mut sent = 0;
+        for (source_cid, max_value_length) in targets {
+            if indicate
+                && self
+                    .pending_att_indications
+                    .contains(&(connection_handle, source_cid))
+            {
+                continue;
+            }
+            let attribute_value = value[..value.len().min(max_value_length)].to_vec();
+            let pdu = if indicate {
+                AttPdu::HandleValueIndication {
+                    attribute_handle: value_handle,
+                    attribute_value,
+                }
+            } else {
+                AttPdu::HandleValueNotification {
+                    attribute_handle: value_handle,
+                    attribute_value,
+                }
+            };
+            if source_cid == ATT_CID {
+                if !self.send_att_on_handle(link, connection_handle, &pdu) {
+                    return Err(L2capError::InvalidPacket(format!(
+                        "failed to send ATT value on handle {connection_handle:#06x}"
+                    )));
+                }
+            } else {
+                self.send_eatt(link, connection_handle, source_cid, &pdu)?;
+            }
+            if indicate {
+                self.pending_att_indications
+                    .insert((connection_handle, source_cid));
+            }
+            sent += 1;
+        }
+        Ok(sent)
     }
 
     fn classic_channel_manager_mut(
@@ -4343,6 +4593,18 @@ impl Device {
                         handles.retain(|handle| *handle != connection_handle);
                         !handles.is_empty()
                     });
+                    let eatt_cids: Vec<u16> = self
+                        .le_credit_managers
+                        .get(&connection_handle)
+                        .into_iter()
+                        .flat_map(LeCreditChannelManager::channels)
+                        .filter(|channel| channel.psm == EATT_PSM)
+                        .map(|channel| channel.source_cid)
+                        .collect();
+                    self.remove_att_bearer_state(connection_handle, ATT_CID);
+                    for source_cid in eatt_cids {
+                        self.remove_att_bearer_state(connection_handle, source_cid);
+                    }
                     self.le_connections.remove(&connection_handle);
                     self.le_credit_managers.remove(&connection_handle);
                     self.le_credit_errors
@@ -4818,6 +5080,76 @@ impl Device {
         success
     }
 
+    fn att_access_context(&self, connection_handle: u16, source_cid: u16) -> AccessContext {
+        AccessContext {
+            bearer_id: if source_cid == ATT_CID {
+                att_bearer_id(connection_handle)
+            } else {
+                eatt_bearer_id(connection_handle, source_cid)
+            },
+            encrypted: self.encrypted_handles.contains(&connection_handle),
+            authenticated: false,
+            authorized: false,
+        }
+    }
+
+    fn remove_att_bearer_state(&mut self, connection_handle: u16, source_cid: u16) {
+        let bearer_id = if source_cid == ATT_CID {
+            att_bearer_id(connection_handle)
+        } else {
+            eatt_bearer_id(connection_handle, source_cid)
+        };
+        if let Some(server) = self.server.as_mut() {
+            server.remove_bearer(bearer_id);
+        }
+        self.eatt_inbox
+            .retain(|(handle, cid, _)| *handle != connection_handle || *cid != source_cid);
+        self.pending_att_indications
+            .remove(&(connection_handle, source_cid));
+    }
+
+    fn process_eatt_bearer(
+        &mut self,
+        link: &mut LocalLink,
+        connection_handle: u16,
+        source_cid: u16,
+    ) -> bumble_l2cap::Result<()> {
+        let sdus = self.take_le_credit_sdus(connection_handle, source_cid);
+        for bytes in sdus {
+            let pdu = AttPdu::from_bytes(&bytes).map_err(|error| {
+                L2capError::InvalidPacket(format!(
+                    "invalid ATT PDU on EATT CID {source_cid:#06x}: {error}"
+                ))
+            })?;
+            let context = self.att_access_context(connection_handle, source_cid);
+            if pdu == AttPdu::HandleValueConfirmation
+                && self
+                    .pending_att_indications
+                    .remove(&(connection_handle, source_cid))
+            {
+                continue;
+            }
+            if pdu.is_command() {
+                if let Some(server) = self.server.as_mut() {
+                    let _ = server.handle_request_with_context(&pdu, context);
+                }
+                continue;
+            }
+            if is_request(&pdu) {
+                if let Some(response) = self
+                    .server
+                    .as_mut()
+                    .map(|server| server.handle_request_with_context(&pdu, context))
+                {
+                    self.send_eatt(link, connection_handle, source_cid, &response)?;
+                    continue;
+                }
+            }
+            self.eatt_inbox.push((connection_handle, source_cid, pdu));
+        }
+        Ok(())
+    }
+
     fn on_acl(&mut self, link: &mut LocalLink, acl: AclDataPacket) {
         let handle = acl.connection_handle;
         let Ok(Some(data)) = self.acl_assemblers.entry(handle).or_default().feed(&acl) else {
@@ -4853,6 +5185,15 @@ impl Device {
             l2cap.cid == L2CAP_LE_SIGNALING_CID || manager.channel(l2cap.cid).is_some()
         });
         if managed_le_credit_pdu {
+            let source_cid = l2cap.cid;
+            let eatt_before: BTreeSet<u16> = self
+                .le_credit_managers
+                .get(&handle)
+                .into_iter()
+                .flat_map(LeCreditChannelManager::channels)
+                .filter(|channel| channel.psm == EATT_PSM)
+                .map(|channel| channel.source_cid)
+                .collect();
             if let Err(error) = self
                 .le_credit_managers
                 .get_mut(&handle)
@@ -4864,6 +5205,22 @@ impl Device {
             }
             if let Err(error) = self.flush_le_credit_manager(link, handle) {
                 self.le_credit_errors.push((handle, error.to_string()));
+            }
+            let eatt_after: BTreeSet<u16> = self
+                .le_credit_managers
+                .get(&handle)
+                .into_iter()
+                .flat_map(LeCreditChannelManager::channels)
+                .filter(|channel| channel.psm == EATT_PSM)
+                .map(|channel| channel.source_cid)
+                .collect();
+            for closed_cid in eatt_before.difference(&eatt_after) {
+                self.remove_att_bearer_state(handle, *closed_cid);
+            }
+            if eatt_after.contains(&source_cid) {
+                if let Err(error) = self.process_eatt_bearer(link, handle, source_cid) {
+                    self.le_credit_errors.push((handle, error.to_string()));
+                }
             }
             return;
         }
@@ -4878,11 +5235,18 @@ impl Device {
         let Ok(pdu) = AttPdu::from_bytes(&l2cap.payload) else {
             return;
         };
+        let context = self.att_access_context(handle, ATT_CID);
+
+        if pdu == AttPdu::HandleValueConfirmation
+            && self.pending_att_indications.remove(&(handle, ATT_CID))
+        {
+            return;
+        }
 
         // ATT commands are server inputs but never produce a response.
         if pdu.is_command() {
             if let Some(server) = self.server.as_mut() {
-                let _ = server.handle_request(&pdu);
+                let _ = server.handle_request_with_context(&pdu, context);
             }
             return;
         }
@@ -4893,7 +5257,7 @@ impl Device {
             let response = self
                 .server
                 .as_mut()
-                .map(|server| server.handle_request(&pdu).to_bytes());
+                .map(|server| server.handle_request_with_context(&pdu, context).to_bytes());
             if let Some(response) = response {
                 self.send_l2cap_on_handle(link, handle, ATT_CID, &response);
                 return;
