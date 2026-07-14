@@ -2,7 +2,7 @@ use bumble::keys::{Key, KeyStore, MemoryKeyStore, PairingKeys};
 use bumble::{Address, AddressType};
 use bumble_controller::{Controller, LocalLink};
 use bumble_hci::Command;
-use bumble_host::{pump, Device};
+use bumble_host::{pump, Device, DeviceConfiguration};
 use bumble_smp::resolvable_private_address;
 
 fn address(value: &str, address_type: AddressType) -> Address {
@@ -89,4 +89,70 @@ fn controller_resolving_list_connects_identity_to_rpa_and_routes_acl() {
         devices[1].take_l2cap(0x0040),
         vec![b"resolved route".to_vec()]
     );
+}
+
+#[test]
+fn configured_power_on_loads_bond_irks_into_the_controller_resolver() {
+    let peer_irk = [0x35; 16];
+    let peer_identity = address("C4:F2:17:1A:1D:BB", AddressType::RANDOM_DEVICE);
+    let peer_rpa = resolvable_private_address(&peer_irk, [0x11, 0x22, 0x73]);
+    let mut store = MemoryKeyStore::new();
+    store
+        .update(
+            &peer_identity.to_string(false),
+            PairingKeys {
+                address_type: Some(AddressType::RANDOM_DEVICE),
+                irk: Some(Key::new(peer_irk.to_vec())),
+                ..PairingKeys::default()
+            },
+        )
+        .unwrap();
+
+    let mut link = LocalLink::new();
+    let central = link.add_controller(Controller::new(
+        "C",
+        address("00:00:00:00:00:01", AddressType::PUBLIC_DEVICE),
+    ));
+    let peripheral = link.add_controller(Controller::new(
+        "P",
+        address("00:00:00:00:00:02", AddressType::PUBLIC_DEVICE),
+    ));
+    let mut central_device = Device::from_config(
+        central,
+        DeviceConfiguration {
+            address: address("C4:F2:17:1A:1D:AA", AddressType::RANDOM_DEVICE),
+            address_resolution_offload: true,
+            gap_service_enabled: false,
+            gatt_service_enabled: false,
+            ..DeviceConfiguration::default()
+        },
+    )
+    .unwrap();
+    central_device.set_key_store(store);
+    let mut devices = [central_device, Device::new(peripheral)];
+
+    devices[0].power_on(&mut link).unwrap();
+    pump(&mut link, &mut devices);
+    assert!(devices[0].take_key_store_errors().is_empty());
+
+    link.handle_command(
+        peripheral,
+        Command::LeSetRandomAddress {
+            random_address: peer_rpa.clone(),
+        },
+    );
+    link.handle_command(
+        peripheral,
+        Command::LeSetAdvertisingEnable {
+            advertising_enable: 1,
+        },
+    );
+    devices[0].connect_le(&mut link, peer_identity.clone());
+    pump(&mut link, &mut devices);
+
+    assert!(devices[0].is_connected());
+    let reported = devices[0].peer_address().unwrap();
+    assert_eq!(reported.address_bytes(), peer_identity.address_bytes());
+    assert_eq!(reported.address_type(), AddressType::RANDOM_IDENTITY);
+    assert_ne!(reported.address_bytes(), peer_rpa.address_bytes());
 }

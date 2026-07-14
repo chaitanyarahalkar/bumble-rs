@@ -142,6 +142,7 @@ crate whose behavior is verified against the upstream Python.
 | 166. Local Channel Sounding capabilities | `bumble-hci` + `bumble-controller` + `bumble-host` | ✅ typed return codec + live controller response + power-on state green |
 | 167. Configured GATT and EATT services | `bumble-host` + `bumble-gatt` + `bumble-profiles` | ✅ custom definitions + GAP/GATT defaults + EATT registration green |
 | 168. Configured live SMP manager | `bumble-host` + `bumble-smp` | ✅ configured capabilities + automatic routing/encryption + completion events + debug key green |
+| 169. Configured bond persistence and reuse | `bumble` + `bumble-host` + `bumble-smp` | ✅ memory/JSON ownership + automatic persistence + resolver refresh + reconnect encryption green |
 | 103+. Repository completion audit and remaining gaps | workspace | in progress |
 
 The LE lifecycle is now complete end-to-end through library APIs: **connect →
@@ -3679,6 +3680,31 @@ inert `DeviceConfiguration` values.
 - Focused tests pin the debug public-key vector, reject invalid configuration,
   and prove automatic Secure Connections pairing, encryption, key retention,
   and completion events across a live `LocalLink`.
+
+## Slice 169 — what's here
+
+Configured devices now own and use the already-ported key stores across the
+complete LE bond lifecycle.
+
+- An absent or unknown `keystore` type selects `MemoryKeyStore`;
+  `JsonKeyStore` and `JsonKeyStore:<filename>` use the same device-address
+  namespace and path-selection model as upstream.
+- Completed SMP pairing writes the manager's identity-aware key set before the
+  pairing-complete event. Successful writes emit `KeyStoreUpdated`; storage or
+  resolving-list failures enter a drainable, handle-correlated error journal.
+- Public bond list/get/delete/delete-all APIs and application-provided store
+  injection expose the upstream mutable `Device.keystore` surface without
+  requiring an async runtime.
+- Controller LTK requests fall back from an active pairing session to the
+  stored SC or role-specific Legacy key. Centrals can start reconnect
+  encryption directly with `enable_encryption_with_bond`.
+- Power-on and bond updates reload stored peer IRKs into the controller when
+  address-resolution or address-generation offload is configured, including
+  the empty non-directed-generation entry used upstream.
+- Integration tests pair into a namespaced JSON file, discard both devices,
+  reconstruct them, reconnect, and prove encryption succeeds solely from the
+  persisted bonds. A separate live test proves configured power-on loads a
+  stored peer IRK and resolves an identity-targeted connection to its RPA.
 
 ## Acceptance
 

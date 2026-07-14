@@ -29,7 +29,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
-use bumble::keys::PairingKeys;
+use bumble::keys::{JsonKeyStore, KeyStore, KeyStoreError, MemoryKeyStore, PairingKeys};
 use bumble::{Address, AdvertisingData};
 use bumble_att::AttPdu;
 use bumble_controller::LocalLink as ControllerLocalLink;
@@ -107,6 +107,68 @@ impl std::fmt::Display for DevicePowerError {
 }
 
 impl std::error::Error for DevicePowerError {}
+
+/// Failures produced while loading, updating, or using configured pairing bonds.
+#[derive(Debug)]
+pub enum DeviceKeyStoreError {
+    Store(KeyStoreError),
+    NoConnection,
+    BondNotFound {
+        peer_address: Address,
+    },
+    NoLongTermKey {
+        peer_address: Address,
+    },
+    InvalidKeyLength {
+        field: &'static str,
+        expected: usize,
+        actual: usize,
+    },
+    NotCentral {
+        connection_handle: u16,
+    },
+}
+
+impl std::fmt::Display for DeviceKeyStoreError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Store(error) => write!(f, "key store error: {error}"),
+            Self::NoConnection => write!(f, "no active LE connection"),
+            Self::BondNotFound { peer_address } => {
+                write!(f, "no bond found for {peer_address}")
+            }
+            Self::NoLongTermKey { peer_address } => {
+                write!(f, "bond for {peer_address} has no usable LTK")
+            }
+            Self::InvalidKeyLength {
+                field,
+                expected,
+                actual,
+            } => {
+                write!(f, "{field} must contain {expected} bytes, got {actual}")
+            }
+            Self::NotCentral { connection_handle } => write!(
+                f,
+                "LE connection 0x{connection_handle:04X} is not locally central"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for DeviceKeyStoreError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Store(error) => Some(error),
+            _ => None,
+        }
+    }
+}
+
+impl From<KeyStoreError> for DeviceKeyStoreError {
+    fn from(error: KeyStoreError) -> Self {
+        Self::Store(error)
+    }
+}
 
 fn random_static_address() -> Address {
     let random = bumble_crypto::random_128();
@@ -832,6 +894,7 @@ pub enum DeviceEvent {
         connection_handle: u16,
         reason: PairingFailureReason,
     },
+    KeyStoreUpdated,
     EncryptionChange {
         status: u8,
         connection_handle: u16,
@@ -1447,6 +1510,8 @@ pub struct Device {
     pairing_encryption_started: BTreeSet<u16>,
     pairing_terminal_handles: BTreeSet<u16>,
     pairing_errors: Vec<(u16, String)>,
+    key_store: Option<Box<dyn KeyStore>>,
+    key_store_errors: Vec<(Option<u16>, String)>,
     long_term_key_requests: Vec<LongTermKeyRequestInfo>,
     connection_feature_errors: Vec<ConnectionFeatureError>,
     connection_control_events: Vec<LeConnectionControlEvent>,
@@ -1540,6 +1605,8 @@ impl Device {
             pairing_encryption_started: BTreeSet::new(),
             pairing_terminal_handles: BTreeSet::new(),
             pairing_errors: Vec::new(),
+            key_store: None,
+            key_store_errors: Vec::new(),
             long_term_key_requests: Vec::new(),
             connection_feature_errors: Vec::new(),
             connection_control_events: Vec::new(),
@@ -1634,6 +1701,8 @@ impl Device {
             pairing_encryption_started: BTreeSet::new(),
             pairing_terminal_handles: BTreeSet::new(),
             pairing_errors: Vec::new(),
+            key_store: None,
+            key_store_errors: Vec::new(),
             long_term_key_requests: Vec::new(),
             connection_feature_errors: Vec::new(),
             connection_control_events: Vec::new(),
@@ -1690,6 +1759,7 @@ impl Device {
         let mut device = Self::with_server(controller_id, server);
         device.install_configuration(config);
         device.pairing_manager = Some(pairing_manager);
+        device.initialize_memory_key_store();
         if eatt_enabled {
             device
                 .register_eatt_server(LeCreditBasedChannelSpec::default())
@@ -1705,6 +1775,17 @@ impl Device {
         self.static_address = config.address.clone();
         self.random_address = config.address.clone();
         self.config = config;
+    }
+
+    fn initialize_memory_key_store(&mut self) {
+        let uses_json_store = self
+            .config
+            .keystore
+            .as_deref()
+            .is_some_and(|spec| spec.split(':').next() == Some("JsonKeyStore"));
+        if !uses_json_store {
+            self.key_store = Some(Box::new(MemoryKeyStore::new()));
+        }
     }
 
     /// Whether the configured controller setup has been submitted successfully.
@@ -4657,6 +4738,183 @@ impl Device {
             .collect()
     }
 
+    fn key_store_namespace(&self) -> Option<String> {
+        self.public_address
+            .as_ref()
+            .filter(|address| address.address_bytes().iter().any(|byte| *byte != 0))
+            .or_else(|| {
+                self.random_address
+                    .address_bytes()
+                    .iter()
+                    .any(|byte| *byte != 0)
+                    .then_some(&self.random_address)
+            })
+            .map(|address| address.to_string(false))
+    }
+
+    fn ensure_key_store(&mut self) {
+        if self.key_store.is_some() {
+            return;
+        }
+
+        let spec = self.config.keystore.clone();
+        let key_store: Box<dyn KeyStore> = match spec.as_deref() {
+            Some(spec) if spec.split(':').next() == Some("JsonKeyStore") => {
+                let namespace = self.key_store_namespace();
+                match spec.split_once(':').map(|(_, filename)| filename) {
+                    Some(filename) if !filename.is_empty() => Box::new(JsonKeyStore::new(
+                        namespace.as_deref(),
+                        std::path::PathBuf::from(filename),
+                    )),
+                    _ => Box::new(JsonKeyStore::with_default_path(namespace.as_deref())),
+                }
+            }
+            _ => Box::new(MemoryKeyStore::new()),
+        };
+        self.key_store = Some(key_store);
+    }
+
+    /// Replace the configured store with an application-provided implementation.
+    pub fn set_key_store(&mut self, key_store: impl KeyStore + 'static) {
+        self.key_store = Some(Box::new(key_store));
+    }
+
+    /// Whether this device owns or is configured to create a pairing key store.
+    pub fn has_key_store(&self) -> bool {
+        self.key_store.is_some() || self.pairing_manager.is_some()
+    }
+
+    pub fn bonds(&mut self) -> Result<Vec<(String, PairingKeys)>, DeviceKeyStoreError> {
+        self.ensure_key_store();
+        Ok(self
+            .key_store
+            .as_ref()
+            .expect("the key store was initialized")
+            .get_all()?)
+    }
+
+    pub fn bond(
+        &mut self,
+        peer_address: &Address,
+    ) -> Result<Option<PairingKeys>, DeviceKeyStoreError> {
+        self.ensure_key_store();
+        Ok(self
+            .key_store
+            .as_ref()
+            .expect("the key store was initialized")
+            .get(&peer_address.to_string(false))?)
+    }
+
+    pub fn delete_bond(&mut self, peer_address: &Address) -> Result<(), DeviceKeyStoreError> {
+        self.ensure_key_store();
+        self.key_store
+            .as_mut()
+            .expect("the key store was initialized")
+            .delete(&peer_address.to_string(false))?;
+        Ok(())
+    }
+
+    pub fn delete_all_bonds(&mut self) -> Result<(), DeviceKeyStoreError> {
+        self.ensure_key_store();
+        self.key_store
+            .as_mut()
+            .expect("the key store was initialized")
+            .delete_all()?;
+        Ok(())
+    }
+
+    pub fn take_key_store_errors(&mut self) -> Vec<(Option<u16>, String)> {
+        std::mem::take(&mut self.key_store_errors)
+    }
+
+    fn stored_encryption_parameters(
+        &mut self,
+        connection_handle: u16,
+    ) -> Result<([u8; 16], u16, [u8; 8]), DeviceKeyStoreError> {
+        let connection = self
+            .le_connections
+            .get(&connection_handle)
+            .ok_or(DeviceKeyStoreError::NoConnection)?;
+        let peer_address = connection.peer_address.clone();
+        let role = connection.role;
+        self.ensure_key_store();
+        let keys = self
+            .key_store
+            .as_ref()
+            .expect("the key store was initialized")
+            .get(&peer_address.to_string(false))?
+            .ok_or_else(|| DeviceKeyStoreError::BondNotFound {
+                peer_address: peer_address.clone(),
+            })?;
+        let key = keys.ltk.as_ref().or({
+            if role == bumble_controller::ROLE_CENTRAL {
+                keys.ltk_central.as_ref()
+            } else {
+                keys.ltk_peripheral.as_ref()
+            }
+        });
+        let key = key.ok_or_else(|| DeviceKeyStoreError::NoLongTermKey {
+            peer_address: peer_address.clone(),
+        })?;
+        let long_term_key =
+            key.value
+                .as_slice()
+                .try_into()
+                .map_err(|_| DeviceKeyStoreError::InvalidKeyLength {
+                    field: "LTK",
+                    expected: 16,
+                    actual: key.value.len(),
+                })?;
+        let random_number = match key.rand.as_deref() {
+            Some(random) => {
+                random
+                    .try_into()
+                    .map_err(|_| DeviceKeyStoreError::InvalidKeyLength {
+                        field: "LTK RAND",
+                        expected: 8,
+                        actual: random.len(),
+                    })?
+            }
+            None => [0; 8],
+        };
+        Ok((long_term_key, key.ediv.unwrap_or(0), random_number))
+    }
+
+    /// Start LE encryption using the persisted bond for the current connection.
+    pub fn enable_encryption_with_bond(
+        &mut self,
+        link: &mut LocalLink,
+    ) -> Result<bool, DeviceKeyStoreError> {
+        let connection_handle = self
+            .connection_handle
+            .ok_or(DeviceKeyStoreError::NoConnection)?;
+        self.enable_encryption_with_bond_on_handle(link, connection_handle)
+    }
+
+    /// Start LE encryption using the persisted bond for one connection handle.
+    pub fn enable_encryption_with_bond_on_handle(
+        &mut self,
+        link: &mut LocalLink,
+        connection_handle: u16,
+    ) -> Result<bool, DeviceKeyStoreError> {
+        let connection = self
+            .le_connections
+            .get(&connection_handle)
+            .ok_or(DeviceKeyStoreError::NoConnection)?;
+        if connection.role != bumble_controller::ROLE_CENTRAL {
+            return Err(DeviceKeyStoreError::NotCentral { connection_handle });
+        }
+        let (key, encrypted_diversifier, random_number) =
+            self.stored_encryption_parameters(connection_handle)?;
+        Ok(self.enable_encryption_with_parameters_on_handle(
+            link,
+            connection_handle,
+            key,
+            encrypted_diversifier,
+            random_number,
+        ))
+    }
+
     pub fn has_pairing_manager(&self) -> bool {
         self.pairing_manager.is_some()
     }
@@ -4733,6 +4991,94 @@ impl Device {
             .partition(|request| request.connection_handle == connection_handle);
         self.long_term_key_requests = rest;
         matching
+    }
+
+    fn refresh_configured_resolving_list(
+        &mut self,
+        link: &mut LocalLink,
+    ) -> Result<usize, DeviceKeyStoreError> {
+        if !self.config.address_resolution_offload && !self.config.address_generation_offload {
+            return Ok(0);
+        }
+        let local_irk: [u8; 16] = self.config.irk.as_slice().try_into().map_err(|_| {
+            DeviceKeyStoreError::InvalidKeyLength {
+                field: "IRK",
+                expected: 16,
+                actual: self.config.irk.len(),
+            }
+        })?;
+        self.ensure_key_store();
+        let resolving_keys = self
+            .key_store
+            .as_ref()
+            .expect("the key store was initialized")
+            .get_resolving_keys()?;
+
+        self.send_hci_command(link, Command::LeClearResolvingList);
+        self.send_hci_command(
+            link,
+            Command::LeAddDeviceToResolvingList {
+                peer_identity_address_type: 0,
+                peer_identity_address: Address::from_bytes(
+                    [0; 6],
+                    bumble::AddressType::PUBLIC_DEVICE,
+                ),
+                peer_irk: [0; 16],
+                local_irk,
+            },
+        );
+        let mut loaded = 0;
+        for (peer_irk, identity) in resolving_keys {
+            let Ok(peer_irk) = peer_irk.as_slice().try_into() else {
+                continue;
+            };
+            self.send_hci_command(
+                link,
+                Command::LeAddDeviceToResolvingList {
+                    peer_identity_address_type: u8::from(!identity.is_public()),
+                    peer_identity_address: identity,
+                    peer_irk,
+                    local_irk,
+                },
+            );
+            loaded += 1;
+        }
+        if self.config.address_resolution_offload {
+            self.send_hci_command(
+                link,
+                Command::LeSetAddressResolutionEnable {
+                    address_resolution_enable: 1,
+                },
+            );
+        }
+        Ok(loaded)
+    }
+
+    fn persist_pairing_bond(&mut self, link: &mut LocalLink, connection_handle: u16) {
+        self.ensure_key_store();
+        let result = {
+            let manager = self
+                .pairing_manager
+                .as_ref()
+                .expect("configured pairing manager exists");
+            let store = self
+                .key_store
+                .as_mut()
+                .expect("the key store was initialized");
+            manager.store_bond(connection_handle, store.as_mut())
+        };
+        match result {
+            Ok(true) => match self.refresh_configured_resolving_list(link) {
+                Ok(_) => self.emit_device_event(DeviceEvent::KeyStoreUpdated),
+                Err(error) => self
+                    .key_store_errors
+                    .push((Some(connection_handle), error.to_string())),
+            },
+            Ok(false) => {}
+            Err(error) => self
+                .key_store_errors
+                .push((Some(connection_handle), error.to_string())),
+        }
     }
 
     /// Send an unsolicited Handle Value Notification for `value_handle` to the
@@ -4837,6 +5183,7 @@ impl Device {
                     "completed pairing did not retain pairing keys".into(),
                 )
             })?;
+            self.persist_pairing_bond(link, connection_handle);
             self.emit_device_event(DeviceEvent::PairingComplete {
                 connection_handle,
                 keys: Box::new(keys),
@@ -5478,7 +5825,21 @@ impl Device {
                         .pairing_manager
                         .as_ref()
                         .and_then(|manager| manager.encryption_key(connection_handle));
-                    if let Some(key) = pairing_key {
+                    let stored_key = if pairing_key.is_none() && self.has_key_store() {
+                        match self.stored_encryption_parameters(connection_handle) {
+                            Ok((key, _, _)) => Some(key),
+                            Err(DeviceKeyStoreError::BondNotFound { .. })
+                            | Err(DeviceKeyStoreError::NoLongTermKey { .. }) => None,
+                            Err(error) => {
+                                self.key_store_errors
+                                    .push((Some(connection_handle), error.to_string()));
+                                None
+                            }
+                        }
+                    } else {
+                        None
+                    };
+                    if let Some(key) = pairing_key.or(stored_key) {
                         self.reply_long_term_key_request(link, connection_handle, key);
                     } else {
                         self.long_term_key_requests.push(LongTermKeyRequestInfo {
@@ -5800,6 +6161,10 @@ impl Device {
                     ..
                 }) if command_opcode == bumble_hci::HCI_READ_BD_ADDR_COMMAND => {
                     self.public_address = Some(bd_addr);
+                    self.ensure_key_store();
+                    if let Err(error) = self.refresh_configured_resolving_list(link) {
+                        self.key_store_errors.push((None, error.to_string()));
+                    }
                 }
                 HciPacket::Event(Event::CommandComplete {
                     command_opcode,

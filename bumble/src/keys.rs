@@ -74,7 +74,7 @@ impl From<std::io::Error> for KeyStoreError {
 
 pub type KeyStoreResult<T> = core::result::Result<T, KeyStoreError>;
 
-pub trait KeyStore {
+pub trait KeyStore: Send {
     fn delete(&mut self, name: &str) -> KeyStoreResult<()>;
     fn update(&mut self, name: &str, keys: PairingKeys) -> KeyStoreResult<()>;
     fn get(&self, name: &str) -> KeyStoreResult<Option<PairingKeys>>;

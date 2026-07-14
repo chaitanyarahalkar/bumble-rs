@@ -1,3 +1,5 @@
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use bumble::keys::{Key, KeyStore, MemoryKeyStore, PairingKeys};
 use bumble::{Address, AddressType};
 use bumble_controller::{Controller, LocalLink};
@@ -444,8 +446,12 @@ fn configured_devices_automatically_drive_secure_connections_pairing() {
         );
         assert!(device.pairing_keys(handle).unwrap().ltk.is_some());
         assert!(device.take_pairing_errors().is_empty());
+        assert!(device.take_key_store_errors().is_empty());
         assert!(device.take_long_term_key_requests().is_empty());
-        assert!(device.take_device_events().iter().any(|event| matches!(
+        assert_eq!(device.bonds().unwrap().len(), 1);
+        let events = device.take_device_events();
+        assert!(events.contains(&DeviceEvent::KeyStoreUpdated));
+        assert!(events.iter().any(|event| matches!(
             event,
             DeviceEvent::PairingComplete {
                 connection_handle,
@@ -453,4 +459,159 @@ fn configured_devices_automatically_drive_secure_connections_pairing() {
             } if *connection_handle == handle
         )));
     }
+}
+
+#[test]
+fn configured_json_bonds_survive_reconstruction_and_encrypt_a_reconnect() {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let path = std::env::temp_dir().join(format!(
+        "bumble-rs-bonds-{}-{unique}.json",
+        std::process::id()
+    ));
+    let key_store = Some(format!("JsonKeyStore:{}", path.display()));
+    let central_address = address("C4:F2:17:1A:1D:AA");
+    let peripheral_address = address("C4:F2:17:1A:1D:BB");
+    let central_config = DeviceConfiguration {
+        address: central_address.clone(),
+        gap_service_enabled: false,
+        gatt_service_enabled: false,
+        identity_address_type: Some(1),
+        io_capability: IoCapability::NoInputNoOutput as u8,
+        keystore: key_store.clone(),
+        ..DeviceConfiguration::default()
+    };
+    let peripheral_config = DeviceConfiguration {
+        address: peripheral_address.clone(),
+        gap_service_enabled: false,
+        gatt_service_enabled: false,
+        identity_address_type: Some(1),
+        io_capability: IoCapability::NoInputNoOutput as u8,
+        keystore: key_store,
+        ..DeviceConfiguration::default()
+    };
+
+    {
+        let mut link = LocalLink::new();
+        let central = link.add_controller(Controller::new("C", address("00:00:00:00:00:01")));
+        let peripheral = link.add_controller(Controller::new("P", address("00:00:00:00:00:02")));
+        let mut devices = [
+            Device::from_config(central, central_config.clone()).unwrap(),
+            Device::from_config(peripheral, peripheral_config.clone()).unwrap(),
+        ];
+        connect(&mut link, central, peripheral);
+        pump(&mut link, &mut devices);
+        devices[0].pair(&mut link).unwrap();
+        pump(&mut link, &mut devices);
+
+        assert!(devices.iter().all(Device::is_encrypted));
+        assert!(devices[0].bond(&peripheral_address).unwrap().is_some());
+        assert!(devices[1].bond(&central_address).unwrap().is_some());
+        assert!(devices
+            .iter_mut()
+            .all(|device| device.take_key_store_errors().is_empty()));
+    }
+    assert!(path.is_file());
+
+    {
+        let mut link = LocalLink::new();
+        let central = link.add_controller(Controller::new("C2", address("00:00:00:00:00:01")));
+        let peripheral = link.add_controller(Controller::new("P2", address("00:00:00:00:00:02")));
+        let mut devices = [
+            Device::from_config(central, central_config).unwrap(),
+            Device::from_config(peripheral, peripheral_config).unwrap(),
+        ];
+        connect(&mut link, central, peripheral);
+        pump(&mut link, &mut devices);
+
+        assert!(devices[0].enable_encryption_with_bond(&mut link).unwrap());
+        pump(&mut link, &mut devices);
+
+        assert!(devices.iter().all(Device::is_encrypted));
+        assert!(devices
+            .iter_mut()
+            .all(|device| device.take_long_term_key_requests().is_empty()));
+        assert!(devices
+            .iter_mut()
+            .all(|device| device.take_key_store_errors().is_empty()));
+        devices[0].delete_bond(&peripheral_address).unwrap();
+        assert!(devices[0].bonds().unwrap().is_empty());
+    }
+
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn configured_bond_encryption_selects_role_specific_legacy_keys() {
+    let central_address = address("C4:F2:17:1A:1D:AA");
+    let peripheral_address = address("C4:F2:17:1A:1D:BB");
+    let legacy_key = Key {
+        value: vec![0xA5; 16],
+        ediv: Some(0x1234),
+        rand: Some(vec![0x5A; 8]),
+        ..Key::default()
+    };
+    let mut central_store = MemoryKeyStore::new();
+    central_store
+        .update(
+            &peripheral_address.to_string(false),
+            PairingKeys {
+                ltk_central: Some(legacy_key.clone()),
+                ..PairingKeys::default()
+            },
+        )
+        .unwrap();
+    let mut peripheral_store = MemoryKeyStore::new();
+    peripheral_store
+        .update(
+            &central_address.to_string(false),
+            PairingKeys {
+                ltk_peripheral: Some(legacy_key),
+                ..PairingKeys::default()
+            },
+        )
+        .unwrap();
+
+    let mut link = LocalLink::new();
+    let central = link.add_controller(Controller::new("C", address("00:00:00:00:00:01")));
+    let peripheral = link.add_controller(Controller::new("P", address("00:00:00:00:00:02")));
+    let mut devices = [
+        Device::from_config(
+            central,
+            DeviceConfiguration {
+                address: central_address,
+                gap_service_enabled: false,
+                gatt_service_enabled: false,
+                ..DeviceConfiguration::default()
+            },
+        )
+        .unwrap(),
+        Device::from_config(
+            peripheral,
+            DeviceConfiguration {
+                address: peripheral_address,
+                gap_service_enabled: false,
+                gatt_service_enabled: false,
+                ..DeviceConfiguration::default()
+            },
+        )
+        .unwrap(),
+    ];
+    devices[0].set_key_store(central_store);
+    devices[1].set_key_store(peripheral_store);
+    connect(&mut link, central, peripheral);
+    pump(&mut link, &mut devices);
+
+    assert!(devices[0].enable_encryption_with_bond(&mut link).unwrap());
+    pump(&mut link, &mut devices);
+
+    assert!(devices.iter().all(Device::is_encrypted));
+    assert!(devices
+        .iter_mut()
+        .all(|device| device.take_long_term_key_requests().is_empty()));
+    assert!(devices
+        .iter_mut()
+        .all(|device| device.take_key_store_errors().is_empty()));
 }
