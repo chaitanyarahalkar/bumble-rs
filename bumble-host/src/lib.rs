@@ -191,6 +191,186 @@ pub struct LeSubrateRequestParameters {
     pub supervision_timeout: u16,
 }
 
+/// The upstream-safe default CS channel map. Bluetooth channels 0, 1,
+/// 23-25, and 76-79 are deliberately disabled.
+pub const DEFAULT_CHANNEL_SOUNDING_CHANNEL_MAP: [u8; 10] =
+    [0x54, 0x55, 0x55, 0x54, 0x55, 0x55, 0x55, 0x55, 0x55, 0x05];
+
+pub const MIN_CHANNEL_SOUNDING_CONFIG_ID: u8 = 0;
+pub const MAX_CHANNEL_SOUNDING_CONFIG_ID: u8 = 3;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ChannelSoundingCapabilities {
+    pub num_config_supported: u8,
+    pub max_consecutive_procedures_supported: u16,
+    pub num_antennas_supported: u8,
+    pub max_antenna_paths_supported: u8,
+    pub roles_supported: u8,
+    pub modes_supported: u8,
+    pub rtt_capability: u8,
+    pub rtt_aa_only_n: u8,
+    pub rtt_sounding_n: u8,
+    pub rtt_random_sequence_n: u8,
+    pub nadm_sounding_capability: u16,
+    pub nadm_random_capability: u16,
+    pub cs_sync_phys_supported: u8,
+    pub subfeatures_supported: u16,
+    pub t_ip1_times_supported: u16,
+    pub t_ip2_times_supported: u16,
+    pub t_fcs_times_supported: u16,
+    pub t_pm_times_supported: u16,
+    pub t_sw_time_supported: u8,
+    pub tx_snr_capability: u8,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ChannelSoundingConfig {
+    pub config_id: u8,
+    pub main_mode_type: u8,
+    pub sub_mode_type: u8,
+    pub min_main_mode_steps: u8,
+    pub max_main_mode_steps: u8,
+    pub main_mode_repetition: u8,
+    pub mode_0_steps: u8,
+    pub role: u8,
+    pub rtt_type: u8,
+    pub cs_sync_phy: u8,
+    pub channel_map: [u8; 10],
+    pub channel_map_repetition: u8,
+    pub channel_selection_type: u8,
+    pub ch3c_shape: u8,
+    pub ch3c_jump: u8,
+    pub reserved: u8,
+    pub t_ip1_time: u8,
+    pub t_ip2_time: u8,
+    pub t_fcs_time: u8,
+    pub t_pm_time: u8,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ChannelSoundingProcedure {
+    pub config_id: u8,
+    pub state: u8,
+    pub tone_antenna_config_selection: u8,
+    pub selected_tx_power: i8,
+    pub subevent_len: u32,
+    pub subevents_per_event: u8,
+    pub subevent_interval: u16,
+    pub event_interval: u16,
+    pub procedure_interval: u16,
+    pub procedure_count: u16,
+    pub max_procedure_len: u16,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ChannelSoundingDefaultSettings {
+    pub role_enable: u8,
+    pub cs_sync_antenna_selection: u8,
+    pub max_tx_power: u8,
+}
+
+impl Default for ChannelSoundingDefaultSettings {
+    fn default() -> Self {
+        Self {
+            role_enable: 0x03,
+            cs_sync_antenna_selection: 0xFF,
+            max_tx_power: 0x04,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ChannelSoundingCreateConfigParameters {
+    pub create_context: u8,
+    pub main_mode_type: u8,
+    pub sub_mode_type: u8,
+    pub min_main_mode_steps: u8,
+    pub max_main_mode_steps: u8,
+    pub main_mode_repetition: u8,
+    pub mode_0_steps: u8,
+    pub role: u8,
+    pub rtt_type: u8,
+    pub cs_sync_phy: u8,
+    pub channel_map: [u8; 10],
+    pub channel_map_repetition: u8,
+    pub channel_selection_type: u8,
+    pub ch3c_shape: u8,
+    pub ch3c_jump: u8,
+}
+
+impl Default for ChannelSoundingCreateConfigParameters {
+    fn default() -> Self {
+        Self {
+            create_context: 0x01,
+            main_mode_type: 0x02,
+            sub_mode_type: 0xFF,
+            min_main_mode_steps: 0x02,
+            max_main_mode_steps: 0x05,
+            main_mode_repetition: 0x00,
+            mode_0_steps: 0x03,
+            role: 0x00,
+            rtt_type: 0x00,
+            cs_sync_phy: 0x01,
+            channel_map: DEFAULT_CHANNEL_SOUNDING_CHANNEL_MAP,
+            channel_map_repetition: 0x01,
+            channel_selection_type: 0x00,
+            ch3c_shape: 0x00,
+            ch3c_jump: 0x03,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ChannelSoundingProcedureParameters {
+    pub tone_antenna_config_selection: u8,
+    pub preferred_peer_antenna: u8,
+    pub max_procedure_len: u16,
+    pub min_procedure_interval: u16,
+    pub max_procedure_interval: u16,
+    pub max_procedure_count: u16,
+    pub min_subevent_len: u32,
+    pub max_subevent_len: u32,
+    pub phy: u8,
+    pub tx_power_delta: u8,
+    pub snr_control_initiator: u8,
+    pub snr_control_reflector: u8,
+}
+
+impl Default for ChannelSoundingProcedureParameters {
+    fn default() -> Self {
+        Self {
+            tone_antenna_config_selection: 0x00,
+            preferred_peer_antenna: 0x00,
+            max_procedure_len: 0x2710,
+            min_procedure_interval: 0x01,
+            max_procedure_interval: 0xFF,
+            max_procedure_count: 0x01,
+            min_subevent_len: 0x0004E2,
+            max_subevent_len: 0x1E8480,
+            phy: 0x01,
+            tx_power_delta: 0x00,
+            snr_control_initiator: 0xFF,
+            snr_control_reflector: 0xFF,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChannelSoundingOperation {
+    ReadRemoteCapabilities,
+    SecurityEnable,
+    Config,
+    ProcedureEnable,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ChannelSoundingError {
+    pub operation: ChannelSoundingOperation,
+    pub connection_handle: u16,
+    pub config_id: Option<u8>,
+    pub status: u8,
+}
+
 /// Host-owned metadata for one established LE ACL connection.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LeConnectionInfo {
@@ -200,6 +380,9 @@ pub struct LeConnectionInfo {
     pub parameters: LeConnectionParameters,
     pub classic_mode: u8,
     pub classic_interval: u16,
+    pub channel_sounding_capabilities: Option<ChannelSoundingCapabilities>,
+    pub channel_sounding_configs: BTreeMap<u8, ChannelSoundingConfig>,
+    pub channel_sounding_procedures: BTreeMap<u8, ChannelSoundingProcedure>,
 }
 
 /// Controller request for the key needed to complete LE link encryption.
@@ -614,6 +797,9 @@ pub struct Device {
     l2cap_inbox: Vec<(u16, u16, Vec<u8>)>,
     security_requests: Vec<(u16, u8)>,
     long_term_key_requests: Vec<LongTermKeyRequestInfo>,
+    pending_channel_sounding_configs: BTreeSet<(u16, u8)>,
+    channel_sounding_errors: Vec<ChannelSoundingError>,
+    channel_sounding_security_results: Vec<(u16, u8)>,
     advertising_reports: Vec<AdvertisingReport>,
     extended_advertising_reports: Vec<ExtendedAdvertisingReport>,
     periodic_syncs: BTreeMap<u16, PeriodicAdvertisingSyncInfo>,
@@ -673,6 +859,9 @@ impl Device {
             l2cap_inbox: Vec::new(),
             security_requests: Vec::new(),
             long_term_key_requests: Vec::new(),
+            pending_channel_sounding_configs: BTreeSet::new(),
+            channel_sounding_errors: Vec::new(),
+            channel_sounding_security_results: Vec::new(),
             advertising_reports: Vec::new(),
             extended_advertising_reports: Vec::new(),
             periodic_syncs: BTreeMap::new(),
@@ -733,6 +922,9 @@ impl Device {
             l2cap_inbox: Vec::new(),
             security_requests: Vec::new(),
             long_term_key_requests: Vec::new(),
+            pending_channel_sounding_configs: BTreeSet::new(),
+            channel_sounding_errors: Vec::new(),
+            channel_sounding_security_results: Vec::new(),
             advertising_reports: Vec::new(),
             extended_advertising_reports: Vec::new(),
             periodic_syncs: BTreeMap::new(),
@@ -822,6 +1014,203 @@ impl Device {
             },
         );
         true
+    }
+
+    pub fn read_remote_channel_sounding_capabilities_on_handle(
+        &mut self,
+        link: &mut LocalLink,
+        connection_handle: u16,
+    ) -> bool {
+        if !self.le_connections.contains_key(&connection_handle) {
+            return false;
+        }
+        self.send_hci_command(
+            link,
+            Command::LeCsReadRemoteSupportedCapabilities { connection_handle },
+        );
+        true
+    }
+
+    pub fn set_default_channel_sounding_settings_on_handle(
+        &mut self,
+        link: &mut LocalLink,
+        connection_handle: u16,
+        settings: ChannelSoundingDefaultSettings,
+    ) -> bool {
+        if !self.le_connections.contains_key(&connection_handle) {
+            return false;
+        }
+        self.send_hci_command(
+            link,
+            Command::LeCsSetDefaultSettings {
+                connection_handle,
+                role_enable: settings.role_enable,
+                cs_sync_antenna_selection: settings.cs_sync_antenna_selection,
+                max_tx_power: settings.max_tx_power,
+            },
+        );
+        true
+    }
+
+    pub fn create_channel_sounding_config_on_handle(
+        &mut self,
+        link: &mut LocalLink,
+        connection_handle: u16,
+        config_id: Option<u8>,
+        parameters: ChannelSoundingCreateConfigParameters,
+    ) -> Option<u8> {
+        let connection = self.le_connections.get(&connection_handle)?;
+        let config_id = match config_id {
+            Some(config_id)
+                if (MIN_CHANNEL_SOUNDING_CONFIG_ID..=MAX_CHANNEL_SOUNDING_CONFIG_ID)
+                    .contains(&config_id)
+                    && !connection.channel_sounding_configs.contains_key(&config_id)
+                    && !self
+                        .pending_channel_sounding_configs
+                        .contains(&(connection_handle, config_id)) =>
+            {
+                config_id
+            }
+            Some(_) => return None,
+            None => (MIN_CHANNEL_SOUNDING_CONFIG_ID..=MAX_CHANNEL_SOUNDING_CONFIG_ID).find(
+                |config_id| {
+                    !connection.channel_sounding_configs.contains_key(config_id)
+                        && !self
+                            .pending_channel_sounding_configs
+                            .contains(&(connection_handle, *config_id))
+                },
+            )?,
+        };
+        self.pending_channel_sounding_configs
+            .insert((connection_handle, config_id));
+        self.send_hci_command(
+            link,
+            Command::LeCsCreateConfig {
+                connection_handle,
+                config_id,
+                create_context: parameters.create_context,
+                main_mode_type: parameters.main_mode_type,
+                sub_mode_type: parameters.sub_mode_type,
+                min_main_mode_steps: parameters.min_main_mode_steps,
+                max_main_mode_steps: parameters.max_main_mode_steps,
+                main_mode_repetition: parameters.main_mode_repetition,
+                mode_0_steps: parameters.mode_0_steps,
+                role: parameters.role,
+                rtt_type: parameters.rtt_type,
+                cs_sync_phy: parameters.cs_sync_phy,
+                channel_map: parameters.channel_map,
+                channel_map_repetition: parameters.channel_map_repetition,
+                channel_selection_type: parameters.channel_selection_type,
+                ch3c_shape: parameters.ch3c_shape,
+                ch3c_jump: parameters.ch3c_jump,
+                reserved: 0,
+            },
+        );
+        Some(config_id)
+    }
+
+    pub fn remove_channel_sounding_config_on_handle(
+        &mut self,
+        link: &mut LocalLink,
+        connection_handle: u16,
+        config_id: u8,
+    ) -> bool {
+        if !self
+            .le_connections
+            .get(&connection_handle)
+            .is_some_and(|connection| connection.channel_sounding_configs.contains_key(&config_id))
+        {
+            return false;
+        }
+        self.send_hci_command(
+            link,
+            Command::LeCsRemoveConfig {
+                connection_handle,
+                config_id,
+            },
+        );
+        true
+    }
+
+    pub fn enable_channel_sounding_security_on_handle(
+        &mut self,
+        link: &mut LocalLink,
+        connection_handle: u16,
+    ) -> bool {
+        if !self.le_connections.contains_key(&connection_handle) {
+            return false;
+        }
+        self.send_hci_command(link, Command::LeCsSecurityEnable { connection_handle });
+        true
+    }
+
+    pub fn set_channel_sounding_procedure_parameters_on_handle(
+        &mut self,
+        link: &mut LocalLink,
+        connection_handle: u16,
+        config_id: u8,
+        parameters: ChannelSoundingProcedureParameters,
+    ) -> bool {
+        if !self
+            .le_connections
+            .get(&connection_handle)
+            .is_some_and(|connection| connection.channel_sounding_configs.contains_key(&config_id))
+        {
+            return false;
+        }
+        self.send_hci_command(
+            link,
+            Command::LeCsSetProcedureParameters {
+                connection_handle,
+                config_id,
+                max_procedure_len: parameters.max_procedure_len,
+                min_procedure_interval: parameters.min_procedure_interval,
+                max_procedure_interval: parameters.max_procedure_interval,
+                max_procedure_count: parameters.max_procedure_count,
+                min_subevent_len: parameters.min_subevent_len,
+                max_subevent_len: parameters.max_subevent_len,
+                tone_antenna_config_selection: parameters.tone_antenna_config_selection,
+                phy: parameters.phy,
+                tx_power_delta: parameters.tx_power_delta,
+                preferred_peer_antenna: parameters.preferred_peer_antenna,
+                snr_control_initiator: parameters.snr_control_initiator,
+                snr_control_reflector: parameters.snr_control_reflector,
+            },
+        );
+        true
+    }
+
+    pub fn enable_channel_sounding_procedure_on_handle(
+        &mut self,
+        link: &mut LocalLink,
+        connection_handle: u16,
+        config_id: u8,
+        enabled: bool,
+    ) -> bool {
+        if !self
+            .le_connections
+            .get(&connection_handle)
+            .is_some_and(|connection| connection.channel_sounding_configs.contains_key(&config_id))
+        {
+            return false;
+        }
+        self.send_hci_command(
+            link,
+            Command::LeCsProcedureEnable {
+                connection_handle,
+                config_id,
+                enable: u8::from(enabled),
+            },
+        );
+        true
+    }
+
+    pub fn take_channel_sounding_errors(&mut self) -> Vec<ChannelSoundingError> {
+        std::mem::take(&mut self.channel_sounding_errors)
+    }
+
+    pub fn take_channel_sounding_security_results(&mut self) -> Vec<(u16, u8)> {
+        std::mem::take(&mut self.channel_sounding_security_results)
     }
 
     pub fn enter_sniff_mode_on_handle(
@@ -2594,6 +2983,9 @@ impl Device {
                 },
                 classic_mode: 0,
                 classic_interval: 0,
+                channel_sounding_capabilities: None,
+                channel_sounding_configs: BTreeMap::new(),
+                channel_sounding_procedures: BTreeMap::new(),
             },
         );
         let mut manager = LeCreditChannelManager::new();
@@ -2675,6 +3067,193 @@ impl Device {
                         connection.parameters.peripheral_latency = peripheral_latency;
                         connection.parameters.continuation_number = continuation_number;
                         connection.parameters.supervision_timeout = supervision_timeout;
+                    }
+                }
+                HciPacket::Event(Event::LeMeta(
+                    LeMetaEvent::CsReadRemoteSupportedCapabilitiesComplete {
+                        status,
+                        connection_handle,
+                        num_config_supported,
+                        max_consecutive_procedures_supported,
+                        num_antennas_supported,
+                        max_antenna_paths_supported,
+                        roles_supported,
+                        modes_supported,
+                        rtt_capability,
+                        rtt_aa_only_n,
+                        rtt_sounding_n,
+                        rtt_random_sequence_n,
+                        nadm_sounding_capability,
+                        nadm_random_capability,
+                        cs_sync_phys_supported,
+                        subfeatures_supported,
+                        t_ip1_times_supported,
+                        t_ip2_times_supported,
+                        t_fcs_times_supported,
+                        t_pm_times_supported,
+                        t_sw_time_supported,
+                        tx_snr_capability,
+                    },
+                )) => {
+                    if let Some(connection) = self.le_connections.get_mut(&connection_handle) {
+                        if status == 0 {
+                            connection.channel_sounding_capabilities =
+                                Some(ChannelSoundingCapabilities {
+                                    num_config_supported,
+                                    max_consecutive_procedures_supported,
+                                    num_antennas_supported,
+                                    max_antenna_paths_supported,
+                                    roles_supported,
+                                    modes_supported,
+                                    rtt_capability,
+                                    rtt_aa_only_n,
+                                    rtt_sounding_n,
+                                    rtt_random_sequence_n,
+                                    nadm_sounding_capability,
+                                    nadm_random_capability,
+                                    cs_sync_phys_supported,
+                                    subfeatures_supported,
+                                    t_ip1_times_supported,
+                                    t_ip2_times_supported,
+                                    t_fcs_times_supported,
+                                    t_pm_times_supported,
+                                    t_sw_time_supported,
+                                    tx_snr_capability,
+                                });
+                        } else {
+                            self.channel_sounding_errors.push(ChannelSoundingError {
+                                operation: ChannelSoundingOperation::ReadRemoteCapabilities,
+                                connection_handle,
+                                config_id: None,
+                                status,
+                            });
+                        }
+                    }
+                }
+                HciPacket::Event(Event::LeMeta(LeMetaEvent::CsSecurityEnableComplete {
+                    status,
+                    connection_handle,
+                })) => {
+                    if self.le_connections.contains_key(&connection_handle) {
+                        self.channel_sounding_security_results
+                            .push((connection_handle, status));
+                        if status != 0 {
+                            self.channel_sounding_errors.push(ChannelSoundingError {
+                                operation: ChannelSoundingOperation::SecurityEnable,
+                                connection_handle,
+                                config_id: None,
+                                status,
+                            });
+                        }
+                    }
+                }
+                HciPacket::Event(Event::LeMeta(LeMetaEvent::CsConfigComplete {
+                    status,
+                    connection_handle,
+                    config_id,
+                    action,
+                    main_mode_type,
+                    sub_mode_type,
+                    min_main_mode_steps,
+                    max_main_mode_steps,
+                    main_mode_repetition,
+                    mode_0_steps,
+                    role,
+                    rtt_type,
+                    cs_sync_phy,
+                    channel_map,
+                    channel_map_repetition,
+                    channel_selection_type,
+                    ch3c_shape,
+                    ch3c_jump,
+                    reserved,
+                    t_ip1_time,
+                    t_ip2_time,
+                    t_fcs_time,
+                    t_pm_time,
+                })) => {
+                    self.pending_channel_sounding_configs
+                        .remove(&(connection_handle, config_id));
+                    if let Some(connection) = self.le_connections.get_mut(&connection_handle) {
+                        if status != 0 {
+                            self.channel_sounding_errors.push(ChannelSoundingError {
+                                operation: ChannelSoundingOperation::Config,
+                                connection_handle,
+                                config_id: Some(config_id),
+                                status,
+                            });
+                        } else if action == 1 {
+                            connection.channel_sounding_configs.insert(
+                                config_id,
+                                ChannelSoundingConfig {
+                                    config_id,
+                                    main_mode_type,
+                                    sub_mode_type,
+                                    min_main_mode_steps,
+                                    max_main_mode_steps,
+                                    main_mode_repetition,
+                                    mode_0_steps,
+                                    role,
+                                    rtt_type,
+                                    cs_sync_phy,
+                                    channel_map,
+                                    channel_map_repetition,
+                                    channel_selection_type,
+                                    ch3c_shape,
+                                    ch3c_jump,
+                                    reserved,
+                                    t_ip1_time,
+                                    t_ip2_time,
+                                    t_fcs_time,
+                                    t_pm_time,
+                                },
+                            );
+                        } else if action == 0 {
+                            connection.channel_sounding_configs.remove(&config_id);
+                        }
+                    }
+                }
+                HciPacket::Event(Event::LeMeta(LeMetaEvent::CsProcedureEnableComplete {
+                    status,
+                    connection_handle,
+                    config_id,
+                    state,
+                    tone_antenna_config_selection,
+                    selected_tx_power,
+                    subevent_len,
+                    subevents_per_event,
+                    subevent_interval,
+                    event_interval,
+                    procedure_interval,
+                    procedure_count,
+                    max_procedure_len,
+                })) => {
+                    if let Some(connection) = self.le_connections.get_mut(&connection_handle) {
+                        if status == 0 {
+                            connection.channel_sounding_procedures.insert(
+                                config_id,
+                                ChannelSoundingProcedure {
+                                    config_id,
+                                    state,
+                                    tone_antenna_config_selection,
+                                    selected_tx_power,
+                                    subevent_len,
+                                    subevents_per_event,
+                                    subevent_interval,
+                                    event_interval,
+                                    procedure_interval,
+                                    procedure_count,
+                                    max_procedure_len,
+                                },
+                            );
+                        } else {
+                            self.channel_sounding_errors.push(ChannelSoundingError {
+                                operation: ChannelSoundingOperation::ProcedureEnable,
+                                connection_handle,
+                                config_id: Some(config_id),
+                                status,
+                            });
+                        }
                     }
                 }
                 HciPacket::Event(Event::LeMeta(LeMetaEvent::AdvertisingReport { reports })) => {
@@ -2944,6 +3523,12 @@ impl Device {
                         .retain(|(handle, _)| *handle != connection_handle);
                     self.long_term_key_requests
                         .retain(|request| request.connection_handle != connection_handle);
+                    self.pending_channel_sounding_configs
+                        .retain(|(handle, _)| *handle != connection_handle);
+                    self.channel_sounding_errors
+                        .retain(|error| error.connection_handle != connection_handle);
+                    self.channel_sounding_security_results
+                        .retain(|(handle, _)| *handle != connection_handle);
                     if let Some(peer_address) = disconnected_classic_peer.as_ref() {
                         self.classic_pairing_events
                             .retain(|event| !event.belongs_to(connection_handle, peer_address));
