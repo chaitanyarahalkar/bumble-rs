@@ -22,6 +22,8 @@ use std::time::{Duration, Instant};
 /// Upstream host event mask: all host events consumed by Bumble, including
 /// Classic connection, SSP, link-key, synchronous-audio, and LE Meta events.
 const HOST_EVENT_MASK: [u8; 8] = [0xFF, 0x9F, 0xFF, 0xBF, 0x07, 0xF8, 0xBF, 0x3D];
+/// Enable Encryption Change V2 (event code 0x59, page-2 bit 25).
+const HOST_EVENT_MASK_PAGE_2: [u8; 8] = [0, 0, 0, 2, 0, 0, 0, 0];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ExternalHostState {
@@ -38,8 +40,20 @@ pub enum ExternalHostActivity {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LocalControllerVersion {
+    pub hci_version: u8,
+    pub hci_subversion: u16,
+    pub lmp_version: u8,
+    pub company_identifier: u16,
+    pub lmp_subversion: u16,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ExternalControllerInfo {
     pub supported_commands: [u8; 64],
+    pub local_version: Option<LocalControllerVersion>,
+    pub local_le_features: Option<[u8; 8]>,
+    pub local_lmp_features: Vec<[u8; 8]>,
     pub acl_data_packet_length: u16,
     pub total_num_acl_data_packets: u16,
     pub le_acl_data_packet_length: u16,
@@ -1335,12 +1349,111 @@ impl ExternalHost {
             };
         let supported_names = supported_command_names(&supported_commands);
 
+        let local_version =
+            if supported_names.contains(&"HCI_READ_LOCAL_VERSION_INFORMATION_COMMAND") {
+                match self.send_successful_command(Command::ReadLocalVersionInformation, timeout)? {
+                    ReturnParameters::ReadLocalVersionInformation {
+                        hci_version,
+                        hci_subversion,
+                        lmp_version,
+                        company_identifier,
+                        lmp_subversion,
+                        ..
+                    } => Some(LocalControllerVersion {
+                        hci_version,
+                        hci_subversion,
+                        lmp_version,
+                        company_identifier,
+                        lmp_subversion,
+                    }),
+                    response => {
+                        return Err(Error::Remote(format!(
+                            "unexpected Read Local Version Information response: {response:?}"
+                        )))
+                    }
+                }
+            } else {
+                None
+            };
+
+        let local_le_features = if supported_names
+            .contains(&"HCI_LE_READ_LOCAL_SUPPORTED_FEATURES_COMMAND")
+        {
+            match self.send_successful_command(Command::LeReadLocalSupportedFeatures, timeout)? {
+                ReturnParameters::LeReadLocalSupportedFeatures { le_features, .. } => {
+                    Some(le_features)
+                }
+                response => {
+                    return Err(Error::Remote(format!(
+                        "unexpected LE Read Local Supported Features response: {response:?}"
+                    )))
+                }
+            }
+        } else {
+            None
+        };
+
+        let mut local_lmp_features = Vec::new();
+        if supported_names.contains(&"HCI_READ_LOCAL_EXTENDED_FEATURES_COMMAND") {
+            let mut page_number = 0;
+            loop {
+                match self.send_successful_command(
+                    Command::ReadLocalExtendedFeatures { page_number },
+                    timeout,
+                )? {
+                    ReturnParameters::ReadLocalExtendedFeatures {
+                        page_number: response_page,
+                        maximum_page_number,
+                        extended_lmp_features,
+                        ..
+                    } => {
+                        if response_page != page_number {
+                            return Err(Error::Remote(format!(
+                                "Read Local Extended Features returned page {response_page}, expected {page_number}"
+                            )));
+                        }
+                        local_lmp_features.push(extended_lmp_features);
+                        if page_number >= maximum_page_number {
+                            break;
+                        }
+                        page_number = page_number.checked_add(1).ok_or_else(|| {
+                            Error::Remote("local LMP feature page number overflow".into())
+                        })?;
+                    }
+                    response => {
+                        return Err(Error::Remote(format!(
+                            "unexpected Read Local Extended Features response: {response:?}"
+                        )))
+                    }
+                }
+            }
+        } else if supported_names.contains(&"HCI_READ_LOCAL_SUPPORTED_FEATURES_COMMAND") {
+            match self.send_successful_command(Command::ReadLocalSupportedFeatures, timeout)? {
+                ReturnParameters::ReadLocalSupportedFeatures { lmp_features, .. } => {
+                    local_lmp_features.push(lmp_features);
+                }
+                response => {
+                    return Err(Error::Remote(format!(
+                        "unexpected Read Local Supported Features response: {response:?}"
+                    )))
+                }
+            }
+        }
+
         self.send_successful_command(
             Command::SetEventMask {
                 event_mask: HOST_EVENT_MASK,
             },
             timeout,
         )?;
+        if supported_names.contains(&"HCI_SET_EVENT_MASK_PAGE_2_COMMAND") {
+            self.send_successful_command(
+                Command::SetEventMaskPage2 {
+                    event_mask_page_2: HOST_EVENT_MASK_PAGE_2,
+                },
+                timeout,
+            )?;
+        }
         if supported_names.contains(&"HCI_LE_SET_EVENT_MASK_COMMAND") {
             self.send_successful_command(
                 Command::LeSetEventMask {
@@ -1356,6 +1469,9 @@ impl ExternalHost {
 
         let mut info = ExternalControllerInfo {
             supported_commands,
+            local_version,
+            local_le_features,
+            local_lmp_features,
             acl_data_packet_length: 0,
             total_num_acl_data_packets: 0,
             le_acl_data_packet_length: 0,
@@ -1796,8 +1912,9 @@ mod tests {
     #[test]
     fn initializes_controller_and_device_acl_flow_control() {
         let mut supported_commands = [0; 64];
-        supported_commands[14] = 0x80;
-        supported_commands[25] = 0x03;
+        supported_commands[14] = 0xF8;
+        supported_commands[22] = 0x04;
+        supported_commands[25] = 0x07;
         supported_commands[41] = 0x20;
         let responses = vec![
             command_complete(Command::Reset, ReturnParameters::Status { status: 0 }),
@@ -1809,7 +1926,67 @@ mod tests {
                 },
             ),
             command_complete(
+                Command::ReadLocalVersionInformation,
+                ReturnParameters::ReadLocalVersionInformation {
+                    status: 0,
+                    hci_version: 13,
+                    hci_subversion: 0x1234,
+                    lmp_version: 12,
+                    company_identifier: 0x004C,
+                    lmp_subversion: 0x5678,
+                },
+            ),
+            command_complete(
+                Command::LeReadLocalSupportedFeatures,
+                ReturnParameters::LeReadLocalSupportedFeatures {
+                    status: 0,
+                    le_features: [0x00, 0x10, 0x00, 0xF0, 0, 0, 0, 0],
+                },
+            ),
+            command_complete(
+                Command::ReadLocalExtendedFeatures { page_number: 0 },
+                ReturnParameters::ReadLocalExtendedFeatures {
+                    status: 0,
+                    page_number: 0,
+                    maximum_page_number: 3,
+                    extended_lmp_features: [0, 0, 0, 0, 0x60, 0, 0, 0x80],
+                },
+            ),
+            command_complete(
+                Command::ReadLocalExtendedFeatures { page_number: 1 },
+                ReturnParameters::ReadLocalExtendedFeatures {
+                    status: 0,
+                    page_number: 1,
+                    maximum_page_number: 3,
+                    extended_lmp_features: [1, 0, 0, 0, 0, 0, 0, 0],
+                },
+            ),
+            command_complete(
+                Command::ReadLocalExtendedFeatures { page_number: 2 },
+                ReturnParameters::ReadLocalExtendedFeatures {
+                    status: 0,
+                    page_number: 2,
+                    maximum_page_number: 3,
+                    extended_lmp_features: [2, 0, 0, 0, 0, 0, 0, 0],
+                },
+            ),
+            command_complete(
+                Command::ReadLocalExtendedFeatures { page_number: 3 },
+                ReturnParameters::ReadLocalExtendedFeatures {
+                    status: 0,
+                    page_number: 3,
+                    maximum_page_number: 3,
+                    extended_lmp_features: [3, 0, 0, 0, 0, 0, 0, 0],
+                },
+            ),
+            command_complete(
                 Command::SetEventMask { event_mask: [0; 8] },
+                ReturnParameters::Status { status: 0 },
+            ),
+            command_complete(
+                Command::SetEventMaskPage2 {
+                    event_mask_page_2: [0; 8],
+                },
                 ReturnParameters::Status { status: 0 },
             ),
             command_complete(
@@ -1850,6 +2027,23 @@ mod tests {
         assert_eq!(info.le_acl_data_packet_length, 251);
         assert_eq!(info.total_num_le_acl_data_packets, 12);
         assert_eq!(info.iso_data_packet_length, 120);
+        assert_eq!(
+            info.local_version,
+            Some(LocalControllerVersion {
+                hci_version: 13,
+                hci_subversion: 0x1234,
+                lmp_version: 12,
+                company_identifier: 0x004C,
+                lmp_subversion: 0x5678,
+            })
+        );
+        assert_eq!(
+            info.local_le_features,
+            Some([0x00, 0x10, 0x00, 0xF0, 0, 0, 0, 0])
+        );
+        assert_eq!(info.local_lmp_features.len(), 4);
+        assert_eq!(info.local_lmp_features[0][7], 0x80);
+        assert_eq!(info.local_lmp_features[3][0], 3);
         assert_eq!(device.acl_data_packet_length(), 251);
         assert_eq!(device.acl_max_in_flight(), 12);
         assert_eq!(
@@ -1866,7 +2060,17 @@ mod tests {
             vec![
                 Command::Reset.op_code(),
                 Command::ReadLocalSupportedCommands.op_code(),
+                Command::ReadLocalVersionInformation.op_code(),
+                Command::LeReadLocalSupportedFeatures.op_code(),
+                Command::ReadLocalExtendedFeatures { page_number: 0 }.op_code(),
+                Command::ReadLocalExtendedFeatures { page_number: 1 }.op_code(),
+                Command::ReadLocalExtendedFeatures { page_number: 2 }.op_code(),
+                Command::ReadLocalExtendedFeatures { page_number: 3 }.op_code(),
                 Command::SetEventMask { event_mask: [0; 8] }.op_code(),
+                Command::SetEventMaskPage2 {
+                    event_mask_page_2: [0; 8]
+                }
+                .op_code(),
                 Command::LeSetEventMask {
                     le_event_mask: [0; 8]
                 }
@@ -1876,6 +2080,12 @@ mod tests {
             ]
         );
         let packets = recorded.0.lock().unwrap();
+        assert!(packets.iter().any(|packet| matches!(
+            packet,
+            HciPacket::Command(Command::SetEventMaskPage2 {
+                event_mask_page_2
+            }) if *event_mask_page_2 == HOST_EVENT_MASK_PAGE_2
+        )));
         let le_event_mask = packets
             .iter()
             .find_map(|packet| match packet {

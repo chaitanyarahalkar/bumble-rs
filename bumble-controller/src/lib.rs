@@ -898,6 +898,28 @@ impl Controller {
                     },
                 );
             }
+            Command::ReadLocalExtendedFeatures { page_number } => {
+                if let Some(extended_lmp_features) =
+                    LMP_FEATURE_PAGES.get(usize::from(page_number)).copied()
+                {
+                    self.complete(
+                        op_code,
+                        ReturnParameters::ReadLocalExtendedFeatures {
+                            status: HCI_SUCCESS,
+                            page_number,
+                            maximum_page_number: (LMP_FEATURE_PAGES.len() - 1) as u8,
+                            extended_lmp_features,
+                        },
+                    );
+                } else {
+                    self.complete(
+                        op_code,
+                        ReturnParameters::Status {
+                            status: INVALID_COMMAND_PARAMETERS,
+                        },
+                    );
+                }
+            }
             Command::ReadBufferSize => {
                 self.complete(
                     op_code,

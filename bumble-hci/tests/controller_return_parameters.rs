@@ -41,6 +41,16 @@ fn classic_controller_information_returns_are_typed() {
         &[0, 1, 2, 3, 4, 5, 6, 7, 8],
     );
     round_trip(
+        HCI_READ_LOCAL_EXTENDED_FEATURES_COMMAND,
+        ReturnParameters::ReadLocalExtendedFeatures {
+            status: 0,
+            page_number: 2,
+            maximum_page_number: 3,
+            extended_lmp_features: [8, 7, 6, 5, 4, 3, 2, 1],
+        },
+        &[0, 2, 3, 8, 7, 6, 5, 4, 3, 2, 1],
+    );
+    round_trip(
         HCI_READ_BUFFER_SIZE_COMMAND,
         ReturnParameters::ReadBufferSize {
             status: 0,
@@ -145,6 +155,7 @@ fn typed_errors_fall_back_to_status_and_truncation_is_rejected() {
         HCI_READ_LOCAL_VERSION_INFORMATION_COMMAND,
         HCI_READ_LOCAL_SUPPORTED_COMMANDS_COMMAND,
         HCI_READ_LOCAL_SUPPORTED_FEATURES_COMMAND,
+        HCI_READ_LOCAL_EXTENDED_FEATURES_COMMAND,
         HCI_READ_BUFFER_SIZE_COMMAND,
         HCI_READ_VOICE_SETTING_COMMAND,
         HCI_LE_READ_BUFFER_SIZE_V2_COMMAND,

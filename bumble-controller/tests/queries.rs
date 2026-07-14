@@ -89,6 +89,38 @@ fn le_read_local_supported_features_returns_bitmap() {
 }
 
 #[test]
+fn read_local_extended_features_returns_all_pages_and_rejects_overflow() {
+    let mut controller = Controller::new("C", addr("00:11:22:33:44:55"));
+    for page_number in 0..=3 {
+        controller.handle_command(Command::ReadLocalExtendedFeatures { page_number });
+        match only_complete(&controller.drain_host_events()) {
+            ReturnParameters::ReadLocalExtendedFeatures {
+                status,
+                page_number: actual_page_number,
+                maximum_page_number,
+                extended_lmp_features,
+            } => {
+                assert_eq!(*status, 0);
+                assert_eq!(*actual_page_number, page_number);
+                assert_eq!(*maximum_page_number, 3);
+                if page_number == 0 {
+                    assert_eq!(*extended_lmp_features, [0, 0, 0, 0, 0x60, 0, 0, 0x80]);
+                } else {
+                    assert_eq!(*extended_lmp_features, [0; 8]);
+                }
+            }
+            other => panic!("expected ReadLocalExtendedFeatures params, got {other:?}"),
+        }
+    }
+
+    controller.handle_command(Command::ReadLocalExtendedFeatures { page_number: 4 });
+    assert_eq!(
+        only_complete(&controller.drain_host_events()),
+        &ReturnParameters::Status { status: 0x12 }
+    );
+}
+
+#[test]
 fn controller_information_queries_have_typed_serializable_payloads() {
     let mut c = Controller::new("C", addr("00:11:22:33:44:55"));
     let commands = [

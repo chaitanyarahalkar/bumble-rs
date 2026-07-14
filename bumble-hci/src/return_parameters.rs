@@ -55,6 +55,12 @@ pub enum ReturnParameters {
         status: u8,
         lmp_features: [u8; 8],
     },
+    ReadLocalExtendedFeatures {
+        status: u8,
+        page_number: u8,
+        maximum_page_number: u8,
+        extended_lmp_features: [u8; 8],
+    },
     LeReadLocalSupportedFeatures {
         status: u8,
         le_features: [u8; 8],
@@ -138,6 +144,7 @@ impl ReturnParameters {
             | ReturnParameters::ReadLocalVersionInformation { status, .. }
             | ReturnParameters::ReadLocalSupportedCommands { status, .. }
             | ReturnParameters::ReadLocalSupportedFeatures { status, .. }
+            | ReturnParameters::ReadLocalExtendedFeatures { status, .. }
             | ReturnParameters::LeReadLocalSupportedFeatures { status, .. }
             | ReturnParameters::ReadBufferSize { status, .. }
             | ReturnParameters::ReadVoiceSetting { status, .. }
@@ -210,6 +217,17 @@ impl ReturnParameters {
             } => {
                 p.push(*status);
                 p.extend_from_slice(lmp_features);
+            }
+            ReturnParameters::ReadLocalExtendedFeatures {
+                status,
+                page_number,
+                maximum_page_number,
+                extended_lmp_features,
+            } => {
+                p.push(*status);
+                p.push(*page_number);
+                p.push(*maximum_page_number);
+                p.extend_from_slice(extended_lmp_features);
             }
             ReturnParameters::LeReadLocalSupportedFeatures {
                 status,
@@ -366,6 +384,7 @@ impl ReturnParameters {
                 | HCI_READ_LOCAL_VERSION_INFORMATION_COMMAND
                 | HCI_READ_LOCAL_SUPPORTED_COMMANDS_COMMAND
                 | HCI_READ_LOCAL_SUPPORTED_FEATURES_COMMAND
+                | HCI_READ_LOCAL_EXTENDED_FEATURES_COMMAND
                 | HCI_LE_READ_LOCAL_SUPPORTED_FEATURES_COMMAND
                 | HCI_READ_BUFFER_SIZE_COMMAND
                 | HCI_READ_VOICE_SETTING_COMMAND
@@ -427,6 +446,14 @@ impl ReturnParameters {
                 ReturnParameters::ReadLocalSupportedFeatures {
                     status,
                     lmp_features: r.array::<8>()?,
+                }
+            }
+            HCI_READ_LOCAL_EXTENDED_FEATURES_COMMAND => {
+                ReturnParameters::ReadLocalExtendedFeatures {
+                    status,
+                    page_number: r.u8()?,
+                    maximum_page_number: r.u8()?,
+                    extended_lmp_features: r.array::<8>()?,
                 }
             }
             HCI_LE_READ_LOCAL_SUPPORTED_FEATURES_COMMAND => {
