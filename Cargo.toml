@@ -25,6 +25,7 @@ members = [
     "bumble-transport",
     "bumble-drivers",
     "bumble-profiles",
+    "bumble-pandora",
 ]
 resolver = "2"
 

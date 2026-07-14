@@ -83,7 +83,7 @@ pub mod permissions {
 
 /// Something that answers ATT requests. Lets the host layer hold any server
 /// (a bare [`AttServer`] or a full [`GattServer`]) behind one interface.
-pub trait AttRequestHandler {
+pub trait AttRequestHandler: Send {
     fn handle_request(&mut self, request: &AttPdu) -> AttPdu;
 }
 

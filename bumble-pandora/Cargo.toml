@@ -1,0 +1,34 @@
+[package]
+name = "bumble-pandora"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "Pandora Bluetooth test APIs for bumble-rs"
+
+[dependencies]
+bumble = { path = "../bumble" }
+bumble-hci = { path = "../bumble-hci" }
+bumble-host = { path = "../bumble-host" }
+bumble-l2cap = { path = "../bumble-l2cap" }
+bumble-smp = { path = "../bumble-smp" }
+bumble-transport = { path = "../bumble-transport" }
+prost = "0.13.5"
+prost-types = "0.13.5"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1.45.1", features = ["macros", "rt-multi-thread", "signal", "sync"] }
+tokio-stream = { version = "0.1.17", features = ["net"] }
+tonic = { version = "0.13.1", default-features = false, features = ["codegen", "prost", "router", "transport"] }
+
+[dev-dependencies]
+bumble-controller = { path = "../bumble-controller" }
+
+[build-dependencies]
+protoc-bin-vendored = "3.2.0"
+tonic-build = "0.13.1"

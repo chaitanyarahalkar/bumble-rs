@@ -247,7 +247,7 @@ size, to convey remaining surface.
 | `apps/usb_probe.py` | `bumble-usb-probe` (`bumble-transport`) | ✅ | Runnable libusb device inventory with upstream `--verbose`, `--hci-only`, manufacturer, and product filters; device/interface-level Bluetooth HCI classification; stable index, VID/PID, duplicate, and serial transport names; string-descriptor error tolerance; and verbose configuration/interface/endpoint details including isochronous packet sizes. |
 | `apps/ble_rpa_tool.py` | `bumble-rpa-tool` (`bumble-smp`) | ✅ | Runnable `gen-irk`, `gen-rpa`, and `verify-rpa` commands backed by the OS RNG and the real SMP `ah` primitive. Flexible Python-style hex input, address validation, colored verification results, and malformed/extra argument errors are covered. |
 | `apps/unbond.py` | `bumble-unbond` (`bumble-transport`) | ✅ | File-backed and external-controller list/delete modes are runnable with upstream-style colored key rendering and `!!! pairing not found` behavior. Controller mode resets HCI, discovers the public BD_ADDR, falls back to the configured random address, reproduces `JsonKeyStore[:filename]` namespace/path selection, and uses an in-memory store for absent or unknown keystore types. |
-| `apps/pandora_server.py` + `pandora/` | — | ⬜ | The remaining Pandora gRPC conformance entry point; still unported. |
+| `apps/pandora_server.py` + `pandora/` | `bumble-pandora` | 🟡 | Canonical bt-test-interfaces v0.0.6 protobufs, the runnable server/configuration surface, exact Pandora data-type conversion, and every upstream Host RPC are ported. Host is verified through a real gRPC client and software HCI controller. Security, SecurityStorage, and L2CAP services remain. |
 
 ### Roughly where that leaves things
 
@@ -2979,6 +2979,36 @@ controllers:
   public addresses, and pin generated Classic HCI BD_ADDR decoders to public
   address semantics so LMP traffic routes to the intended peer.
 
+## Slice 138 — what's here
+
+The Pandora conformance server now has its canonical protocol and complete Host
+service foundation:
+
+- `bumble-pandora` vendors the exact `bt-test-interfaces==0.0.6` Host,
+  Security, and L2CAP protobuf contracts and generates both tonic clients and
+  servers with a vendored `protoc`. `bumble-pandora-server` preserves the
+  upstream gRPC/rootcanal ports, transport override, and JSON configuration
+  command line while accepting graceful Ctrl-C shutdown.
+- The shared runtime initializes a real external HCI controller, restores the
+  configured random address after reset, reads the public address, owns stable
+  big-endian connection cookies, and serializes controller access safely across
+  tonic workers. Every upstream Host RPC is present: Classic and LE connect and
+  wait paths, disconnect waits, legacy/extended advertising and scanning,
+  inquiry, discoverability, connectability, reset, and factory reset. The two
+  methods absent from the upstream Python implementation retain canonical
+  `UNIMPLEMENTED` responses.
+- Pandora `DataTypes` now converts the complete advertising-data catalog,
+  including all UUID widths, names, service and solicitation UUIDs, target
+  addresses, service/manufacturer data, appearance, URI, LE features, flags,
+  and interval fields. Invalid field sizes and values return gRPC argument
+  errors instead of malformed HCI commands.
+- Nine focused tests cover configuration and CLI compatibility, address and
+  connection-cookie contracts, advertising-data round trips, report mapping,
+  and a live canonical gRPC client talking through the Host service to a real
+  `bumble-controller` over TCP. The live test exercises address reads,
+  discoverability/connectability, reset, factory reset, and intentional
+  unimplemented parity at the wire boundary.
+
 ## Acceptance
 
 The port's contract is the upstream Python test suite, ported 1:1:
@@ -3170,6 +3200,11 @@ bumble-rs/
 │   ├── tests/bass_cap.rs      # BASS wire/live state + CAS included CSIS
 │   ├── tests/hap.rs           # encrypted presets, changes, wrap, synchronization
 │   └── tests/apple_profiles.rs # AMS/ANCS 128-bit GATT + client/data flows
+├── bumble-pandora/            # slice-138 Pandora gRPC contracts + Host service
+│   ├── proto/pandora/{host,security,l2cap}.proto # canonical v0.0.6 interfaces
+│   ├── src/{config,data_types,runtime,host}.rs # external-HCI Host runtime
+│   ├── src/bin/bumble-pandora-server.rs # runnable conformance server
+│   └── tests/host_grpc.rs      # live tonic client → service → controller proof
 └── docs/superpowers/          # design specs + implementation plans
 ```
 
