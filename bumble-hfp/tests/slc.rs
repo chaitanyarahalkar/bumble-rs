@@ -1,8 +1,8 @@
 use std::collections::BTreeSet;
 
 use bumble_hfp::{
-    AgConfiguration, AgFeatures, AgIndicatorState, AgProtocol, AudioCodec, CallHoldOperation,
-    HfConfiguration, HfFeatures, HfIndicator, HfProtocol,
+    AgConfiguration, AgFeatures, AgIndicator, AgIndicatorState, AgProtocol, AudioCodec,
+    CallHoldOperation, HfConfiguration, HfFeatures, HfIndicator, HfProtocol,
 };
 
 fn drive(hf: &mut HfProtocol, ag: &mut AgProtocol) -> Vec<String> {
@@ -114,4 +114,31 @@ fn full_optional_service_level_connection() {
             "AT+BIND?",
         ]
     );
+}
+
+#[test]
+fn default_ag_indicator_factories_match_upstream() {
+    let cases = [
+        (AgIndicatorState::call(), AgIndicator::Call, 0, 1),
+        (AgIndicatorState::call_setup(), AgIndicator::CallSetup, 0, 3),
+        (AgIndicatorState::call_held(), AgIndicator::CallHeld, 0, 2),
+        (AgIndicatorState::service(), AgIndicator::Service, 0, 1),
+        (AgIndicatorState::signal(), AgIndicator::Signal, 0, 5),
+        // Upstream's public roam() factory currently selects CALL.
+        (AgIndicatorState::roam(), AgIndicator::Call, 0, 1),
+        (
+            AgIndicatorState::battery_charge(),
+            AgIndicator::BatteryCharge,
+            0,
+            5,
+        ),
+    ];
+
+    for (state, indicator, minimum, maximum) in cases {
+        assert_eq!(state.indicator, indicator);
+        assert_eq!(state.current_status, 0);
+        assert_eq!(state.supported_values.first().copied(), Some(minimum));
+        assert_eq!(state.supported_values.last().copied(), Some(maximum));
+        assert!(state.enabled);
+    }
 }

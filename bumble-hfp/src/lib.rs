@@ -1,9 +1,12 @@
 //! Hands-Free Profile service-level connection state machines.
 //!
-//! This slice ports the normative HFP feature exchange and SLC initialization
-//! sequence onto the incremental parsers in `bumble-at`. Both roles are
-//! synchronous and sans-I/O: callers feed RFCOMM application bytes and drain
-//! the bytes each role wants to send.
+//! The normative HFP feature exchange, SLC initialization, post-SLC control,
+//! codec negotiation, SDP records, and SCO/eSCO parameter surface run on the
+//! incremental parsers in `bumble-at`. Both roles are synchronous and sans-I/O:
+//! callers feed RFCOMM application bytes and drain the bytes each role wants to
+//! send. Upstream `hfp.py` negotiates codecs and links but does not encode CVSD
+//! or mSBC media, so codec payload conversion is intentionally outside this
+//! crate too.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
@@ -226,8 +229,22 @@ impl AgIndicatorState {
         Self::new(AgIndicator::CallSetup, [0, 1, 2, 3], 0)
     }
 
+    pub fn call_held() -> Self {
+        Self::new(AgIndicator::CallHeld, [0, 1, 2], 0)
+    }
+
     pub fn signal() -> Self {
         Self::new(AgIndicator::Signal, [0, 1, 2, 3, 4, 5], 0)
+    }
+
+    /// Match upstream's current `roam()` factory, including its `CALL`
+    /// indicator selection rather than `ROAM`.
+    pub fn roam() -> Self {
+        Self::new(AgIndicator::Call, [0, 1], 0)
+    }
+
+    pub fn battery_charge() -> Self {
+        Self::new(AgIndicator::BatteryCharge, [0, 1, 2, 3, 4, 5], 0)
     }
 
     pub fn on_test_text(&self) -> String {
