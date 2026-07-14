@@ -233,6 +233,32 @@ fn le_controller_information_returns_are_typed() {
         &[0, 0xBC, 0x0A, 2, 3],
     );
     round_trip(
+        HCI_LE_READ_ISO_TX_SYNC_COMMAND,
+        ReturnParameters::LeReadIsoTxSync {
+            status: 0,
+            connection_handle: 0x0ABC,
+            packet_sequence_number: 0x1234,
+            tx_time_stamp: 0x89AB_CDEF,
+            time_offset: 0x0123_4567,
+        },
+        &[
+            0, 0xBC, 0x0A, 0x34, 0x12, 0xEF, 0xCD, 0xAB, 0x89, 0x67, 0x45, 0x23, 0x01,
+        ],
+    );
+    for opcode in [
+        HCI_LE_SETUP_ISO_DATA_PATH_COMMAND,
+        HCI_LE_REMOVE_ISO_DATA_PATH_COMMAND,
+    ] {
+        round_trip(
+            opcode,
+            ReturnParameters::StatusAndConnectionHandle {
+                status: 0,
+                connection_handle: 0x0ABC,
+            },
+            &[0, 0xBC, 0x0A],
+        );
+    }
+    round_trip(
         HCI_LE_REMOVE_CIG_COMMAND,
         ReturnParameters::LeRemoveCig {
             status: 0,
@@ -288,6 +314,9 @@ fn typed_errors_fall_back_to_status_and_truncation_is_rejected() {
         HCI_LE_READ_SUPPORTED_STATES_COMMAND,
         HCI_LE_READ_RESOLVING_LIST_SIZE_COMMAND,
         HCI_LE_READ_PHY_COMMAND,
+        HCI_LE_READ_ISO_TX_SYNC_COMMAND,
+        HCI_LE_SETUP_ISO_DATA_PATH_COMMAND,
+        HCI_LE_REMOVE_ISO_DATA_PATH_COMMAND,
         HCI_LE_REMOVE_CIG_COMMAND,
         HCI_LE_READ_TRANSMIT_POWER_COMMAND,
         HCI_LE_READ_MINIMUM_SUPPORTED_CONNECTION_INTERVAL_COMMAND,

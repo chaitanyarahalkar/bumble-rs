@@ -27,6 +27,10 @@ pub enum ReturnParameters {
     Status {
         status: u8,
     },
+    StatusAndConnectionHandle {
+        status: u8,
+        connection_handle: u16,
+    },
     LeReadBufferSize {
         status: u8,
         le_acl_data_packet_length: u16,
@@ -149,6 +153,13 @@ pub enum ReturnParameters {
         tx_phy: u8,
         rx_phy: u8,
     },
+    LeReadIsoTxSync {
+        status: u8,
+        connection_handle: u16,
+        packet_sequence_number: u16,
+        tx_time_stamp: u32,
+        time_offset: u32,
+    },
     LeRemoveCig {
         status: u8,
         cig_id: u8,
@@ -197,6 +208,7 @@ impl ReturnParameters {
     pub fn status(&self) -> Option<u8> {
         Some(match self {
             ReturnParameters::Status { status }
+            | ReturnParameters::StatusAndConnectionHandle { status, .. }
             | ReturnParameters::LeReadBufferSize { status, .. }
             | ReturnParameters::LeReadBufferSizeV2 { status, .. }
             | ReturnParameters::ReadLocalVersionInformation { status, .. }
@@ -222,6 +234,7 @@ impl ReturnParameters {
             | ReturnParameters::LeReadSupportedStates { status, .. }
             | ReturnParameters::LeReadResolvingListSize { status, .. }
             | ReturnParameters::LeReadPhy { status, .. }
+            | ReturnParameters::LeReadIsoTxSync { status, .. }
             | ReturnParameters::LeRemoveCig { status, .. }
             | ReturnParameters::LeReadTransmitPower { status, .. }
             | ReturnParameters::LeReadMinimumSupportedConnectionInterval { status, .. }
@@ -238,6 +251,13 @@ impl ReturnParameters {
         let mut p = Vec::new();
         match self {
             ReturnParameters::Status { status } => p.push(*status),
+            ReturnParameters::StatusAndConnectionHandle {
+                status,
+                connection_handle,
+            } => {
+                p.push(*status);
+                p.extend_from_slice(&connection_handle.to_le_bytes());
+            }
             ReturnParameters::LeReadBufferSize {
                 status,
                 le_acl_data_packet_length,
@@ -454,6 +474,19 @@ impl ReturnParameters {
                 p.push(*tx_phy);
                 p.push(*rx_phy);
             }
+            ReturnParameters::LeReadIsoTxSync {
+                status,
+                connection_handle,
+                packet_sequence_number,
+                tx_time_stamp,
+                time_offset,
+            } => {
+                p.push(*status);
+                p.extend_from_slice(&connection_handle.to_le_bytes());
+                p.extend_from_slice(&packet_sequence_number.to_le_bytes());
+                p.extend_from_slice(&tx_time_stamp.to_le_bytes());
+                p.extend_from_slice(&time_offset.to_le_bytes());
+            }
             ReturnParameters::LeRemoveCig { status, cig_id } => {
                 p.push(*status);
                 p.push(*cig_id);
@@ -572,7 +605,10 @@ impl ReturnParameters {
                 | HCI_LE_READ_SUPPORTED_STATES_COMMAND
                 | HCI_LE_READ_RESOLVING_LIST_SIZE_COMMAND
                 | HCI_LE_READ_PHY_COMMAND
+                | HCI_LE_READ_ISO_TX_SYNC_COMMAND
                 | HCI_LE_REMOVE_CIG_COMMAND
+                | HCI_LE_SETUP_ISO_DATA_PATH_COMMAND
+                | HCI_LE_REMOVE_ISO_DATA_PATH_COMMAND
                 | HCI_LE_READ_TRANSMIT_POWER_COMMAND
                 | HCI_LE_READ_MINIMUM_SUPPORTED_CONNECTION_INTERVAL_COMMAND
                 | HCI_READ_BD_ADDR_COMMAND
@@ -744,6 +780,19 @@ impl ReturnParameters {
                 tx_phy: r.u8()?,
                 rx_phy: r.u8()?,
             },
+            HCI_LE_READ_ISO_TX_SYNC_COMMAND => ReturnParameters::LeReadIsoTxSync {
+                status,
+                connection_handle: r.u16_le()?,
+                packet_sequence_number: r.u16_le()?,
+                tx_time_stamp: r.u32_le()?,
+                time_offset: r.u32_le()?,
+            },
+            HCI_LE_SETUP_ISO_DATA_PATH_COMMAND | HCI_LE_REMOVE_ISO_DATA_PATH_COMMAND => {
+                ReturnParameters::StatusAndConnectionHandle {
+                    status,
+                    connection_handle: r.u16_le()?,
+                }
+            }
             HCI_LE_REMOVE_CIG_COMMAND => ReturnParameters::LeRemoveCig {
                 status,
                 cig_id: r.u8()?,

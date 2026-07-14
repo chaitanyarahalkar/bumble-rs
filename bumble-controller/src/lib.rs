@@ -292,6 +292,14 @@ struct CisLink {
     data_paths: u8,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct IsoTxSync {
+    connection_handle: u16,
+    packet_sequence_number: u16,
+    tx_time_stamp: u32,
+    time_offset: u32,
+}
+
 /// A pending outgoing connection recorded by `LE_Create_Connection`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct PendingConnection {
@@ -561,6 +569,8 @@ pub struct Controller {
     central_cis_links: Vec<CisLink>,
     /// CIS links pending/accepted as the peripheral (from an incoming `CisReq`).
     peripheral_cis_links: Vec<CisLink>,
+    /// Last successfully routed SDU metadata for `LE Read ISO TX Sync`.
+    iso_tx_syncs: Vec<IsoTxSync>,
     /// BIGs broadcast by this controller and BIGs synchronized as a receiver.
     bigs: Vec<Big>,
     big_syncs: Vec<BigSync>,
@@ -638,6 +648,7 @@ impl Controller {
             outbound_ll: Vec::new(),
             central_cis_links: Vec::new(),
             peripheral_cis_links: Vec::new(),
+            iso_tx_syncs: Vec::new(),
             bigs: Vec::new(),
             big_syncs: Vec::new(),
             pending_big_sync: None,
@@ -736,6 +747,9 @@ impl Controller {
                 self.big_syncs.clear();
                 self.pending_big_sync = None;
                 self.outbound_big_terminations.clear();
+                self.central_cis_links.clear();
+                self.peripheral_cis_links.clear();
+                self.iso_tx_syncs.clear();
                 self.connections.clear();
                 self.classic_connections.clear();
                 self.synchronous_connections.clear();
@@ -1476,6 +1490,9 @@ impl Controller {
                 continuation_number,
                 supervision_timeout,
             ),
+            Command::LeReadIsoTxSync { connection_handle } => {
+                self.handle_read_iso_tx_sync(connection_handle)
+            }
             Command::LeSetCigParameters { cig_id, cis_id, .. } => {
                 self.handle_set_cig_parameters(cig_id, &cis_id)
             }
@@ -2446,6 +2463,30 @@ impl Controller {
             })));
     }
 
+    fn handle_read_iso_tx_sync(&mut self, connection_handle: u16) {
+        let Some(sync) = self
+            .iso_tx_syncs
+            .iter()
+            .find(|sync| sync.connection_handle == connection_handle)
+            .copied()
+        else {
+            return self.ack(
+                HCI_LE_READ_ISO_TX_SYNC_COMMAND,
+                UNKNOWN_CONNECTION_IDENTIFIER_ERROR,
+            );
+        };
+        self.complete(
+            HCI_LE_READ_ISO_TX_SYNC_COMMAND,
+            ReturnParameters::LeReadIsoTxSync {
+                status: HCI_SUCCESS,
+                connection_handle,
+                packet_sequence_number: sync.packet_sequence_number,
+                tx_time_stamp: sync.tx_time_stamp,
+                time_offset: sync.time_offset,
+            },
+        );
+    }
+
     fn handle_setup_iso_data_path(&mut self, connection_handle: u16, direction: u8) {
         let status = if direction > 1 {
             INVALID_COMMAND_PARAMETERS
@@ -2511,9 +2552,13 @@ impl Controller {
     }
 
     fn complete_status_and_handle(&mut self, op_code: u16, status: u8, handle: u16) {
-        let mut data = vec![status];
-        data.extend_from_slice(&handle.to_le_bytes());
-        self.complete(op_code, ReturnParameters::Raw { data });
+        self.complete(
+            op_code,
+            ReturnParameters::StatusAndConnectionHandle {
+                status,
+                connection_handle: handle,
+            },
+        );
     }
 
     /// Handle an incoming `CisReq` (peripheral side): record a pending CIS link
@@ -4247,6 +4292,22 @@ impl Controller {
         }));
     }
 
+    fn record_iso_tx_sync(
+        &mut self,
+        connection_handle: u16,
+        packet_sequence_number: u16,
+        tx_time_stamp: u32,
+    ) {
+        self.iso_tx_syncs
+            .retain(|sync| sync.connection_handle != connection_handle);
+        self.iso_tx_syncs.push(IsoTxSync {
+            connection_handle,
+            packet_sequence_number,
+            tx_time_stamp,
+            time_offset: 0,
+        });
+    }
+
     fn connection_by_handle(&self, handle: u16) -> Option<&Connection> {
         self.connections.iter().find(|c| c.handle == handle)
     }
@@ -4723,6 +4784,12 @@ impl LocalLink {
     /// translated to the peer CIS or every synchronized receiver BIS.
     pub fn send_iso_packet(&mut self, from: usize, packet: IsoDataPacket) -> bool {
         let source_handle = packet.connection_handle;
+        let tx_sync = packet.packet_sequence_number.map(|sequence| {
+            (
+                sequence,
+                packet.time_stamp.unwrap_or_else(|| u32::from(sequence)),
+            )
+        });
         if let Some(source) = self.controllers[from].cis_link_by_handle(source_handle) {
             if source.data_paths & 0x01 == 0 {
                 return false;
@@ -4756,6 +4823,9 @@ impl LocalLink {
                 return false;
             };
             self.controllers[destination_index].deliver_iso(destination_handle, packet);
+            if let Some((sequence, time_stamp)) = tx_sync {
+                self.controllers[from].record_iso_tx_sync(source_handle, sequence, time_stamp);
+            }
             self.controllers[from].complete_acl_packets(source_handle, 1);
             return true;
         }
@@ -4793,6 +4863,9 @@ impl LocalLink {
             .collect();
         for (destination_index, destination_handle) in destinations {
             self.controllers[destination_index].deliver_iso(destination_handle, packet.clone());
+        }
+        if let Some((sequence, time_stamp)) = tx_sync {
+            self.controllers[from].record_iso_tx_sync(source_handle, sequence, time_stamp);
         }
         self.controllers[from].complete_acl_packets(source_handle, 1);
         true

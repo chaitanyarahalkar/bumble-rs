@@ -107,6 +107,7 @@ pub static COMMAND_SURFACE: &[(u16, Resp)] = &[
     (0x2043, Resp::Status),     // le_extended_create_connection
     (0x204B, Resp::Data),       // le_read_transmit_power
     (0x2060, Resp::Data),       // le_read_buffer_size_v2
+    (0x2061, Resp::Data),       // le_read_iso_tx_sync
     (0x2062, Resp::Data),       // le_set_cig_parameters
     (0x2064, Resp::Status),     // le_create_cis
     (0x2065, Resp::Data),       // le_remove_cig

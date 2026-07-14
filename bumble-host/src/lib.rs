@@ -821,6 +821,59 @@ pub enum CisControlEvent {
     },
 }
 
+/// Complete parameters for `LE Setup ISO Data Path`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IsoDataPathParameters {
+    pub direction: u8,
+    pub data_path_id: u8,
+    pub codec_id: CodingFormat,
+    /// Controller delay in microseconds, encoded as a 24-bit HCI value.
+    pub controller_delay: u32,
+    pub codec_configuration: Vec<u8>,
+}
+
+impl IsoDataPathParameters {
+    /// Host-controller-interface data path with transparent codec framing.
+    pub fn hci(direction: u8) -> Self {
+        Self {
+            direction,
+            data_path_id: 0,
+            codec_id: CodingFormat::TRANSPARENT,
+            controller_delay: 0,
+            codec_configuration: Vec::new(),
+        }
+    }
+}
+
+/// Successful `LE Read ISO TX Sync` result.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct IsoTxSyncInfo {
+    pub connection_handle: u16,
+    pub packet_sequence_number: u16,
+    pub tx_time_stamp: u32,
+    pub time_offset: u32,
+}
+
+/// Ordered completion journal for ISO data-path and TX-sync commands.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum IsoControlEvent {
+    DataPathSetup {
+        status: u8,
+        connection_handle: u16,
+        parameters: IsoDataPathParameters,
+    },
+    DataPathRemoved {
+        status: u8,
+        connection_handle: u16,
+        directions: u8,
+    },
+    TxSync {
+        status: u8,
+        connection_handle: u16,
+        sync: Option<IsoTxSyncInfo>,
+    },
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IsoSdu {
     pub connection_handle: u16,
@@ -1093,6 +1146,12 @@ pub struct Device {
     configured_cis_handles: Vec<u16>,
     cis_links: BTreeMap<u16, CisLinkInfo>,
     cis_control_events: Vec<CisControlEvent>,
+    iso_data_paths: BTreeMap<(u16, u8), IsoDataPathParameters>,
+    pending_iso_data_path_setups: VecDeque<(u16, IsoDataPathParameters)>,
+    pending_iso_data_path_removals: VecDeque<(u16, u8)>,
+    pending_iso_tx_syncs: VecDeque<u16>,
+    iso_tx_syncs: BTreeMap<u16, IsoTxSyncInfo>,
+    iso_control_events: Vec<IsoControlEvent>,
     bigs: BTreeMap<u8, Vec<u16>>,
     big_syncs: BTreeMap<u8, Vec<u16>>,
     bis_directions: BTreeMap<u16, u8>,
@@ -1165,6 +1224,12 @@ impl Device {
             configured_cis_handles: Vec::new(),
             cis_links: BTreeMap::new(),
             cis_control_events: Vec::new(),
+            iso_data_paths: BTreeMap::new(),
+            pending_iso_data_path_setups: VecDeque::new(),
+            pending_iso_data_path_removals: VecDeque::new(),
+            pending_iso_tx_syncs: VecDeque::new(),
+            iso_tx_syncs: BTreeMap::new(),
+            iso_control_events: Vec::new(),
             bigs: BTreeMap::new(),
             big_syncs: BTreeMap::new(),
             bis_directions: BTreeMap::new(),
@@ -1237,6 +1302,12 @@ impl Device {
             configured_cis_handles: Vec::new(),
             cis_links: BTreeMap::new(),
             cis_control_events: Vec::new(),
+            iso_data_paths: BTreeMap::new(),
+            pending_iso_data_path_setups: VecDeque::new(),
+            pending_iso_data_path_removals: VecDeque::new(),
+            pending_iso_tx_syncs: VecDeque::new(),
+            iso_tx_syncs: BTreeMap::new(),
+            iso_control_events: Vec::new(),
             bigs: BTreeMap::new(),
             big_syncs: BTreeMap::new(),
             bis_directions: BTreeMap::new(),
@@ -3003,20 +3074,51 @@ impl Device {
         iso_handle: u16,
         direction: u8,
     ) -> bool {
+        self.setup_iso_data_path_with_parameters(
+            link,
+            iso_handle,
+            IsoDataPathParameters::hci(direction),
+        )
+    }
+
+    /// Configure an ISO data path with the codec and controller-delay fields
+    /// exposed by upstream Bumble's `_IsoLink.setup_data_path`.
+    pub fn setup_iso_data_path_with_parameters(
+        &mut self,
+        link: &mut LocalLink,
+        iso_handle: u16,
+        parameters: IsoDataPathParameters,
+    ) -> bool {
+        let direction = parameters.direction;
         let established = self.cis_links.contains_key(&iso_handle)
             || self.bis_directions.get(&iso_handle) == Some(&direction);
-        if !established || direction > 1 {
+        if !established
+            || direction > 1
+            || parameters.controller_delay > 0x00FF_FFFF
+            || parameters.codec_configuration.len() > u8::MAX as usize
+        {
             return false;
         }
+        let key = (iso_handle, direction);
+        if self.iso_data_paths.contains_key(&key)
+            || self
+                .pending_iso_data_path_setups
+                .iter()
+                .any(|(handle, pending)| *handle == iso_handle && pending.direction == direction)
+        {
+            return true;
+        }
+        self.pending_iso_data_path_setups
+            .push_back((iso_handle, parameters.clone()));
         self.send_hci_command(
             link,
             Command::LeSetupIsoDataPath {
                 connection_handle: iso_handle,
                 data_path_direction: direction,
-                data_path_id: 0,
-                codec_id: CodingFormat::TRANSPARENT,
-                controller_delay: 0,
-                codec_configuration: Vec::new(),
+                data_path_id: parameters.data_path_id,
+                codec_id: parameters.codec_id,
+                controller_delay: parameters.controller_delay,
+                codec_configuration: parameters.codec_configuration,
             },
         );
         true
@@ -3030,17 +3132,66 @@ impl Device {
     ) -> bool {
         let established = self.cis_links.contains_key(&iso_handle)
             || self.bis_directions.contains_key(&iso_handle);
-        if !established || directions & !0x03 != 0 {
+        if !established || directions & !0x03 != 0 || directions == 0 {
             return false;
         }
+        let installed_directions = (0..=1).fold(0, |mask, direction| {
+            if directions & (1 << direction) != 0
+                && self.iso_data_paths.contains_key(&(iso_handle, direction))
+            {
+                mask | (1 << direction)
+            } else {
+                mask
+            }
+        });
+        if installed_directions == 0
+            || self
+                .pending_iso_data_path_removals
+                .iter()
+                .any(|(handle, pending)| *handle == iso_handle && *pending == installed_directions)
+        {
+            return true;
+        }
+        self.pending_iso_data_path_removals
+            .push_back((iso_handle, installed_directions));
         self.send_hci_command(
             link,
             Command::LeRemoveIsoDataPath {
                 connection_handle: iso_handle,
-                data_path_direction: directions,
+                data_path_direction: installed_directions,
             },
         );
         true
+    }
+
+    /// Request synchronization metadata for the most recently transmitted ISO
+    /// SDU on an established CIS or BIS.
+    pub fn read_iso_tx_sync(&mut self, link: &mut LocalLink, iso_handle: u16) -> bool {
+        let established = self.cis_links.contains_key(&iso_handle)
+            || self.bis_directions.contains_key(&iso_handle);
+        if !established {
+            return false;
+        }
+        self.pending_iso_tx_syncs.push_back(iso_handle);
+        self.send_hci_command(
+            link,
+            Command::LeReadIsoTxSync {
+                connection_handle: iso_handle,
+            },
+        );
+        true
+    }
+
+    pub fn iso_data_path(&self, iso_handle: u16, direction: u8) -> Option<&IsoDataPathParameters> {
+        self.iso_data_paths.get(&(iso_handle, direction))
+    }
+
+    pub fn iso_tx_sync(&self, iso_handle: u16) -> Option<&IsoTxSyncInfo> {
+        self.iso_tx_syncs.get(&iso_handle)
+    }
+
+    pub fn take_iso_control_events(&mut self) -> Vec<IsoControlEvent> {
+        std::mem::take(&mut self.iso_control_events)
     }
 
     /// Fragment and send one ISO SDU through an established CIS or broadcaster
@@ -4664,6 +4815,148 @@ impl Device {
                 HciPacket::Event(Event::CommandComplete {
                     command_opcode,
                     return_parameters:
+                        bumble_hci::ReturnParameters::StatusAndConnectionHandle {
+                            status,
+                            connection_handle,
+                        },
+                    ..
+                }) if command_opcode == bumble_hci::HCI_LE_SETUP_ISO_DATA_PATH_COMMAND => {
+                    let pending = self
+                        .pending_iso_data_path_setups
+                        .iter()
+                        .position(|(handle, _)| *handle == connection_handle)
+                        .and_then(|index| self.pending_iso_data_path_setups.remove(index));
+                    if let Some((_, parameters)) = pending {
+                        if status == 0 {
+                            self.iso_data_paths.insert(
+                                (connection_handle, parameters.direction),
+                                parameters.clone(),
+                            );
+                        }
+                        self.iso_control_events
+                            .push(IsoControlEvent::DataPathSetup {
+                                status,
+                                connection_handle,
+                                parameters,
+                            });
+                    }
+                }
+                HciPacket::Event(Event::CommandComplete {
+                    command_opcode,
+                    return_parameters:
+                        bumble_hci::ReturnParameters::StatusAndConnectionHandle {
+                            status,
+                            connection_handle,
+                        },
+                    ..
+                }) if command_opcode == bumble_hci::HCI_LE_REMOVE_ISO_DATA_PATH_COMMAND => {
+                    let pending = self
+                        .pending_iso_data_path_removals
+                        .iter()
+                        .position(|(handle, _)| *handle == connection_handle)
+                        .and_then(|index| self.pending_iso_data_path_removals.remove(index));
+                    if let Some((_, directions)) = pending {
+                        if status == 0 {
+                            for direction in 0..=1 {
+                                if directions & (1 << direction) != 0 {
+                                    self.iso_data_paths.remove(&(connection_handle, direction));
+                                }
+                            }
+                        }
+                        self.iso_control_events
+                            .push(IsoControlEvent::DataPathRemoved {
+                                status,
+                                connection_handle,
+                                directions,
+                            });
+                    }
+                }
+                HciPacket::Event(Event::CommandComplete {
+                    command_opcode,
+                    return_parameters:
+                        bumble_hci::ReturnParameters::LeReadIsoTxSync {
+                            status,
+                            connection_handle,
+                            packet_sequence_number,
+                            tx_time_stamp,
+                            time_offset,
+                        },
+                    ..
+                }) if command_opcode == bumble_hci::HCI_LE_READ_ISO_TX_SYNC_COMMAND => {
+                    let pending = self
+                        .pending_iso_tx_syncs
+                        .iter()
+                        .position(|handle| *handle == connection_handle)
+                        .and_then(|index| self.pending_iso_tx_syncs.remove(index));
+                    if pending.is_some() {
+                        let sync = (status == 0).then_some(IsoTxSyncInfo {
+                            connection_handle,
+                            packet_sequence_number,
+                            tx_time_stamp,
+                            time_offset,
+                        });
+                        if let Some(sync) = sync {
+                            self.iso_tx_syncs.insert(connection_handle, sync);
+                        }
+                        self.iso_control_events.push(IsoControlEvent::TxSync {
+                            status,
+                            connection_handle,
+                            sync,
+                        });
+                    }
+                }
+                HciPacket::Event(Event::CommandComplete {
+                    command_opcode,
+                    return_parameters: bumble_hci::ReturnParameters::Status { status },
+                    ..
+                }) if status != 0
+                    && matches!(
+                        command_opcode,
+                        bumble_hci::HCI_LE_SETUP_ISO_DATA_PATH_COMMAND
+                            | bumble_hci::HCI_LE_REMOVE_ISO_DATA_PATH_COMMAND
+                            | bumble_hci::HCI_LE_READ_ISO_TX_SYNC_COMMAND
+                    ) =>
+                {
+                    match command_opcode {
+                        bumble_hci::HCI_LE_SETUP_ISO_DATA_PATH_COMMAND => {
+                            if let Some((connection_handle, parameters)) =
+                                self.pending_iso_data_path_setups.pop_front()
+                            {
+                                self.iso_control_events
+                                    .push(IsoControlEvent::DataPathSetup {
+                                        status,
+                                        connection_handle,
+                                        parameters,
+                                    });
+                            }
+                        }
+                        bumble_hci::HCI_LE_REMOVE_ISO_DATA_PATH_COMMAND => {
+                            if let Some((connection_handle, directions)) =
+                                self.pending_iso_data_path_removals.pop_front()
+                            {
+                                self.iso_control_events
+                                    .push(IsoControlEvent::DataPathRemoved {
+                                        status,
+                                        connection_handle,
+                                        directions,
+                                    });
+                            }
+                        }
+                        bumble_hci::HCI_LE_READ_ISO_TX_SYNC_COMMAND => {
+                            if let Some(connection_handle) = self.pending_iso_tx_syncs.pop_front() {
+                                self.iso_control_events.push(IsoControlEvent::TxSync {
+                                    status,
+                                    connection_handle,
+                                    sync: None,
+                                });
+                            }
+                        }
+                        _ => unreachable!(),
+                    }
+                }
+                HciPacket::Event(Event::CommandComplete {
+                    command_opcode,
+                    return_parameters:
                         bumble_hci::ReturnParameters::LeReadPhy {
                             status,
                             connection_handle,
@@ -4845,6 +5138,7 @@ impl Device {
                         .map(|connection| connection.peer_address.clone());
                     self.encrypted_handles.remove(&connection_handle);
                     self.cis_links.remove(&connection_handle);
+                    self.clear_iso_control_state(connection_handle);
                     self.iso_sequence_numbers.remove(&connection_handle);
                     self.iso_assemblers.remove(&connection_handle);
                     self.iso_inbox
@@ -5325,9 +5619,22 @@ impl Device {
 
     fn clear_bis_handle(&mut self, handle: u16) {
         self.bis_directions.remove(&handle);
+        self.clear_iso_control_state(handle);
         self.iso_sequence_numbers.remove(&handle);
         self.iso_assemblers.remove(&handle);
         self.iso_inbox.retain(|sdu| sdu.connection_handle != handle);
+    }
+
+    fn clear_iso_control_state(&mut self, handle: u16) {
+        self.iso_data_paths
+            .retain(|(connection_handle, _), _| *connection_handle != handle);
+        self.pending_iso_data_path_setups
+            .retain(|(connection_handle, _)| *connection_handle != handle);
+        self.pending_iso_data_path_removals
+            .retain(|(connection_handle, _)| *connection_handle != handle);
+        self.pending_iso_tx_syncs
+            .retain(|connection_handle| *connection_handle != handle);
+        self.iso_tx_syncs.remove(&handle);
     }
 
     fn flush_acl_queue(&mut self, link: &mut LocalLink) -> bool {

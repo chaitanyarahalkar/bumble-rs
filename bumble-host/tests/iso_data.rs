@@ -1,7 +1,10 @@
 use bumble::{Address, AddressType};
 use bumble_controller::{Controller, LocalLink};
 use bumble_hci::{HCI_LE_ACCEPT_CIS_REQUEST_COMMAND, HCI_LE_CREATE_CIS_COMMAND};
-use bumble_host::{pump, CigParameters, CisControlEvent, CisParameters, Device};
+use bumble_host::{
+    pump, CigParameters, CisControlEvent, CisParameters, Device, IsoControlEvent,
+    IsoDataPathParameters, IsoTxSyncInfo,
+};
 
 fn address(value: &str) -> Address {
     Address::parse(value, AddressType::RANDOM_DEVICE).unwrap()
@@ -57,6 +60,22 @@ fn high_level_cis_fragments_and_reassembles_iso_sdus() {
     assert!(devices[0].setup_iso_data_path(&mut link, central_cis, 0));
     assert!(devices[1].setup_iso_data_path(&mut link, peripheral_cis, 1));
     pump(&mut link, &mut devices);
+    assert_eq!(
+        devices[0].take_iso_control_events(),
+        vec![IsoControlEvent::DataPathSetup {
+            status: 0,
+            connection_handle: central_cis,
+            parameters: IsoDataPathParameters::hci(0),
+        }]
+    );
+    assert_eq!(
+        devices[1].take_iso_control_events(),
+        vec![IsoControlEvent::DataPathSetup {
+            status: 0,
+            connection_handle: peripheral_cis,
+            parameters: IsoDataPathParameters::hci(1),
+        }]
+    );
 
     let first: Vec<_> = (0..2500).map(|value| value as u8).collect();
     assert!(devices[0].send_iso_sdu(&mut link, central_cis, &first));
@@ -67,6 +86,23 @@ fn high_level_cis_fragments_and_reassembles_iso_sdus() {
     assert_eq!(received[0].packet_sequence_number, 0);
     assert_eq!(received[0].packet_status_flag, 0);
     assert_eq!(received[0].data, first);
+    assert!(devices[0].read_iso_tx_sync(&mut link, central_cis));
+    pump(&mut link, &mut devices);
+    let first_sync = IsoTxSyncInfo {
+        connection_handle: central_cis,
+        packet_sequence_number: 0,
+        tx_time_stamp: 0,
+        time_offset: 0,
+    };
+    assert_eq!(devices[0].iso_tx_sync(central_cis), Some(&first_sync));
+    assert_eq!(
+        devices[0].take_iso_control_events(),
+        vec![IsoControlEvent::TxSync {
+            status: 0,
+            connection_handle: central_cis,
+            sync: Some(first_sync),
+        }]
+    );
 
     assert!(devices[0].send_iso_sdu(&mut link, central_cis, &[9, 8, 7]));
     pump(&mut link, &mut devices);
@@ -77,6 +113,15 @@ fn high_level_cis_fragments_and_reassembles_iso_sdus() {
 
     assert!(devices[1].remove_iso_data_path(&mut link, peripheral_cis, 0x02));
     pump(&mut link, &mut devices);
+    assert_eq!(
+        devices[1].take_iso_control_events(),
+        vec![IsoControlEvent::DataPathRemoved {
+            status: 0,
+            connection_handle: peripheral_cis,
+            directions: 0x02,
+        }]
+    );
+    assert!(devices[1].iso_data_path(peripheral_cis, 1).is_none());
     assert!(!devices[0].send_iso_sdu(&mut link, central_cis, &[1]));
 
     assert!(devices[0].disconnect_handle(&mut link, central_cis, 0x13));

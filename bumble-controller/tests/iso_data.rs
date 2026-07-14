@@ -133,11 +133,15 @@ fn setup_path(link: &mut LocalLink, controller: usize, handle: u16, direction: u
     );
     match &link.drain_host_events(controller)[0] {
         HciPacket::Event(Event::CommandComplete {
-            return_parameters: bumble_hci::ReturnParameters::Raw { data },
+            return_parameters:
+                bumble_hci::ReturnParameters::StatusAndConnectionHandle {
+                    status,
+                    connection_handle,
+                },
             ..
         }) => {
-            assert_eq!(&data[1..], &handle.to_le_bytes());
-            data[0]
+            assert_eq!(*connection_handle, handle);
+            *status
         }
         other => panic!("expected setup data path complete, got {other:?}"),
     }
@@ -190,9 +194,12 @@ fn iso_data_path_setup_routes_fragments_and_completes_packets() {
     assert!(matches!(
         &remove[0],
         HciPacket::Event(Event::CommandComplete {
-            return_parameters: bumble_hci::ReturnParameters::Raw { data },
+            return_parameters: bumble_hci::ReturnParameters::StatusAndConnectionHandle {
+                status: 0,
+                connection_handle,
+            },
             ..
-        }) if data == &[0, peripheral_cis as u8, (peripheral_cis >> 8) as u8]
+        }) if *connection_handle == peripheral_cis
     ));
     assert!(!link.send_iso_packet(
         central,
