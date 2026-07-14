@@ -1,6 +1,7 @@
 use bumble_audio::{
-    create_audio_input, AudioInput, AudioOutput, Endianness, Error, PcmFormat, SampleType,
-    StreamAudioInput, StreamAudioOutput, SubprocessAudioOutput, WaveAudioInput,
+    check_audio_input, check_audio_output, create_audio_input, create_audio_output, AudioInput,
+    AudioOutput, Endianness, Error, PcmFormat, SampleType, StreamAudioInput, StreamAudioOutput,
+    SubprocessAudioOutput, WaveAudioInput,
 };
 use std::fs;
 use std::io::{Cursor, Write};
@@ -143,6 +144,28 @@ fn factories_support_implicit_wave_and_raw_file_paths() {
 
     fs::remove_file(wave_path).unwrap();
     fs::remove_file(raw_path).unwrap();
+}
+
+#[test]
+fn device_factory_syntax_matches_upstream_contract() {
+    assert!(check_audio_output("file:unused").unwrap());
+    assert!(check_audio_input("stdin").unwrap());
+    assert!(matches!(
+        check_audio_output("device:not-an-index"),
+        Err(Error::InvalidFormat(_))
+    ));
+    assert!(matches!(
+        check_audio_input("device:"),
+        Err(Error::InvalidFormat(_))
+    ));
+    assert!(matches!(
+        create_audio_output("device:?"),
+        Err(Error::InvalidFormat(_))
+    ));
+    assert!(matches!(
+        create_audio_input("device", "auto"),
+        Err(Error::InvalidFormat(_))
+    ));
 }
 
 #[cfg(unix)]

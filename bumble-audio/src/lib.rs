@@ -1,8 +1,9 @@
 //! Portable PCM audio input and output.
 //!
-//! This crate ports the platform-independent behavior from
-//! `bumble.audio.io`: PCM format parsing, non-blocking stream and file output,
-//! subprocess output, raw stream and file input, and looping 16-bit WAVE input.
+//! This crate ports `bumble.audio.io`: PCM format parsing, non-blocking stream
+//! and file output, subprocess output, raw stream and file input, and looping
+//! 16-bit WAVE input. The optional `sound-device` feature adds live device
+//! enumeration, float32 output, and int16 input through CPAL.
 
 use std::fmt;
 use std::fs::File;
@@ -12,6 +13,12 @@ use std::process::{Child, Command, Stdio};
 use std::str::FromStr;
 use std::sync::mpsc::{self, Sender};
 use std::thread::{self, JoinHandle};
+
+#[cfg(feature = "sound-device")]
+mod sound_device;
+
+#[cfg(feature = "sound-device")]
+pub use sound_device::{SoundDeviceAudioInput, SoundDeviceAudioOutput};
 
 /// Byte ordering of PCM samples.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -128,6 +135,7 @@ impl fmt::Display for PcmFormat {
 #[derive(Debug)]
 pub enum Error {
     Io(io::Error),
+    Backend(String),
     InvalidFormat(String),
     Unsupported(String),
     NotOpen,
@@ -140,6 +148,7 @@ impl fmt::Display for Error {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Io(error) => write!(formatter, "audio I/O error: {error}"),
+            Self::Backend(message) => write!(formatter, "audio backend error: {message}"),
             Self::InvalidFormat(message) => write!(formatter, "invalid audio format: {message}"),
             Self::Unsupported(message) => write!(formatter, "unsupported audio I/O: {message}"),
             Self::NotOpen => formatter.write_str("audio input or output is not open"),
@@ -147,6 +156,112 @@ impl fmt::Display for Error {
             Self::ValueTooLarge => formatter.write_str("audio size is too large"),
             Self::WorkerPanicked => formatter.write_str("audio output worker panicked"),
         }
+    }
+}
+
+/// One live audio device exposed by the optional platform backend.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AudioDeviceInfo {
+    /// Stable backend identifier when the platform supplies one.
+    pub id: String,
+    /// Index accepted by Bumble's `device:INDEX` syntax.
+    pub index: usize,
+    /// Human-readable platform name.
+    pub name: String,
+    /// Maximum channel count advertised for the selected direction.
+    pub max_channels: u16,
+    /// Whether this is the platform's default device for that direction.
+    pub is_default: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AudioDeviceSelector {
+    Default,
+    List,
+    Index(usize),
+}
+
+fn parse_audio_device_selector(specification: &str) -> Result<AudioDeviceSelector> {
+    if specification == "device" {
+        return Ok(AudioDeviceSelector::Default);
+    }
+    let selector = specification
+        .strip_prefix("device:")
+        .ok_or_else(|| Error::Unsupported("audio device specification".into()))?;
+    if selector == "?" {
+        return Ok(AudioDeviceSelector::List);
+    }
+    selector
+        .parse()
+        .map(AudioDeviceSelector::Index)
+        .map_err(|_| Error::InvalidFormat("audio device index must be an integer".into()))
+}
+
+/// Enumerate devices with at least one output channel.
+pub fn list_audio_output_devices() -> Result<Vec<AudioDeviceInfo>> {
+    #[cfg(feature = "sound-device")]
+    {
+        sound_device::list_output_devices()
+    }
+    #[cfg(not(feature = "sound-device"))]
+    Err(Error::Unsupported(
+        "sound-device output requires the 'sound-device' feature".into(),
+    ))
+}
+
+/// Enumerate devices with at least one input channel.
+pub fn list_audio_input_devices() -> Result<Vec<AudioDeviceInfo>> {
+    #[cfg(feature = "sound-device")]
+    {
+        sound_device::list_input_devices()
+    }
+    #[cfg(not(feature = "sound-device"))]
+    Err(Error::Unsupported(
+        "sound-device input requires the 'sound-device' feature".into(),
+    ))
+}
+
+/// Validate Bumble's output syntax and print output devices for `device:?`.
+///
+/// The return value matches upstream: listing devices returns `false`; a usable
+/// specification returns `true`.
+pub fn check_audio_output(specification: &str) -> Result<bool> {
+    if specification != "device" && !specification.starts_with("device:") {
+        return Ok(true);
+    }
+    let selector = parse_audio_device_selector(specification)?;
+    #[cfg(feature = "sound-device")]
+    {
+        sound_device::check_output(selector)
+    }
+    #[cfg(not(feature = "sound-device"))]
+    {
+        let _ = selector;
+        Err(Error::Unsupported(
+            "sound-device output requires the 'sound-device' feature".into(),
+        ))
+    }
+}
+
+/// Validate Bumble's input syntax and print input devices for `device:?`.
+///
+/// The return value matches upstream: listing devices returns `false`; a usable
+/// specification returns `true`.
+pub fn check_audio_input(specification: &str) -> Result<bool> {
+    if specification != "device" && !specification.starts_with("device:") {
+        return Ok(true);
+    }
+    let selector = parse_audio_device_selector(specification)?;
+    #[cfg(feature = "sound-device")]
+    {
+        sound_device::check_input(selector)
+    }
+    #[cfg(not(feature = "sound-device"))]
+    {
+        let _ = selector;
+        Err(Error::Unsupported(
+            "sound-device input requires the 'sound-device' feature".into(),
+        ))
     }
 }
 
@@ -385,9 +500,27 @@ pub fn create_audio_output(specification: &str) -> Result<Box<dyn AudioOutput>> 
         return Ok(Box::new(FileAudioOutput::create(path)?));
     }
     if specification == "device" || specification.starts_with("device:") {
-        return Err(Error::Unsupported(
-            "sound-device output requires a platform backend".into(),
-        ));
+        let selector = parse_audio_device_selector(specification)?;
+        let device_index = match selector {
+            AudioDeviceSelector::Default => None,
+            AudioDeviceSelector::Index(index) => Some(index),
+            AudioDeviceSelector::List => {
+                return Err(Error::InvalidFormat(
+                    "device:? lists outputs and cannot be opened".into(),
+                ))
+            }
+        };
+        #[cfg(feature = "sound-device")]
+        {
+            return Ok(Box::new(SoundDeviceAudioOutput::new(device_index)));
+        }
+        #[cfg(not(feature = "sound-device"))]
+        {
+            let _ = device_index;
+            return Err(Error::Unsupported(
+                "sound-device output requires the 'sound-device' feature".into(),
+            ));
+        }
     }
     Err(Error::Unsupported("audio output specification".into()))
 }
@@ -644,9 +777,30 @@ pub fn create_audio_input(specification: &str, format: &str) -> Result<Box<dyn A
         return Ok(Box::new(StreamAudioInput::new(io::stdin(), format)));
     }
     if specification == "device" || specification.starts_with("device:") {
-        return Err(Error::Unsupported(
-            "sound-device input requires a platform backend".into(),
-        ));
+        let format = pcm_format.ok_or_else(|| {
+            Error::InvalidFormat("input format details required for device".into())
+        })?;
+        let selector = parse_audio_device_selector(specification)?;
+        let device_index = match selector {
+            AudioDeviceSelector::Default => None,
+            AudioDeviceSelector::Index(index) => Some(index),
+            AudioDeviceSelector::List => {
+                return Err(Error::InvalidFormat(
+                    "device:? lists inputs and cannot be opened".into(),
+                ))
+            }
+        };
+        #[cfg(feature = "sound-device")]
+        {
+            return Ok(Box::new(SoundDeviceAudioInput::new(device_index, format)));
+        }
+        #[cfg(not(feature = "sound-device"))]
+        {
+            let _ = (device_index, format);
+            return Err(Error::Unsupported(
+                "sound-device input requires the 'sound-device' feature".into(),
+            ));
+        }
     }
 
     let mut path = specification.strip_prefix("file:").map(PathBuf::from);

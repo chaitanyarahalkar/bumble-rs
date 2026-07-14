@@ -27,6 +27,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace --all-targets
       - run: cargo test --workspace --release
+      - if: matrix.os == 'macos-latest'
+        run: cargo test -p bumble-audio --all-targets --all-features
 
   lint:
     name: fmt + clippy

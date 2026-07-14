@@ -10,3 +10,10 @@ homepage.workspace = true
 keywords.workspace = true
 categories.workspace = true
 description = "Portable PCM audio input and output for bumble-rs"
+
+[features]
+default = []
+sound-device = ["dep:cpal"]
+
+[dependencies]
+cpal = { version = "0.18.1", optional = true }

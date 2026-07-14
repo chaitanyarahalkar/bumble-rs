@@ -129,6 +129,7 @@ crate whose behavior is verified against the upstream Python.
 | 153. USB SCO/eSCO isochronous transport | `bumble-transport` | ✅ alternate selection + fragmented input + multi-packet output green |
 | 154. Enhanced ATT bearers | `bumble-gatt` / `bumble-host` / `bumble-transport` | ✅ LE CoC read/write + bearer-scoped CCCDs/MTUs/queues + notify/indicate fan-out green |
 | 155. RFCOMM receive-queue completion | `bumble-rfcomm` | ✅ upstream 32-packet bound + oldest eviction + retained order green |
+| 156. Platform audio devices | `bumble-audio` | ✅ optional CPAL enumeration + float32 output + int16/stereo input green |
 | 103+. Repository completion audit and remaining gaps | workspace | in progress |
 
 The LE lifecycle is now complete end-to-end through library APIs: **connect →
@@ -230,7 +231,7 @@ size, to convey remaining surface.
 | `avctp.py` (0.3k) | `bumble-avctp` | ✅ | Transaction labels, single/start/continue/end packets, command/response and IPID flags, 16-bit PIDs, safe fragmented-message assembly, MTU-aware outbound fragmentation, and a live Classic L2CAP binding are complete. Registered PIDs receive commands, unknown PIDs automatically produce IPID responses, and explicit message queues plus the higher AVRCP runtime replace Python callback registration. |
 | `avrcp` (2.9k) | `bumble-avrcp` | ✅ | Slices 41–46 port the complete typed wire catalog, bounded controller/target runtime, delegate behavior, interim→changed notifications, pass-through keys, both fragmentation layers over live Classic L2CAP, and controller/target SDP records + discovery. The browsing PSM is advertised exactly when supported; upstream itself does not implement a separate browsing-channel runtime. Async iterators are represented by explicit `RuntimeEvent` values. |
 | `codecs.py` (0.5k) | `bumble-codecs` | ✅ | Complete bit reader/writer plus MPEG-4 LATM `AudioMuxElement`, `StreamMuxConfig`, `AudioSpecificConfig`, GA config, AAC-LC constructor, arbitrary-length payload framing, and ADTS conversion. Upstream's long LATM fixture produces the exact ADTS oracle; unaligned bit chunks and 255/510-byte length boundaries round-trip safely. The same crate also owns the separately tracked G.722 decoder. |
-| `audio/io.py` (0.6k) | `bumble-audio` | 🟡 | `PcmFormat`, frame sizing, raw stream/file input, non-blocking threaded stream/file output, format-expanded subprocess output, input/output specification factories, and RIFF/WAVE 16-bit PCM parsing with upstream-compatible rewind-on-EOF looping are complete. Deferred: the optional PortAudio/sounddevice-equivalent hardware adapter and device enumeration. |
+| `audio/io.py` (0.6k) | `bumble-audio` | ✅ | Complete synchronous surface: `PcmFormat`, frame sizing, raw stream/file input, non-blocking threaded stream/file output, format-expanded subprocess output, input/output specification factories, and RIFF/WAVE 16-bit PCM parsing with upstream-compatible rewind-on-EOF looping. The optional `sound-device` feature supplies CPAL-backed global-index/default-device selection and enumeration, non-blocking float32 output, blocking int16 input, mono-to-stereo duplication, and upstream's reported stereo input format without imposing an audio backend on headless builds. |
 
 ### Profiles & apps
 | Upstream | Rust crate | Status | Notes |
@@ -3377,6 +3378,29 @@ retransmission were not upstream gaps. One observable difference was real:
   refusal, and disconnect tests remain green, closing `rfcomm.py` for the
   synchronous port's scope.
 
+## Slice 156 — what's here
+
+The `audio/io.py` completion audit found one real platform gap rather than an
+async-only difference: upstream optionally loads PortAudio through
+`sounddevice` for live hardware input/output and device enumeration. The
+`bumble-audio` crate now exposes the same surface behind an optional
+`sound-device` feature backed by CPAL 0.18.1:
+
+- `list_audio_{input,output}_devices` reports backend IDs, Bumble-compatible
+  global indices, names, maximum channel counts, and the directional default;
+  `check_audio_{input,output}` validates `device`, `device:INDEX`, and
+  `device:?`, including upstream's list-and-return-false behavior.
+- `SoundDeviceAudioOutput` configures the requested rate/channels with upstream's
+  float32 device format. Calls to `write` only enqueue bytes; the hardware
+  callback drains them in order and fills underruns with silence.
+- `SoundDeviceAudioInput` captures upstream's int16 device format, blocks until
+  the requested frame is available, duplicates mono samples into stereo, and
+  reports the same two-channel int16 format from `open`.
+- CPAL streams stay on dedicated owner threads, so the public audio traits remain
+  `Send` across platform backends. Focused tests cover feature-disabled factory
+  errors, feature-enabled factory syntax, callback ordering/underflow, and exact
+  mono duplication without requiring CI audio hardware.
+
 ## Acceptance
 
 The port's contract is the upstream Python test suite, ported 1:1:
@@ -3533,8 +3557,9 @@ bumble-rs/
 │   ├── tests/codecs.rs        # upstream fixture + length-boundary round trips
 │   ├── tests/g722.rs          # upstream fixture PCM + state continuity
 │   └── tests/lc3.rs           # stateful stereo/multiframe LC3 SDU round trips
-├── bumble-audio/              # slice-98 portable PCM input and output
+├── bumble-audio/              # slices 98/156 portable and platform audio I/O
 │   ├── src/lib.rs             # formats, streams/files, WAVE, subprocesses
+│   ├── src/sound_device.rs    # optional CPAL enumeration/input/output workers
 │   └── tests/io.rs            # framing, looping, factories, worker delivery
 ├── bumble-transport/          # slices 75-82 external HCI transports
 │   ├── build.rs               # vendored-protoc Android gRPC generation
