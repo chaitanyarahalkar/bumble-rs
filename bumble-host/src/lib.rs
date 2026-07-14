@@ -26,7 +26,7 @@
 //! BIG/BIS control, PAST transfer, ISO SDU fragmentation/reassembly, and handle-scoped LE
 //! credit-based channel managers driven over the same ACL path.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use bumble::Address;
 use bumble_att::AttPdu;
@@ -173,13 +173,98 @@ pub struct SynchronousConnectionInfo {
 }
 
 /// Current HCI connection parameters for one established LE ACL.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LeConnectionParameters {
     pub connection_interval: u16,
     pub peripheral_latency: u16,
     pub supervision_timeout: u16,
     pub subrate_factor: u16,
     pub continuation_number: u16,
+}
+
+/// Requested bounds for the legacy LE Connection Update procedure, expressed
+/// in HCI units (1.25 ms intervals, 10 ms supervision timeout, and 0.625 ms
+/// connection-event lengths).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LeConnectionUpdateParameters {
+    pub connection_interval_min: u16,
+    pub connection_interval_max: u16,
+    pub max_latency: u16,
+    pub supervision_timeout: u16,
+    pub min_ce_length: u16,
+    pub max_ce_length: u16,
+}
+
+/// Bluetooth 6.2 connection-rate request, expressed in the command's native
+/// HCI units (0.125 ms intervals/event lengths and 10 ms timeout units).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LeConnectionRateParameters {
+    pub connection_interval_min: u16,
+    pub connection_interval_max: u16,
+    pub subrate_min: u16,
+    pub subrate_max: u16,
+    pub max_latency: u16,
+    pub continuation_number: u16,
+    pub supervision_timeout: u16,
+    pub min_ce_length: u16,
+    pub max_ce_length: u16,
+}
+
+/// Negotiated LE data-length values reported by the controller.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LeDataLength {
+    pub max_tx_octets: u16,
+    pub max_tx_time: u16,
+    pub max_rx_octets: u16,
+    pub max_rx_time: u16,
+}
+
+/// Current transmit and receive LE PHY identifiers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LePhy {
+    pub tx_phy: u8,
+    pub rx_phy: u8,
+}
+
+/// Completion journal for the upstream LE connection-control conveniences.
+///
+/// Python Bumble resolves futures and emits connection events. The synchronous
+/// Rust host retains the same result information in order for callers to drain.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LeConnectionControlEvent {
+    ConnectionParametersUpdate {
+        status: u8,
+        connection_handle: u16,
+        parameters: LeConnectionParameters,
+    },
+    DataLengthRequestComplete {
+        status: u8,
+        connection_handle: u16,
+    },
+    DataLengthChange {
+        connection_handle: u16,
+        data_length: LeDataLength,
+    },
+    PhyRead {
+        status: u8,
+        connection_handle: u16,
+        phy: LePhy,
+    },
+    PhyUpdate {
+        status: u8,
+        connection_handle: u16,
+        phy: LePhy,
+    },
+    RssiRead {
+        status: u8,
+        connection_handle: u16,
+        rssi: i8,
+    },
+    CommandStatus {
+        command_opcode: u16,
+        status: u8,
+        connection_handle: Option<u16>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -392,6 +477,9 @@ pub struct LeConnectionInfo {
     pub role: u8,
     pub peer_address: Address,
     pub parameters: LeConnectionParameters,
+    pub data_length: Option<LeDataLength>,
+    pub phy: LePhy,
+    pub rssi: Option<i8>,
     pub classic_mode: u8,
     pub classic_interval: u16,
     pub peer_le_features: Option<[u8; 8]>,
@@ -815,6 +903,8 @@ pub struct Device {
     security_requests: Vec<(u16, u8)>,
     long_term_key_requests: Vec<LongTermKeyRequestInfo>,
     connection_feature_errors: Vec<ConnectionFeatureError>,
+    connection_control_events: Vec<LeConnectionControlEvent>,
+    pending_connection_controls: BTreeMap<u16, VecDeque<u16>>,
     pending_channel_sounding_configs: BTreeSet<(u16, u8)>,
     channel_sounding_errors: Vec<ChannelSoundingError>,
     channel_sounding_security_results: Vec<(u16, u8)>,
@@ -878,6 +968,8 @@ impl Device {
             security_requests: Vec::new(),
             long_term_key_requests: Vec::new(),
             connection_feature_errors: Vec::new(),
+            connection_control_events: Vec::new(),
+            pending_connection_controls: BTreeMap::new(),
             pending_channel_sounding_configs: BTreeSet::new(),
             channel_sounding_errors: Vec::new(),
             channel_sounding_security_results: Vec::new(),
@@ -942,6 +1034,8 @@ impl Device {
             security_requests: Vec::new(),
             long_term_key_requests: Vec::new(),
             connection_feature_errors: Vec::new(),
+            connection_control_events: Vec::new(),
+            pending_connection_controls: BTreeMap::new(),
             pending_channel_sounding_configs: BTreeSet::new(),
             channel_sounding_errors: Vec::new(),
             channel_sounding_security_results: Vec::new(),
@@ -1044,6 +1138,208 @@ impl Device {
         std::mem::take(&mut self.connection_feature_errors)
     }
 
+    /// Drain completed LE connection-control requests and asynchronous changes.
+    pub fn take_connection_control_events(&mut self) -> Vec<LeConnectionControlEvent> {
+        std::mem::take(&mut self.connection_control_events)
+    }
+
+    /// Request legacy LE connection parameters on one established ACL.
+    pub fn update_connection_parameters_on_handle(
+        &mut self,
+        link: &mut LocalLink,
+        connection_handle: u16,
+        parameters: LeConnectionUpdateParameters,
+    ) -> bool {
+        if !self.le_connections.contains_key(&connection_handle) {
+            return false;
+        }
+        self.send_connection_control_command(
+            link,
+            connection_handle,
+            Command::LeConnectionUpdate {
+                connection_handle,
+                connection_interval_min: parameters.connection_interval_min,
+                connection_interval_max: parameters.connection_interval_max,
+                max_latency: parameters.max_latency,
+                supervision_timeout: parameters.supervision_timeout,
+                min_ce_length: parameters.min_ce_length,
+                max_ce_length: parameters.max_ce_length,
+            },
+        );
+        true
+    }
+
+    /// Request Bluetooth 6.2 connection-rate and subrate parameters on one ACL.
+    pub fn update_connection_rate_on_handle(
+        &mut self,
+        link: &mut LocalLink,
+        connection_handle: u16,
+        parameters: LeConnectionRateParameters,
+    ) -> bool {
+        if !self.le_connections.contains_key(&connection_handle) {
+            return false;
+        }
+        self.send_connection_control_command(
+            link,
+            connection_handle,
+            Command::LeConnectionRateRequest {
+                connection_handle,
+                connection_interval_min: parameters.connection_interval_min,
+                connection_interval_max: parameters.connection_interval_max,
+                subrate_min: parameters.subrate_min,
+                subrate_max: parameters.subrate_max,
+                max_latency: parameters.max_latency,
+                continuation_number: parameters.continuation_number,
+                supervision_timeout: parameters.supervision_timeout,
+                min_ce_length: parameters.min_ce_length,
+                max_ce_length: parameters.max_ce_length,
+            },
+        );
+        true
+    }
+
+    /// Set controller-wide Bluetooth 6.2 connection-rate defaults.
+    pub fn set_default_connection_rate(
+        &mut self,
+        link: &mut LocalLink,
+        parameters: LeConnectionRateParameters,
+    ) {
+        self.send_hci_command(
+            link,
+            Command::LeSetDefaultRateParameters {
+                connection_interval_min: parameters.connection_interval_min,
+                connection_interval_max: parameters.connection_interval_max,
+                subrate_min: parameters.subrate_min,
+                subrate_max: parameters.subrate_max,
+                max_latency: parameters.max_latency,
+                continuation_number: parameters.continuation_number,
+                supervision_timeout: parameters.supervision_timeout,
+                min_ce_length: parameters.min_ce_length,
+                max_ce_length: parameters.max_ce_length,
+            },
+        );
+    }
+
+    /// Set controller-wide subrate defaults for new connections.
+    pub fn set_default_subrate(
+        &mut self,
+        link: &mut LocalLink,
+        parameters: LeSubrateRequestParameters,
+    ) {
+        self.send_hci_command(
+            link,
+            Command::LeSetDefaultSubrate {
+                subrate_min: parameters.subrate_min,
+                subrate_max: parameters.subrate_max,
+                max_latency: parameters.max_latency,
+                continuation_number: parameters.continuation_number,
+                supervision_timeout: parameters.supervision_timeout,
+            },
+        );
+    }
+
+    /// Set the preferred LE data length for one established ACL.
+    ///
+    /// The bounds match upstream `Device.set_data_length`.
+    pub fn set_data_length_on_handle(
+        &mut self,
+        link: &mut LocalLink,
+        connection_handle: u16,
+        tx_octets: u16,
+        tx_time: u16,
+    ) -> bool {
+        if !self.le_connections.contains_key(&connection_handle)
+            || !(0x001B..=0x00FB).contains(&tx_octets)
+            || !(0x0148..=0x4290).contains(&tx_time)
+        {
+            return false;
+        }
+        self.send_connection_control_command(
+            link,
+            connection_handle,
+            Command::LeSetDataLength {
+                connection_handle,
+                tx_octets,
+                tx_time,
+            },
+        );
+        true
+    }
+
+    /// Query the current LE PHY for one established ACL.
+    pub fn read_phy_on_handle(&mut self, link: &mut LocalLink, connection_handle: u16) -> bool {
+        if !self.le_connections.contains_key(&connection_handle) {
+            return false;
+        }
+        self.send_connection_control_command(
+            link,
+            connection_handle,
+            Command::LeReadPhy { connection_handle },
+        );
+        true
+    }
+
+    /// Request transmit and receive LE PHY preferences for one ACL.
+    /// `None` means no preference in that direction.
+    pub fn set_phy_on_handle(
+        &mut self,
+        link: &mut LocalLink,
+        connection_handle: u16,
+        tx_phys: Option<u8>,
+        rx_phys: Option<u8>,
+        phy_options: u16,
+    ) -> bool {
+        if !self.le_connections.contains_key(&connection_handle) {
+            return false;
+        }
+        let all_phys = u8::from(tx_phys.is_none()) | (u8::from(rx_phys.is_none()) << 1);
+        self.send_connection_control_command(
+            link,
+            connection_handle,
+            Command::LeSetPhy {
+                connection_handle,
+                all_phys,
+                tx_phys: tx_phys.unwrap_or_default(),
+                rx_phys: rx_phys.unwrap_or_default(),
+                phy_options,
+            },
+        );
+        true
+    }
+
+    /// Set the controller-wide LE PHY preferences used for new ACLs.
+    pub fn set_default_phy(
+        &mut self,
+        link: &mut LocalLink,
+        tx_phys: Option<u8>,
+        rx_phys: Option<u8>,
+    ) {
+        let all_phys = u8::from(tx_phys.is_none()) | (u8::from(rx_phys.is_none()) << 1);
+        self.send_hci_command(
+            link,
+            Command::LeSetDefaultPhy {
+                all_phys,
+                tx_phys: tx_phys.unwrap_or_default(),
+                rx_phys: rx_phys.unwrap_or_default(),
+            },
+        );
+    }
+
+    /// Query the controller's RSSI for one established LE ACL.
+    pub fn read_rssi_on_handle(&mut self, link: &mut LocalLink, connection_handle: u16) -> bool {
+        if !self.le_connections.contains_key(&connection_handle) {
+            return false;
+        }
+        self.send_connection_control_command(
+            link,
+            connection_handle,
+            Command::ReadRssi {
+                handle: connection_handle,
+            },
+        );
+        true
+    }
+
     pub fn request_le_subrate_on_handle(
         &mut self,
         link: &mut LocalLink,
@@ -1053,8 +1349,9 @@ impl Device {
         if !self.le_connections.contains_key(&connection_handle) {
             return false;
         }
-        self.send_hci_command(
+        self.send_connection_control_command(
             link,
+            connection_handle,
             Command::LeSubrateRequest {
                 connection_handle,
                 subrate_min: parameters.subrate_min,
@@ -2494,6 +2791,50 @@ impl Device {
         link.handle_command(self.controller_id, command);
     }
 
+    fn send_connection_control_command(
+        &mut self,
+        link: &mut LocalLink,
+        connection_handle: u16,
+        command: Command,
+    ) {
+        self.pending_connection_controls
+            .entry(command.op_code())
+            .or_default()
+            .push_back(connection_handle);
+        self.send_hci_command(link, command);
+    }
+
+    fn complete_connection_control(
+        &mut self,
+        command_opcode: u16,
+        connection_handle: u16,
+    ) -> Option<u16> {
+        let (removed, empty) = {
+            let pending = self.pending_connection_controls.get_mut(&command_opcode)?;
+            let index = pending
+                .iter()
+                .position(|handle| *handle == connection_handle)?;
+            let removed = pending.remove(index);
+            (removed, pending.is_empty())
+        };
+        if empty {
+            self.pending_connection_controls.remove(&command_opcode);
+        }
+        removed
+    }
+
+    fn fail_next_connection_control(&mut self, command_opcode: u16) -> Option<u16> {
+        let (removed, empty) = {
+            let pending = self.pending_connection_controls.get_mut(&command_opcode)?;
+            let removed = pending.pop_front();
+            (removed, pending.is_empty())
+        };
+        if empty {
+            self.pending_connection_controls.remove(&command_opcode);
+        }
+        removed
+    }
+
     fn set_pending_classic_role(&mut self, peer_address: Address, role: u8) {
         if let Some((_, pending_role)) = self
             .pending_classic_roles
@@ -3032,6 +3373,12 @@ impl Device {
                     subrate_factor: 1,
                     continuation_number: 0,
                 },
+                data_length: None,
+                phy: LePhy {
+                    tx_phy: 1,
+                    rx_phy: 1,
+                },
+                rssi: None,
                 classic_mode: 0,
                 classic_interval: 0,
                 peer_le_features: None,
@@ -3106,20 +3453,166 @@ impl Device {
                     peripheral_latency,
                     supervision_timeout,
                 ),
+                HciPacket::Event(Event::LeMeta(LeMetaEvent::ConnectionUpdateComplete {
+                    status,
+                    connection_handle,
+                    connection_interval,
+                    peripheral_latency,
+                    supervision_timeout,
+                })) => {
+                    let parameters = self
+                        .le_connections
+                        .get(&connection_handle)
+                        .map(|connection| LeConnectionParameters {
+                            connection_interval,
+                            peripheral_latency,
+                            supervision_timeout,
+                            ..connection.parameters
+                        })
+                        .unwrap_or(LeConnectionParameters {
+                            connection_interval,
+                            peripheral_latency,
+                            supervision_timeout,
+                            subrate_factor: 1,
+                            continuation_number: 0,
+                        });
+                    if status == 0 {
+                        if let Some(connection) = self.le_connections.get_mut(&connection_handle) {
+                            connection.parameters = parameters;
+                        }
+                    }
+                    self.complete_connection_control(
+                        bumble_hci::HCI_LE_CONNECTION_UPDATE_COMMAND,
+                        connection_handle,
+                    );
+                    self.connection_control_events.push(
+                        LeConnectionControlEvent::ConnectionParametersUpdate {
+                            status,
+                            connection_handle,
+                            parameters,
+                        },
+                    );
+                }
                 HciPacket::Event(Event::LeMeta(LeMetaEvent::SubrateChange {
-                    status: 0,
+                    status,
                     connection_handle,
                     subrate_factor,
                     peripheral_latency,
                     continuation_number,
                     supervision_timeout,
                 })) => {
-                    if let Some(connection) = self.le_connections.get_mut(&connection_handle) {
-                        connection.parameters.subrate_factor = subrate_factor;
-                        connection.parameters.peripheral_latency = peripheral_latency;
-                        connection.parameters.continuation_number = continuation_number;
-                        connection.parameters.supervision_timeout = supervision_timeout;
+                    let parameters = self
+                        .le_connections
+                        .get(&connection_handle)
+                        .map(|connection| LeConnectionParameters {
+                            subrate_factor,
+                            peripheral_latency,
+                            continuation_number,
+                            supervision_timeout,
+                            ..connection.parameters
+                        })
+                        .unwrap_or(LeConnectionParameters {
+                            connection_interval: 0,
+                            peripheral_latency,
+                            supervision_timeout,
+                            subrate_factor,
+                            continuation_number,
+                        });
+                    if status == 0 {
+                        if let Some(connection) = self.le_connections.get_mut(&connection_handle) {
+                            connection.parameters = parameters;
+                        }
                     }
+                    self.complete_connection_control(
+                        bumble_hci::HCI_LE_SUBRATE_REQUEST_COMMAND,
+                        connection_handle,
+                    );
+                    self.connection_control_events.push(
+                        LeConnectionControlEvent::ConnectionParametersUpdate {
+                            status,
+                            connection_handle,
+                            parameters,
+                        },
+                    );
+                }
+                HciPacket::Event(Event::LeMeta(LeMetaEvent::ConnectionRateChange {
+                    status,
+                    connection_handle,
+                    connection_interval,
+                    subrate_factor,
+                    peripheral_latency,
+                    continuation_number,
+                    supervision_timeout,
+                })) => {
+                    let parameters = LeConnectionParameters {
+                        connection_interval,
+                        peripheral_latency,
+                        supervision_timeout,
+                        subrate_factor,
+                        continuation_number,
+                    };
+                    if status == 0 {
+                        if let Some(connection) = self.le_connections.get_mut(&connection_handle) {
+                            connection.parameters = parameters;
+                        }
+                    }
+                    self.complete_connection_control(
+                        bumble_hci::HCI_LE_CONNECTION_RATE_REQUEST_COMMAND,
+                        connection_handle,
+                    );
+                    self.connection_control_events.push(
+                        LeConnectionControlEvent::ConnectionParametersUpdate {
+                            status,
+                            connection_handle,
+                            parameters,
+                        },
+                    );
+                }
+                HciPacket::Event(Event::LeMeta(LeMetaEvent::DataLengthChange {
+                    connection_handle,
+                    max_tx_octets,
+                    max_tx_time,
+                    max_rx_octets,
+                    max_rx_time,
+                })) => {
+                    let data_length = LeDataLength {
+                        max_tx_octets,
+                        max_tx_time,
+                        max_rx_octets,
+                        max_rx_time,
+                    };
+                    if let Some(connection) = self.le_connections.get_mut(&connection_handle) {
+                        connection.data_length = Some(data_length);
+                    }
+                    self.connection_control_events.push(
+                        LeConnectionControlEvent::DataLengthChange {
+                            connection_handle,
+                            data_length,
+                        },
+                    );
+                }
+                HciPacket::Event(Event::LeMeta(LeMetaEvent::PhyUpdateComplete {
+                    status,
+                    connection_handle,
+                    tx_phy,
+                    rx_phy,
+                })) => {
+                    let phy = LePhy { tx_phy, rx_phy };
+                    if status == 0 {
+                        if let Some(connection) = self.le_connections.get_mut(&connection_handle) {
+                            connection.phy = phy;
+                        }
+                    }
+                    self.complete_connection_control(
+                        bumble_hci::HCI_LE_SET_PHY_COMMAND,
+                        connection_handle,
+                    );
+                    self.connection_control_events
+                        .push(LeConnectionControlEvent::PhyUpdate {
+                            status,
+                            connection_handle,
+                            phy,
+                        });
                 }
                 HciPacket::Event(Event::LeMeta(LeMetaEvent::ReadRemoteFeaturesComplete {
                     status,
@@ -3550,6 +4043,114 @@ impl Device {
                 }
                 HciPacket::Event(Event::CommandComplete {
                     command_opcode,
+                    return_parameters:
+                        bumble_hci::ReturnParameters::LeReadPhy {
+                            status,
+                            connection_handle,
+                            tx_phy,
+                            rx_phy,
+                        },
+                    ..
+                }) if command_opcode == bumble_hci::HCI_LE_READ_PHY_COMMAND => {
+                    let phy = LePhy { tx_phy, rx_phy };
+                    if status == 0 {
+                        if let Some(connection) = self.le_connections.get_mut(&connection_handle) {
+                            connection.phy = phy;
+                        }
+                    }
+                    self.complete_connection_control(command_opcode, connection_handle);
+                    self.connection_control_events
+                        .push(LeConnectionControlEvent::PhyRead {
+                            status,
+                            connection_handle,
+                            phy,
+                        });
+                }
+                HciPacket::Event(Event::CommandComplete {
+                    command_opcode,
+                    return_parameters: bumble_hci::ReturnParameters::Status { status },
+                    ..
+                }) if status != 0
+                    && matches!(
+                        command_opcode,
+                        bumble_hci::HCI_LE_READ_PHY_COMMAND
+                            | bumble_hci::HCI_LE_SET_DATA_LENGTH_COMMAND
+                            | bumble_hci::HCI_READ_RSSI_COMMAND
+                            | bumble_hci::HCI_LE_CONNECTION_UPDATE_COMMAND
+                            | bumble_hci::HCI_LE_CONNECTION_RATE_REQUEST_COMMAND
+                    ) =>
+                {
+                    let connection_handle = self.fail_next_connection_control(command_opcode);
+                    self.connection_control_events
+                        .push(LeConnectionControlEvent::CommandStatus {
+                            command_opcode,
+                            status,
+                            connection_handle,
+                        });
+                }
+                HciPacket::Event(Event::CommandComplete {
+                    command_opcode,
+                    return_parameters: bumble_hci::ReturnParameters::Raw { data },
+                    ..
+                }) if command_opcode == bumble_hci::HCI_LE_SET_DATA_LENGTH_COMMAND
+                    && data.len() >= 3 =>
+                {
+                    let status = data[0];
+                    let connection_handle = u16::from_le_bytes([data[1], data[2]]);
+                    self.complete_connection_control(command_opcode, connection_handle);
+                    self.connection_control_events.push(
+                        LeConnectionControlEvent::DataLengthRequestComplete {
+                            status,
+                            connection_handle,
+                        },
+                    );
+                }
+                HciPacket::Event(Event::CommandComplete {
+                    command_opcode,
+                    return_parameters:
+                        bumble_hci::ReturnParameters::ReadRssi {
+                            status,
+                            handle: connection_handle,
+                            rssi,
+                        },
+                    ..
+                }) if command_opcode == bumble_hci::HCI_READ_RSSI_COMMAND => {
+                    if status == 0 {
+                        if let Some(connection) = self.le_connections.get_mut(&connection_handle) {
+                            connection.rssi = Some(rssi);
+                        }
+                    }
+                    self.complete_connection_control(command_opcode, connection_handle);
+                    self.connection_control_events
+                        .push(LeConnectionControlEvent::RssiRead {
+                            status,
+                            connection_handle,
+                            rssi,
+                        });
+                }
+                HciPacket::Event(Event::CommandStatus {
+                    status,
+                    command_opcode,
+                    ..
+                }) if status != 0
+                    && matches!(
+                        command_opcode,
+                        bumble_hci::HCI_LE_CONNECTION_UPDATE_COMMAND
+                            | bumble_hci::HCI_LE_SET_PHY_COMMAND
+                            | bumble_hci::HCI_LE_SUBRATE_REQUEST_COMMAND
+                            | bumble_hci::HCI_LE_CONNECTION_RATE_REQUEST_COMMAND
+                    ) =>
+                {
+                    let connection_handle = self.fail_next_connection_control(command_opcode);
+                    self.connection_control_events
+                        .push(LeConnectionControlEvent::CommandStatus {
+                            command_opcode,
+                            status,
+                            connection_handle,
+                        });
+                }
+                HciPacket::Event(Event::CommandComplete {
+                    command_opcode,
                     return_parameters: bumble_hci::ReturnParameters::Raw { data },
                     ..
                 }) if command_opcode == bumble_hci::HCI_LE_SET_CIG_PARAMETERS_COMMAND => {
@@ -3578,6 +4179,10 @@ impl Device {
                         .retain(|sdu| sdu.connection_handle != connection_handle);
                     self.acl_assemblers.remove(&connection_handle);
                     self.acl_packet_queue.flush(connection_handle);
+                    self.pending_connection_controls.retain(|_, handles| {
+                        handles.retain(|handle| *handle != connection_handle);
+                        !handles.is_empty()
+                    });
                     self.le_connections.remove(&connection_handle);
                     self.le_credit_managers.remove(&connection_handle);
                     self.le_credit_errors

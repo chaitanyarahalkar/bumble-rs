@@ -98,6 +98,11 @@ pub enum ReturnParameters {
         status: u8,
         voice_setting: u16,
     },
+    ReadRssi {
+        status: u8,
+        handle: u16,
+        rssi: i8,
+    },
     ReadLoopbackMode {
         status: u8,
         loopback_mode: u8,
@@ -206,6 +211,7 @@ impl ReturnParameters {
             | ReturnParameters::ReadLeHostSupport { status, .. }
             | ReturnParameters::WriteAuthenticatedPayloadTimeout { status, .. }
             | ReturnParameters::ReadVoiceSetting { status, .. }
+            | ReturnParameters::ReadRssi { status, .. }
             | ReturnParameters::ReadLoopbackMode { status, .. }
             | ReturnParameters::LeReadSuggestedDefaultDataLength { status, .. }
             | ReturnParameters::LeReadMaximumDataLength { status, .. }
@@ -359,6 +365,15 @@ impl ReturnParameters {
             } => {
                 p.push(*status);
                 p.extend_from_slice(&voice_setting.to_le_bytes());
+            }
+            ReturnParameters::ReadRssi {
+                status,
+                handle,
+                rssi,
+            } => {
+                p.push(*status);
+                p.extend_from_slice(&handle.to_le_bytes());
+                p.push(*rssi as u8);
             }
             ReturnParameters::ReadLoopbackMode {
                 status,
@@ -546,6 +561,7 @@ impl ReturnParameters {
                 | HCI_READ_LE_HOST_SUPPORT_COMMAND
                 | HCI_WRITE_AUTHENTICATED_PAYLOAD_TIMEOUT_COMMAND
                 | HCI_READ_VOICE_SETTING_COMMAND
+                | HCI_READ_RSSI_COMMAND
                 | HCI_READ_LOOPBACK_MODE_COMMAND
                 | HCI_LE_READ_SUGGESTED_DEFAULT_DATA_LENGTH_COMMAND
                 | HCI_LE_READ_MAXIMUM_DATA_LENGTH_COMMAND
@@ -666,6 +682,11 @@ impl ReturnParameters {
             HCI_READ_VOICE_SETTING_COMMAND => ReturnParameters::ReadVoiceSetting {
                 status,
                 voice_setting: r.u16_le()?,
+            },
+            HCI_READ_RSSI_COMMAND => ReturnParameters::ReadRssi {
+                status,
+                handle: r.u16_le()?,
+                rssi: r.u8()? as i8,
             },
             HCI_READ_LOOPBACK_MODE_COMMAND => ReturnParameters::ReadLoopbackMode {
                 status,

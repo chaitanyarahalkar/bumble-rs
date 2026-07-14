@@ -201,6 +201,9 @@ pub struct Connection {
     /// The address this controller uses for the connection.
     pub self_address: Address,
     pub peer_address: Address,
+    /// Controller-side PHY state used by LE Read/Set PHY.
+    pub tx_phy: u8,
+    pub rx_phy: u8,
 }
 
 /// A synchronous SCO/eSCO logical link carried alongside a Classic ACL.
@@ -1409,13 +1412,18 @@ impl Controller {
                 tx_time,
             } => self.handle_set_data_length(op_code, connection_handle, tx_octets, tx_time),
             Command::LeReadPhy { connection_handle } => {
+                let (tx_phy, rx_phy) = self
+                    .connection_by_handle(connection_handle)
+                    .map_or((LE_1M_PHY, LE_1M_PHY), |connection| {
+                        (connection.tx_phy, connection.rx_phy)
+                    });
                 self.complete(
                     op_code,
                     ReturnParameters::LeReadPhy {
                         status: HCI_SUCCESS,
                         connection_handle,
-                        tx_phy: LE_1M_PHY,
-                        rx_phy: LE_1M_PHY,
+                        tx_phy,
+                        rx_phy,
                     },
                 );
             }
@@ -1972,24 +1980,27 @@ impl Controller {
     /// connection) report the resolved PHYs via an
     /// [`LeMetaEvent::PhyUpdateComplete`].
     fn handle_set_phy(&mut self, connection_handle: u16, all_phys: u8, tx_phys: u8, rx_phys: u8) {
-        self.host_queue.push(HciPacket::Event(Event::CommandStatus {
-            status: HCI_SUCCESS,
-            num_hci_command_packets: 1,
-            command_opcode: HCI_LE_SET_PHY_COMMAND,
-        }));
-        if self.connection_by_handle(connection_handle).is_some() {
-            // Bit 0 of all_phys = "no TX preference"; bit 1 = "no RX preference".
-            let tx_phy = resolve_phy(all_phys & 0x01 != 0, tx_phys);
-            let rx_phy = resolve_phy(all_phys & 0x02 != 0, rx_phys);
-            self.host_queue.push(HciPacket::Event(Event::LeMeta(
-                LeMetaEvent::PhyUpdateComplete {
-                    status: HCI_SUCCESS,
-                    connection_handle,
-                    tx_phy,
-                    rx_phy,
-                },
-            )));
-        }
+        // Bit 0 of all_phys = "no TX preference"; bit 1 = "no RX preference".
+        let tx_phy = resolve_phy(all_phys & 0x01 != 0, tx_phys);
+        let rx_phy = resolve_phy(all_phys & 0x02 != 0, rx_phys);
+        self.command_status(HCI_LE_SET_PHY_COMMAND, HCI_SUCCESS);
+        let Some(connection) = self
+            .connections
+            .iter_mut()
+            .find(|connection| connection.handle == connection_handle)
+        else {
+            return;
+        };
+        connection.tx_phy = tx_phy;
+        connection.rx_phy = rx_phy;
+        self.host_queue.push(HciPacket::Event(Event::LeMeta(
+            LeMetaEvent::PhyUpdateComplete {
+                status: HCI_SUCCESS,
+                connection_handle,
+                tx_phy,
+                rx_phy,
+            },
+        )));
     }
 
     /// `LE_Enable_Encryption` (central): acknowledge with Command Status, send an
@@ -2574,6 +2585,8 @@ impl Controller {
             classic_allow_role_switch: allow_role_switch != 0,
             self_address: self.public_address.clone(),
             peer_address: bd_addr.clone(),
+            tx_phy: LE_1M_PHY,
+            rx_phy: LE_1M_PHY,
         });
         self.command_status(HCI_CREATE_CONNECTION_COMMAND, HCI_SUCCESS);
         let self_addr = self.public_address.clone();
@@ -2926,6 +2939,8 @@ impl Controller {
                     classic_allow_role_switch: self.classic_allow_role_switch,
                     self_address: self.public_address.clone(),
                     peer_address: sender_address.clone(),
+                    tx_phy: LE_1M_PHY,
+                    rx_phy: LE_1M_PHY,
                 });
                 self.host_queue
                     .push(HciPacket::Event(Event::ConnectionRequest {
@@ -3840,6 +3855,8 @@ impl Controller {
             classic_allow_role_switch: false,
             self_address,
             peer_address: link_peer_address,
+            tx_phy: LE_1M_PHY,
+            rx_phy: LE_1M_PHY,
         };
         self.push_connection_complete(
             &connection,
@@ -3872,6 +3889,8 @@ impl Controller {
             classic_allow_role_switch: false,
             self_address,
             peer_address: central_address,
+            tx_phy: LE_1M_PHY,
+            rx_phy: LE_1M_PHY,
         };
         self.push_connection_complete(
             &connection,

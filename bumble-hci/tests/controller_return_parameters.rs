@@ -103,6 +103,15 @@ fn classic_controller_information_returns_are_typed() {
         &[0, 0x60, 0],
     );
     round_trip(
+        HCI_READ_RSSI_COMMAND,
+        ReturnParameters::ReadRssi {
+            status: 0,
+            handle: 0x1234,
+            rssi: -55,
+        },
+        &[0, 0x34, 0x12, 0xC9],
+    );
+    round_trip(
         HCI_READ_LOOPBACK_MODE_COMMAND,
         ReturnParameters::ReadLoopbackMode {
             status: 0,
@@ -266,6 +275,7 @@ fn typed_errors_fall_back_to_status_and_truncation_is_rejected() {
         HCI_READ_LE_HOST_SUPPORT_COMMAND,
         HCI_WRITE_AUTHENTICATED_PAYLOAD_TIMEOUT_COMMAND,
         HCI_READ_VOICE_SETTING_COMMAND,
+        HCI_READ_RSSI_COMMAND,
         HCI_LE_READ_BUFFER_SIZE_V2_COMMAND,
         HCI_LE_READ_LOCAL_SUPPORTED_FEATURES_COMMAND,
         HCI_LE_READ_ALL_LOCAL_SUPPORTED_FEATURES_COMMAND,
