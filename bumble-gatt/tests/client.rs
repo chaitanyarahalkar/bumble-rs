@@ -5,11 +5,13 @@
 //! short and long reads, writes with and without response, and
 //! notify/indicate subscriptions end-to-end.
 
+use std::sync::{Arc, Mutex};
+
 use bumble::Uuid;
 use bumble_att::AttPdu;
 use bumble_gatt::{
-    properties, AttTransport, Characteristic, GattClient, GattError, GattServer, Service,
-    ServiceDefinition,
+    properties, AttRequestHandler, AttTransport, Characteristic, GattClient, GattError, GattServer,
+    Service, ServiceDefinition,
 };
 
 struct FailingTransport;
@@ -62,6 +64,32 @@ fn sample_server() -> GattServer {
             },
         ],
     }])
+}
+
+struct FailingCccdClear {
+    server: GattServer,
+    fail_clear: bool,
+}
+
+impl AttTransport for FailingCccdClear {
+    fn request(&mut self, request: &AttPdu) -> AttPdu {
+        self.server.handle_request(request)
+    }
+
+    fn try_request(&mut self, request: &AttPdu) -> Result<AttPdu, String> {
+        if self.fail_clear
+            && matches!(
+                request,
+                AttPdu::WriteRequest {
+                    attribute_handle: 8,
+                    attribute_value,
+                } if attribute_value == &[0, 0]
+            )
+        {
+            return Err("CCCD bearer failed".into());
+        }
+        Ok(self.server.handle_request(request))
+    }
 }
 
 #[test]
@@ -246,4 +274,187 @@ fn discovers_secondary_and_mixed_width_included_services() {
         .discover_secondary_service_by_uuid(&mut server, &custom)
         .unwrap();
     assert_eq!(secondary, [included[1].clone()]);
+}
+
+#[test]
+fn multiple_value_listeners_share_cccd_until_the_last_listener_leaves() {
+    let mut server = sample_server();
+    let mut client = GattClient::default();
+    assert_eq!(client.mtu(), 23);
+    let value_handle = 7;
+    let cccd_handle = 8;
+    let calls = Arc::new(Mutex::new(Vec::new()));
+
+    let first_calls = Arc::clone(&calls);
+    let first = client
+        .subscribe_with_listener(
+            &mut server,
+            value_handle,
+            cccd_handle,
+            false,
+            move |value| first_calls.lock().unwrap().push((1, value.to_vec())),
+        )
+        .unwrap();
+    let second_calls = Arc::clone(&calls);
+    let second = client
+        .subscribe_with_listener(
+            &mut server,
+            value_handle,
+            cccd_handle,
+            false,
+            move |value| second_calls.lock().unwrap().push((2, value.to_vec())),
+        )
+        .unwrap();
+    assert!(first < second);
+    assert!(client.is_subscribed(value_handle, false));
+    assert_eq!(client.subscription_listener_count(value_handle, false), 2);
+
+    assert!(client
+        .on_notification(&server.notify(value_handle, vec![0x10]))
+        .unwrap());
+    assert_eq!(
+        *calls.lock().unwrap(),
+        vec![(1, vec![0x10]), (2, vec![0x10])]
+    );
+    assert_eq!(client.cached_value(value_handle), Some(&[0x10][..]));
+
+    assert!(client
+        .unsubscribe_listener(&mut server, value_handle, cccd_handle, first, false)
+        .unwrap());
+    assert_eq!(client.subscription_listener_count(value_handle, false), 1);
+    assert_eq!(
+        client.read_value(&mut server, cccd_handle, false).unwrap(),
+        vec![0x01, 0x00]
+    );
+    assert!(client
+        .on_notification(&server.notify(value_handle, vec![0x20]))
+        .unwrap());
+    assert_eq!(
+        *calls.lock().unwrap(),
+        vec![(1, vec![0x10]), (2, vec![0x10]), (2, vec![0x20])]
+    );
+    assert!(!client
+        .unsubscribe_listener(&mut server, value_handle, cccd_handle, first, false)
+        .unwrap());
+
+    assert!(client
+        .unsubscribe_listener(&mut server, value_handle, cccd_handle, second, false)
+        .unwrap());
+    assert!(!client.is_subscribed(value_handle, false));
+    assert_eq!(
+        client.read_value(&mut server, cccd_handle, false).unwrap(),
+        vec![0x00, 0x00]
+    );
+    assert!(!client
+        .on_notification(&server.notify(value_handle, vec![0x30]))
+        .unwrap());
+    assert_eq!(client.cached_value(value_handle), Some(&[0x30][..]));
+}
+
+#[test]
+fn indication_callbacks_implicit_subscriptions_and_forced_cleanup_match_upstream() {
+    let mut server = sample_server();
+    let mut client = GattClient::new();
+    let value_handle = 7;
+    let cccd_handle = 8;
+    let calls = Arc::new(Mutex::new(Vec::new()));
+
+    let indication_calls = Arc::clone(&calls);
+    let indication = client
+        .subscribe_with_listener(&mut server, value_handle, cccd_handle, true, move |value| {
+            indication_calls.lock().unwrap().push(value.to_vec())
+        })
+        .unwrap();
+    assert!(client.is_subscribed(value_handle, true));
+    assert_eq!(
+        client
+            .on_indication(&server.indicate(value_handle, vec![0x44]))
+            .unwrap(),
+        AttPdu::HandleValueConfirmation
+    );
+    assert_eq!(*calls.lock().unwrap(), vec![vec![0x44]]);
+    assert!(client
+        .unsubscribe_listener(&mut server, value_handle, cccd_handle, indication, false,)
+        .unwrap());
+    assert!(!client.is_subscribed(value_handle, true));
+
+    client
+        .subscribe(&mut server, value_handle, cccd_handle, false)
+        .unwrap();
+    let notification_calls = Arc::clone(&calls);
+    let notification = client
+        .subscribe_with_listener(
+            &mut server,
+            value_handle,
+            cccd_handle,
+            false,
+            move |value| notification_calls.lock().unwrap().push(value.to_vec()),
+        )
+        .unwrap();
+    assert!(client
+        .unsubscribe_listener(&mut server, value_handle, cccd_handle, notification, false,)
+        .unwrap());
+    assert!(client.is_subscribed(value_handle, false));
+    assert_eq!(client.subscription_listener_count(value_handle, false), 0);
+    assert_eq!(
+        client.read_value(&mut server, cccd_handle, false).unwrap(),
+        vec![0x01, 0x00]
+    );
+    assert!(client
+        .unsubscribe_all(&mut server, value_handle, cccd_handle, false)
+        .unwrap());
+    assert!(!client
+        .unsubscribe_all(&mut server, value_handle, cccd_handle, false)
+        .unwrap());
+
+    client
+        .write_value(&mut server, cccd_handle, vec![0x01, 0x00], true)
+        .unwrap();
+    assert!(!client
+        .unsubscribe_all(&mut server, value_handle, cccd_handle, false)
+        .unwrap());
+    assert_eq!(
+        client.read_value(&mut server, cccd_handle, false).unwrap(),
+        vec![0x01, 0x00]
+    );
+    assert!(!client
+        .unsubscribe_all(&mut server, value_handle, cccd_handle, true)
+        .unwrap());
+    assert_eq!(
+        client.read_value(&mut server, cccd_handle, false).unwrap(),
+        vec![0x00, 0x00]
+    );
+}
+
+#[test]
+fn failed_last_listener_cleanup_preserves_state_for_retry() {
+    let mut transport = FailingCccdClear {
+        server: sample_server(),
+        fail_clear: true,
+    };
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let listener_calls = Arc::clone(&calls);
+    let mut client = GattClient::new();
+    let listener = client
+        .subscribe_with_listener(&mut transport, 7, 8, false, move |value| {
+            listener_calls.lock().unwrap().push(value.to_vec());
+        })
+        .unwrap();
+
+    assert_eq!(
+        client.unsubscribe_listener(&mut transport, 7, 8, listener, false),
+        Err(GattError::Transport("CCCD bearer failed".into()))
+    );
+    assert!(client.is_subscribed(7, false));
+    assert_eq!(client.subscription_listener_count(7, false), 1);
+    assert!(client
+        .on_notification(&transport.server.notify(7, vec![0x55]))
+        .unwrap());
+    assert_eq!(*calls.lock().unwrap(), vec![vec![0x55]]);
+
+    transport.fail_clear = false;
+    assert!(client
+        .unsubscribe_listener(&mut transport, 7, 8, listener, false)
+        .unwrap());
+    assert!(!client.is_subscribed(7, false));
 }

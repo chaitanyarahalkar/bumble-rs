@@ -114,13 +114,48 @@ pub struct DescriptorProxy {
     pub uuid: Uuid,
 }
 
+/// Stable identifier returned for a notification or indication listener.
+pub type GattValueListenerId = u64;
+
+type GattValueListener = Box<dyn FnMut(&[u8]) + Send + 'static>;
+
+#[derive(Default)]
+struct GattSubscription {
+    implicit_subscriber: bool,
+    listeners: BTreeMap<GattValueListenerId, GattValueListener>,
+}
+
 /// A synchronous GATT client.
-#[derive(Debug, Default)]
 pub struct GattClient {
     mtu: u16,
     cached_values: BTreeMap<u16, Vec<u8>>,
-    notification_subscribers: BTreeMap<u16, ()>,
-    indication_subscribers: BTreeMap<u16, ()>,
+    notification_subscribers: BTreeMap<u16, GattSubscription>,
+    indication_subscribers: BTreeMap<u16, GattSubscription>,
+    next_listener_id: GattValueListenerId,
+}
+
+impl std::fmt::Debug for GattClient {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("GattClient")
+            .field("mtu", &self.mtu)
+            .field("cached_values", &self.cached_values)
+            .field(
+                "notification_subscriber_handles",
+                &self.notification_subscribers.keys().collect::<Vec<_>>(),
+            )
+            .field(
+                "indication_subscriber_handles",
+                &self.indication_subscribers.keys().collect::<Vec<_>>(),
+            )
+            .finish()
+    }
+}
+
+impl Default for GattClient {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// Turn an ATT Error Response into a [`GattError`]; any other PDU passes
@@ -147,6 +182,7 @@ impl GattClient {
             cached_values: BTreeMap::new(),
             notification_subscribers: BTreeMap::new(),
             indication_subscribers: BTreeMap::new(),
+            next_listener_id: 1,
         }
     }
 
@@ -697,25 +733,161 @@ impl GattClient {
             CCCD_NOTIFICATION
         };
         self.write_value(t, cccd_handle, bits.to_le_bytes().to_vec(), true)?;
-        if indicate {
-            self.indication_subscribers.insert(value_handle, ());
+        let subscribers = if indicate {
+            &mut self.indication_subscribers
         } else {
-            self.notification_subscribers.insert(value_handle, ());
-        }
+            &mut self.notification_subscribers
+        };
+        subscribers
+            .entry(value_handle)
+            .or_default()
+            .implicit_subscriber = true;
         Ok(())
     }
 
-    /// Unsubscribe by clearing the CCCD.
+    /// Subscribe and register a callback for each received value. Multiple
+    /// listeners may share one characteristic subscription and are invoked in
+    /// listener-id order after the cache has been updated.
+    pub fn subscribe_with_listener(
+        &mut self,
+        t: &mut impl AttTransport,
+        value_handle: u16,
+        cccd_handle: u16,
+        indicate: bool,
+        listener: impl FnMut(&[u8]) + Send + 'static,
+    ) -> Result<GattValueListenerId> {
+        let bits = if indicate {
+            CCCD_INDICATION
+        } else {
+            CCCD_NOTIFICATION
+        };
+        self.write_value(t, cccd_handle, bits.to_le_bytes().to_vec(), true)?;
+        let listener_id = self.allocate_listener_id();
+        let subscribers = if indicate {
+            &mut self.indication_subscribers
+        } else {
+            &mut self.notification_subscribers
+        };
+        subscribers
+            .entry(value_handle)
+            .or_default()
+            .listeners
+            .insert(listener_id, Box::new(listener));
+        Ok(listener_id)
+    }
+
+    /// Unsubscribe every listener from this characteristic. If it is already
+    /// unsubscribed this is a no-op, matching upstream's default behavior.
     pub fn unsubscribe(
         &mut self,
         t: &mut impl AttTransport,
         value_handle: u16,
         cccd_handle: u16,
     ) -> Result<()> {
+        self.unsubscribe_all(t, value_handle, cccd_handle, false)?;
+        Ok(())
+    }
+
+    /// Remove every listener, optionally forcing the zero CCCD write even when
+    /// there was no local subscription state. Returns whether a subscription
+    /// was present.
+    pub fn unsubscribe_all(
+        &mut self,
+        t: &mut impl AttTransport,
+        value_handle: u16,
+        cccd_handle: u16,
+        force: bool,
+    ) -> Result<bool> {
+        let subscribed = self.notification_subscribers.contains_key(&value_handle)
+            || self.indication_subscribers.contains_key(&value_handle);
+        if !subscribed && !force {
+            return Ok(false);
+        }
         self.write_value(t, cccd_handle, 0u16.to_le_bytes().to_vec(), true)?;
         self.notification_subscribers.remove(&value_handle);
         self.indication_subscribers.remove(&value_handle);
-        Ok(())
+        Ok(subscribed)
+    }
+
+    /// Remove one callback. The CCCD is cleared only when this was the last
+    /// subscriber across notifications and indications. When `force` is true,
+    /// an already-unsubscribed characteristic still receives the zero write.
+    pub fn unsubscribe_listener(
+        &mut self,
+        t: &mut impl AttTransport,
+        value_handle: u16,
+        cccd_handle: u16,
+        listener_id: GattValueListenerId,
+        force: bool,
+    ) -> Result<bool> {
+        let notification_has_listener = self
+            .notification_subscribers
+            .get(&value_handle)
+            .is_some_and(|subscription| subscription.listeners.contains_key(&listener_id));
+        let indication_has_listener = self
+            .indication_subscribers
+            .get(&value_handle)
+            .is_some_and(|subscription| subscription.listeners.contains_key(&listener_id));
+        let removed = notification_has_listener || indication_has_listener;
+        if !removed && !force {
+            return Ok(false);
+        }
+
+        let notification_remains = self
+            .notification_subscribers
+            .get(&value_handle)
+            .is_some_and(|subscription| {
+                subscription.implicit_subscriber
+                    || subscription.listeners.keys().any(|id| *id != listener_id)
+            });
+        let indication_remains =
+            self.indication_subscribers
+                .get(&value_handle)
+                .is_some_and(|subscription| {
+                    subscription.implicit_subscriber
+                        || subscription.listeners.keys().any(|id| *id != listener_id)
+                });
+        if !notification_remains && !indication_remains {
+            self.write_value(t, cccd_handle, 0u16.to_le_bytes().to_vec(), true)?;
+        }
+
+        if notification_has_listener {
+            remove_subscription_listener(
+                &mut self.notification_subscribers,
+                value_handle,
+                listener_id,
+            );
+        }
+        if indication_has_listener {
+            remove_subscription_listener(
+                &mut self.indication_subscribers,
+                value_handle,
+                listener_id,
+            );
+        }
+        Ok(removed)
+    }
+
+    /// Whether the characteristic currently has a notification or indication
+    /// subscription of the selected kind.
+    pub fn is_subscribed(&self, value_handle: u16, indicate: bool) -> bool {
+        if indicate {
+            self.indication_subscribers.contains_key(&value_handle)
+        } else {
+            self.notification_subscribers.contains_key(&value_handle)
+        }
+    }
+
+    /// Number of explicit callbacks registered for the selected subscription.
+    pub fn subscription_listener_count(&self, value_handle: u16, indicate: bool) -> usize {
+        let subscribers = if indicate {
+            &self.indication_subscribers
+        } else {
+            &self.notification_subscribers
+        };
+        subscribers
+            .get(&value_handle)
+            .map_or(0, |subscription| subscription.listeners.len())
     }
 
     /// Handle an incoming Handle Value Notification: cache the value. Returns
@@ -726,9 +898,15 @@ impl GattClient {
                 attribute_handle,
                 attribute_value,
             } => {
-                let subscribed = self.notification_subscribers.contains_key(attribute_handle);
                 self.cached_values
                     .insert(*attribute_handle, attribute_value.clone());
+                let subscribed = self.notification_subscribers.contains_key(attribute_handle);
+                if let Some(subscription) = self.notification_subscribers.get_mut(attribute_handle)
+                {
+                    for listener in subscription.listeners.values_mut() {
+                        listener(attribute_value);
+                    }
+                }
                 Ok(subscribed)
             }
             other => Err(GattError::Protocol(format!(
@@ -747,6 +925,11 @@ impl GattClient {
             } => {
                 self.cached_values
                     .insert(*attribute_handle, attribute_value.clone());
+                if let Some(subscription) = self.indication_subscribers.get_mut(attribute_handle) {
+                    for listener in subscription.listeners.values_mut() {
+                        listener(attribute_value);
+                    }
+                }
                 Ok(AttPdu::HandleValueConfirmation)
             }
             other => Err(GattError::Protocol(format!(
@@ -759,6 +942,36 @@ impl GattClient {
     /// indication).
     pub fn cached_value(&self, handle: u16) -> Option<&[u8]> {
         self.cached_values.get(&handle).map(Vec::as_slice)
+    }
+
+    fn allocate_listener_id(&mut self) -> GattValueListenerId {
+        let mut listener_id = self.next_listener_id;
+        while self
+            .notification_subscribers
+            .values()
+            .chain(self.indication_subscribers.values())
+            .any(|subscription| subscription.listeners.contains_key(&listener_id))
+        {
+            listener_id = listener_id.wrapping_add(1).max(1);
+        }
+        self.next_listener_id = listener_id.wrapping_add(1).max(1);
+        listener_id
+    }
+}
+
+fn remove_subscription_listener(
+    subscribers: &mut BTreeMap<u16, GattSubscription>,
+    value_handle: u16,
+    listener_id: GattValueListenerId,
+) {
+    let remove_subscription = if let Some(subscription) = subscribers.get_mut(&value_handle) {
+        subscription.listeners.remove(&listener_id);
+        !subscription.implicit_subscriber && subscription.listeners.is_empty()
+    } else {
+        false
+    };
+    if remove_subscription {
+        subscribers.remove(&value_handle);
     }
 }
 

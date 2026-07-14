@@ -125,6 +125,7 @@ crate whose behavior is verified against the upstream Python.
 | 149. Complete Classic LMP codec and catalog | `bumble-controller::lmp` | ✅ 88 open opcodes + all 18 registered packet classes + strict byte round trips green |
 | 150. Complete common LE connection-control conveniences | `bumble-hci` / `bumble-host` | ✅ update/rate/subrate, data length, PHY, RSSI, defaults, state, and correlated completion journal green |
 | 151. Typed Device lifecycle listeners | `bumble-host` | ✅ ordered journal/listeners + connection failures + non-destructive disconnection failures green |
+| 152. Multi-listener GATT subscriptions | `bumble-gatt` | ✅ ordered notify/indicate callbacks + last-subscriber/forced CCCD cleanup green |
 | 103+. Repository completion audit and remaining gaps | workspace | in progress |
 
 The LE lifecycle is now complete end-to-end through library APIs: **connect →
@@ -195,8 +196,8 @@ size, to convey remaining surface.
 | Upstream (LOC) | Rust crate | Status | Notes |
 |---|---|---|---|
 | `att.py` (1.1k) | `bumble-att` | ✅ | Complete typed catalog for every upstream `ATT_PDU` subclass: discovery, MTU, Read/Blob/Multiple/Multiple Variable/By Type/By Group, Write/Command/Signed, Prepare/Execute Write, notifications/indications, and confirmation. Signed Write separates value/counter/MAC, computes the CSRK AES-CMAC, and provides monotonic signer/verifier state. All added forms are Python-oracle or independent CMAC-vector pinned; variable tuples and handle sets add safe truncation/shape checks. |
-| `gatt.py` (0.6k), `gatt_server.py` (1.2k) | `bumble-gatt` | 🟡 | Attribute DB, primary/secondary services, include declarations, characteristic descriptors, automatic CCCDs, explicit access/security permissions, bearer-aware dynamic read/write callbacks, primary discovery, read/write/notify, Find_Information/Find_By_Type_Value, MTU-sized Read/Blob, fixed + variable Read Multiple, atomic Prepare/Execute Write with cancel/rollback, and authenticated signed-write client/server handling with replay protection. Deferred: the async bearer/event convenience layer. |
-| `gatt_client.py` (1.2k) | `bumble-gatt` | 🟡 | **`GattClient` (slice 18)**: primary/secondary/included service, characteristic, and descriptor discovery; reads (with long-read via Read_Blob); writes (with and without response); and notify/indicate subscriptions (CCCD write + notification/indication handling), over an `AttTransport`. Included-service discovery resolves both compact 16-bit and readback-based 128-bit declarations. Deferred: async bearer/event listeners. |
+| `gatt.py` (0.6k), `gatt_server.py` (1.2k) | `bumble-gatt` | 🟡 | Attribute DB, primary/secondary services, include declarations, characteristic descriptors, automatic CCCDs, explicit access/security permissions, bearer-aware dynamic read/write callbacks, primary discovery, read/write/notify, Find_Information/Find_By_Type_Value, MTU-sized Read/Blob, fixed + variable Read Multiple, atomic Prepare/Execute Write with cancel/rollback, and authenticated signed-write client/server handling with replay protection. Deferred: the async bearer convenience layer. |
+| `gatt_client.py` (1.2k) | `bumble-gatt` | 🟡 | **`GattClient` (slices 18/152)**: primary/secondary/included service, characteristic, and descriptor discovery; reads (with long-read via Read_Blob); writes (with and without response); and notify/indicate subscriptions over an `AttTransport`. Stable listener IDs support multiple ordered callbacks per value handle; cache updates precede delivery, removal preserves the CCCD while any implicit or explicit subscriber remains, last-subscriber removal clears it, and forced unsubscribe writes zero without local state. Included-service discovery resolves both compact 16-bit and readback-based 128-bit declarations. Deferred: async bearer scheduling. |
 | `gatt_adapters.py` (0.4k) | `bumble-gatt` | ✅ | Typed server/proxy adapters for delegated, packed, mapped, UTF-8, serializable, and enum values, including typed dynamic server state and cached proxy decoding. `PackedCodec` covers Python 3.14 portable and native-aligned `struct` modes, zero-repeat tail alignment, pointer-sized integers, binary16, and complex32/64, with host-Python oracle vectors. |
 
 ### Security (SMP + crypto)
@@ -3277,6 +3278,27 @@ the Rust `Device` already maintained:
   removal, connection failures for all three link families, discovery and
   pairing delivery, state visibility, and the failed-then-successful disconnect
   transition.
+
+## Slice 152 — what's here
+
+The GATT completion audit found that Rust subscriptions wrote CCCDs and cached
+values but reduced upstream's subscriber sets to a single marker. This slice
+ports the missing listener semantics without introducing an async runtime:
+
+- `subscribe_with_listener` returns stable `GattValueListenerId` values and
+  supports multiple callbacks per notification or indication handle. Delivery
+  is deterministic by listener ID and occurs after the value cache is updated.
+- Removing one callback leaves the CCCD enabled while another callback or an
+  implicit subscription remains. Removing the last subscriber clears the CCCD;
+  `unsubscribe_all(..., force = true)` also performs upstream's zero write when
+  no local subscription exists.
+- Notification packets report whether a matching subscription existed while
+  still caching unsolicited values. Indications always run matching callbacks
+  and return the mandatory Handle Value Confirmation.
+- `GattClient::default()` now uses the required ATT default MTU of 23, matching
+  `GattClient::new()` instead of deriving an invalid zero MTU. End-to-end tests
+  drive all listener, removal, implicit, indication, unsolicited-cache, and
+  forced-cleanup paths against a real `GattServer`.
 
 ## Acceptance
 

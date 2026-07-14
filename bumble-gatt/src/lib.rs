@@ -29,8 +29,9 @@
 //! talk directly in the crate's `client` integration test.
 //!
 //! Read Multiple/Variable, CSRK-authenticated signed commands with replay
-//! protection, and atomic Prepare/Execute queued writes are supported. The remaining architectural difference is the async
-//! bearer/event convenience layer.
+//! protection, atomic Prepare/Execute queued writes, and ordered multi-listener
+//! notification/indication delivery are supported. The remaining architectural
+//! difference is the async bearer convenience layer.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -42,7 +43,8 @@ mod adapters;
 pub use adapters::*;
 mod client;
 pub use client::{
-    AttTransport, CharacteristicProxy, DescriptorProxy, GattClient, GattError, ServiceProxy,
+    AttTransport, CharacteristicProxy, DescriptorProxy, GattClient, GattError, GattValueListenerId,
+    ServiceProxy,
 };
 
 /// GATT Primary Service declaration attribute type.
