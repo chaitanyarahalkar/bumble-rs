@@ -63,8 +63,9 @@
 //! - **CIS establishment** (LE Audio): `LE_Set_CIG_Parameters` allocates CIS
 //!   handles; `LE_Create_CIS` sends a `CisReq`; the peripheral raises an
 //!   `LE CIS Request`, and on `LE_Accept_CIS_Request` a `CisRsp`/`CisInd`
-//!   exchange yields `LE CIS Established` on both sides (timing params are
-//!   placeholders, as upstream).
+//!   exchange yields `LE CIS Established` on both sides. Rejection crosses the
+//!   same queued LL path and yields a failed establishment on the central
+//!   (timing params are placeholders, as upstream).
 //! - **CIS data**: Setup/Remove ISO Data Path retain directional state, and the
 //!   link routes HCI ISO fragments between peer CIS handles with completed-
 //!   packet flow events.
@@ -1495,6 +1496,10 @@ impl Controller {
             Command::LeAcceptCisRequest { connection_handle } => {
                 self.handle_accept_cis_request(connection_handle)
             }
+            Command::LeRejectCisRequest {
+                connection_handle,
+                reason,
+            } => self.handle_reject_cis_request(connection_handle, reason),
             Command::LeCreateBig {
                 big_handle,
                 advertising_handle,
@@ -2234,6 +2239,41 @@ impl Controller {
         self.command_status(HCI_LE_ACCEPT_CIS_REQUEST_COMMAND, HCI_SUCCESS);
     }
 
+    /// `LE_Reject_CIS_Request` (peripheral): discard the pending CIS, send an
+    /// extended LL rejection to the central, and complete synchronously.
+    fn handle_reject_cis_request(&mut self, connection_handle: u16, reason: u8) {
+        let Some(index) = self
+            .peripheral_cis_links
+            .iter()
+            .position(|link| link.handle == connection_handle)
+        else {
+            return self.ack(
+                HCI_LE_REJECT_CIS_REQUEST_COMMAND,
+                INVALID_COMMAND_PARAMETERS,
+            );
+        };
+        let link = &self.peripheral_cis_links[index];
+        let (Some(acl_self), Some(acl_peer)) = (link.acl_self.clone(), link.acl_peer.clone())
+        else {
+            return self.ack(
+                HCI_LE_REJECT_CIS_REQUEST_COMMAND,
+                INVALID_COMMAND_PARAMETERS,
+            );
+        };
+        let (cig_id, cis_id) = (link.cig_id, link.cis_id);
+        self.peripheral_cis_links.remove(index);
+        self.queue_ll(
+            acl_self,
+            acl_peer,
+            ll::ControlPdu::CisReject {
+                cig_id,
+                cis_id,
+                error_code: reason,
+            },
+        );
+        self.ack(HCI_LE_REJECT_CIS_REQUEST_COMMAND, HCI_SUCCESS);
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn handle_create_big(
         &mut self,
@@ -2526,6 +2566,37 @@ impl Controller {
                 transport_latency_p_to_c: 0,
                 phy_c_to_p: LE_1M_PHY,
                 phy_p_to_c: LE_1M_PHY,
+                nse: 0,
+                bn_c_to_p: 0,
+                bn_p_to_c: 0,
+                ft_c_to_p: 0,
+                ft_p_to_c: 0,
+                max_pdu_c_to_p: 0,
+                max_pdu_p_to_c: 0,
+                iso_interval: 0,
+            },
+        )));
+    }
+
+    fn on_le_cis_establishment_failed(&mut self, cig_id: u8, cis_id: u8, status: u8) {
+        let Some(connection_handle) = self
+            .central_cis_links
+            .iter()
+            .find(|link| link.cig_id == cig_id && link.cis_id == cis_id)
+            .map(|link| link.handle)
+        else {
+            return;
+        };
+        self.host_queue.push(HciPacket::Event(Event::LeMeta(
+            LeMetaEvent::CisEstablished {
+                status,
+                connection_handle,
+                cig_sync_delay: 0,
+                cis_sync_delay: 0,
+                transport_latency_c_to_p: 0,
+                transport_latency_p_to_c: 0,
+                phy_c_to_p: 0,
+                phy_p_to_c: 0,
                 nse: 0,
                 bn_c_to_p: 0,
                 bn_p_to_c: 0,
@@ -3363,6 +3434,11 @@ impl Controller {
             ll::ControlPdu::CisInd { cig_id, cis_id } => {
                 self.on_le_cis_established(cig_id, cis_id);
             }
+            ll::ControlPdu::CisReject {
+                cig_id,
+                cis_id,
+                error_code,
+            } => self.on_le_cis_establishment_failed(cig_id, cis_id, error_code),
             ll::ControlPdu::CisTerminateInd {
                 cig_id,
                 cis_id,

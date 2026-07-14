@@ -111,6 +111,7 @@ pub static COMMAND_SURFACE: &[(u16, Resp)] = &[
     (0x2064, Resp::Status),     // le_create_cis
     (0x2065, Resp::Data),       // le_remove_cig
     (0x2066, Resp::Status),     // le_accept_cis_request
+    (0x2067, Resp::StatusOnly), // le_reject_cis_request
     (0x206E, Resp::Data),       // le_setup_iso_data_path
     (0x206F, Resp::Data),       // le_remove_iso_data_path
     (0x2074, Resp::StatusOnly), // le_set_host_feature

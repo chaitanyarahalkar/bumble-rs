@@ -96,6 +96,12 @@ pub enum ControlPdu {
     CisRsp { cig_id: u8, cis_id: u8 },
     /// Connected-isochronous-stream indication (central → peripheral).
     CisInd { cig_id: u8, cis_id: u8 },
+    /// Extended rejection of a connected-isochronous-stream request.
+    CisReject {
+        cig_id: u8,
+        cis_id: u8,
+        error_code: u8,
+    },
     /// Connected-isochronous-stream termination indication.
     CisTerminateInd {
         cig_id: u8,
@@ -117,6 +123,7 @@ impl ControlPdu {
             Self::CisReq { .. } => ControlOpcode::CisReq,
             Self::CisRsp { .. } => ControlOpcode::CisRsp,
             Self::CisInd { .. } => ControlOpcode::CisInd,
+            Self::CisReject { .. } => ControlOpcode::RejectExtInd,
             Self::CisTerminateInd { .. } => ControlOpcode::CisTerminateInd,
             Self::TerminateInd { .. } => ControlOpcode::TerminateInd,
         }

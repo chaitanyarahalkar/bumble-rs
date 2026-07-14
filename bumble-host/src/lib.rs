@@ -694,6 +694,133 @@ pub struct CisRequestInfo {
     pub cis_id: u8,
 }
 
+/// Upstream defaults for one Connected Isochronous Stream.
+pub const DEFAULT_ISO_CIS_MAX_SDU: u16 = 251;
+pub const DEFAULT_ISO_CIS_RTN: u8 = 10;
+pub const DEFAULT_ISO_CIS_MAX_TRANSPORT_LATENCY: u16 = 100;
+
+/// Directional parameters for one CIS in a Connected Isochronous Group.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CisParameters {
+    pub cis_id: u8,
+    pub max_sdu_c_to_p: u16,
+    pub max_sdu_p_to_c: u16,
+    pub phy_c_to_p: u8,
+    pub phy_p_to_c: u8,
+    pub rtn_c_to_p: u8,
+    pub rtn_p_to_c: u8,
+}
+
+impl CisParameters {
+    /// Construct one bidirectional CIS using Bumble's defaults.
+    pub const fn new(cis_id: u8) -> Self {
+        Self {
+            cis_id,
+            max_sdu_c_to_p: DEFAULT_ISO_CIS_MAX_SDU,
+            max_sdu_p_to_c: DEFAULT_ISO_CIS_MAX_SDU,
+            phy_c_to_p: 0x02,
+            phy_p_to_c: 0x02,
+            rtn_c_to_p: DEFAULT_ISO_CIS_RTN,
+            rtn_p_to_c: DEFAULT_ISO_CIS_RTN,
+        }
+    }
+
+    /// Apply upstream's mandatory unidirectional normalization.
+    ///
+    /// Controllers reject a zero-sized direction when its PHY or retransmission
+    /// count remains nonzero. Python Bumble performs this in `__post_init__`;
+    /// Rust applies it again when the containing CIG is serialized so later
+    /// field updates cannot reintroduce an invalid combination.
+    pub const fn normalized(mut self) -> Self {
+        if self.max_sdu_c_to_p == 0 {
+            self.phy_c_to_p = 0;
+            self.rtn_c_to_p = 0;
+        }
+        if self.max_sdu_p_to_c == 0 {
+            self.phy_p_to_c = 0;
+            self.rtn_p_to_c = 0;
+        }
+        self
+    }
+}
+
+/// Complete parameters for `LE Set CIG Parameters`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CigParameters {
+    pub cig_id: u8,
+    pub cis_parameters: Vec<CisParameters>,
+    /// Central-to-peripheral SDU interval, in microseconds.
+    pub sdu_interval_c_to_p: u32,
+    /// Peripheral-to-central SDU interval, in microseconds.
+    pub sdu_interval_p_to_c: u32,
+    pub worst_case_sca: u8,
+    pub packing: u8,
+    pub framing: u8,
+    /// Central-to-peripheral maximum transport latency, in milliseconds.
+    pub max_transport_latency_c_to_p: u16,
+    /// Peripheral-to-central maximum transport latency, in milliseconds.
+    pub max_transport_latency_p_to_c: u16,
+}
+
+impl CigParameters {
+    pub fn new(
+        cig_id: u8,
+        cis_parameters: Vec<CisParameters>,
+        sdu_interval_c_to_p: u32,
+        sdu_interval_p_to_c: u32,
+    ) -> Self {
+        Self {
+            cig_id,
+            cis_parameters,
+            sdu_interval_c_to_p,
+            sdu_interval_p_to_c,
+            worst_case_sca: 0x00,
+            packing: 0x00,
+            framing: 0x00,
+            max_transport_latency_c_to_p: DEFAULT_ISO_CIS_MAX_TRANSPORT_LATENCY,
+            max_transport_latency_p_to_c: DEFAULT_ISO_CIS_MAX_TRANSPORT_LATENCY,
+        }
+    }
+}
+
+/// Timing and transport state reported by `LE CIS Established`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CisLinkInfo {
+    pub connection_handle: u16,
+    pub cig_sync_delay: u32,
+    pub cis_sync_delay: u32,
+    pub transport_latency_c_to_p: u32,
+    pub transport_latency_p_to_c: u32,
+    pub phy_c_to_p: u8,
+    pub phy_p_to_c: u8,
+    pub nse: u8,
+    pub bn_c_to_p: u8,
+    pub bn_p_to_c: u8,
+    pub ft_c_to_p: u8,
+    pub ft_p_to_c: u8,
+    pub max_pdu_c_to_p: u16,
+    pub max_pdu_p_to_c: u16,
+    pub iso_interval: u16,
+}
+
+/// Ordered completion journal for CIG/CIS commands and establishment events.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CisControlEvent {
+    CigConfigured {
+        status: u8,
+        cig_id: u8,
+        connection_handles: Vec<u16>,
+    },
+    CommandStatus {
+        command_opcode: u16,
+        status: u8,
+    },
+    Established {
+        status: u8,
+        link: CisLinkInfo,
+    },
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IsoSdu {
     pub connection_handle: u16,
@@ -964,7 +1091,8 @@ pub struct Device {
     synchronous_inbox: Vec<SynchronousDataPacket>,
     cis_requests: Vec<CisRequestInfo>,
     configured_cis_handles: Vec<u16>,
-    established_cis_handles: BTreeSet<u16>,
+    cis_links: BTreeMap<u16, CisLinkInfo>,
+    cis_control_events: Vec<CisControlEvent>,
     bigs: BTreeMap<u8, Vec<u16>>,
     big_syncs: BTreeMap<u8, Vec<u16>>,
     bis_directions: BTreeMap<u16, u8>,
@@ -1035,7 +1163,8 @@ impl Device {
             synchronous_inbox: Vec::new(),
             cis_requests: Vec::new(),
             configured_cis_handles: Vec::new(),
-            established_cis_handles: BTreeSet::new(),
+            cis_links: BTreeMap::new(),
+            cis_control_events: Vec::new(),
             bigs: BTreeMap::new(),
             big_syncs: BTreeMap::new(),
             bis_directions: BTreeMap::new(),
@@ -1106,7 +1235,8 @@ impl Device {
             synchronous_inbox: Vec::new(),
             cis_requests: Vec::new(),
             configured_cis_handles: Vec::new(),
-            established_cis_handles: BTreeSet::new(),
+            cis_links: BTreeMap::new(),
+            cis_control_events: Vec::new(),
             bigs: BTreeMap::new(),
             big_syncs: BTreeMap::new(),
             bis_directions: BTreeMap::new(),
@@ -2614,32 +2744,62 @@ impl Device {
         std::mem::take(&mut self.synchronous_inbox)
     }
 
-    /// Configure a CIG using Bumble's deterministic in-process defaults. The
-    /// allocated CIS handles become available through
-    /// [`Device::take_configured_cis_handles`] after [`pump`].
+    /// Configure a CIG using Bumble's default per-CIS QoS values. The allocated
+    /// CIS handles become available through [`Device::take_configured_cis_handles`]
+    /// after [`pump`].
     pub fn configure_cig(&mut self, link: &mut LocalLink, cig_id: u8, cis_ids: &[u8]) -> bool {
-        if cis_ids.is_empty() || cis_ids.len() > u8::MAX as usize {
+        let parameters = CigParameters::new(
+            cig_id,
+            cis_ids.iter().copied().map(CisParameters::new).collect(),
+            10_000,
+            10_000,
+        );
+        self.configure_cig_with_parameters(link, &parameters)
+    }
+
+    /// Configure a CIG with the complete upstream `CigParameters` surface.
+    pub fn configure_cig_with_parameters(
+        &mut self,
+        link: &mut LocalLink,
+        parameters: &CigParameters,
+    ) -> bool {
+        if parameters.cis_parameters.is_empty()
+            || parameters.cis_parameters.len() > u8::MAX as usize
+            || parameters.sdu_interval_c_to_p > 0x00FF_FFFF
+            || parameters.sdu_interval_p_to_c > 0x00FF_FFFF
+        {
             return false;
         }
-        let count = cis_ids.len();
+        let cis_parameters = parameters
+            .cis_parameters
+            .iter()
+            .copied()
+            .map(CisParameters::normalized)
+            .collect::<Vec<_>>();
         self.send_hci_command(
             link,
             Command::LeSetCigParameters {
-                cig_id,
-                sdu_interval_c_to_p: 10_000,
-                sdu_interval_p_to_c: 10_000,
-                worst_case_sca: 0,
-                packing: 0,
-                framing: 0,
-                max_transport_latency_c_to_p: 10,
-                max_transport_latency_p_to_c: 10,
-                cis_id: cis_ids.to_vec(),
-                max_sdu_c_to_p: vec![251; count],
-                max_sdu_p_to_c: vec![251; count],
-                phy_c_to_p: vec![1; count],
-                phy_p_to_c: vec![1; count],
-                rtn_c_to_p: vec![3; count],
-                rtn_p_to_c: vec![3; count],
+                cig_id: parameters.cig_id,
+                sdu_interval_c_to_p: parameters.sdu_interval_c_to_p,
+                sdu_interval_p_to_c: parameters.sdu_interval_p_to_c,
+                worst_case_sca: parameters.worst_case_sca,
+                packing: parameters.packing,
+                framing: parameters.framing,
+                max_transport_latency_c_to_p: parameters.max_transport_latency_c_to_p,
+                max_transport_latency_p_to_c: parameters.max_transport_latency_p_to_c,
+                cis_id: cis_parameters.iter().map(|cis| cis.cis_id).collect(),
+                max_sdu_c_to_p: cis_parameters
+                    .iter()
+                    .map(|cis| cis.max_sdu_c_to_p)
+                    .collect(),
+                max_sdu_p_to_c: cis_parameters
+                    .iter()
+                    .map(|cis| cis.max_sdu_p_to_c)
+                    .collect(),
+                phy_c_to_p: cis_parameters.iter().map(|cis| cis.phy_c_to_p).collect(),
+                phy_p_to_c: cis_parameters.iter().map(|cis| cis.phy_p_to_c).collect(),
+                rtn_c_to_p: cis_parameters.iter().map(|cis| cis.rtn_c_to_p).collect(),
+                rtn_p_to_c: cis_parameters.iter().map(|cis| cis.rtn_p_to_c).collect(),
             },
         );
         true
@@ -2662,14 +2822,25 @@ impl Device {
         acl_handle: u16,
         cis_handle: u16,
     ) -> bool {
-        if !self.le_connections.contains_key(&acl_handle) {
+        self.create_cis_pairs(link, &[(cis_handle, acl_handle)])
+    }
+
+    /// Establish one or more configured CIS handles in a single HCI command.
+    /// Each tuple is `(cis_connection_handle, acl_connection_handle)`.
+    pub fn create_cis_pairs(&mut self, link: &mut LocalLink, cis_acl_pairs: &[(u16, u16)]) -> bool {
+        if cis_acl_pairs.is_empty()
+            || cis_acl_pairs.len() > u8::MAX as usize
+            || cis_acl_pairs
+                .iter()
+                .any(|(_, acl_handle)| !self.le_connections.contains_key(acl_handle))
+        {
             return false;
         }
         self.send_hci_command(
             link,
             Command::LeCreateCis {
-                cis_connection_handle: vec![cis_handle],
-                acl_connection_handle: vec![acl_handle],
+                cis_connection_handle: cis_acl_pairs.iter().map(|pair| pair.0).collect(),
+                acl_connection_handle: cis_acl_pairs.iter().map(|pair| pair.1).collect(),
             },
         );
         true
@@ -2688,8 +2859,27 @@ impl Device {
         );
     }
 
+    /// Reject an incoming CIS request with the supplied HCI reason code.
+    pub fn reject_cis(&mut self, link: &mut LocalLink, cis_handle: u16, reason: u8) {
+        self.send_hci_command(
+            link,
+            Command::LeRejectCisRequest {
+                connection_handle: cis_handle,
+                reason,
+            },
+        );
+    }
+
     pub fn established_cis_handles(&self) -> impl Iterator<Item = u16> + '_ {
-        self.established_cis_handles.iter().copied()
+        self.cis_links.keys().copied()
+    }
+
+    pub fn cis_link(&self, connection_handle: u16) -> Option<&CisLinkInfo> {
+        self.cis_links.get(&connection_handle)
+    }
+
+    pub fn take_cis_control_events(&mut self) -> Vec<CisControlEvent> {
+        std::mem::take(&mut self.cis_control_events)
     }
 
     /// Create a BIG attached to an active periodic advertising set. BIS handles
@@ -2813,7 +3003,7 @@ impl Device {
         iso_handle: u16,
         direction: u8,
     ) -> bool {
-        let established = self.established_cis_handles.contains(&iso_handle)
+        let established = self.cis_links.contains_key(&iso_handle)
             || self.bis_directions.get(&iso_handle) == Some(&direction);
         if !established || direction > 1 {
             return false;
@@ -2838,7 +3028,7 @@ impl Device {
         iso_handle: u16,
         directions: u8,
     ) -> bool {
-        let established = self.established_cis_handles.contains(&iso_handle)
+        let established = self.cis_links.contains_key(&iso_handle)
             || self.bis_directions.contains_key(&iso_handle);
         if !established || directions & !0x03 != 0 {
             return false;
@@ -2859,7 +3049,7 @@ impl Device {
     pub fn send_iso_sdu(&mut self, link: &mut LocalLink, iso_handle: u16, sdu: &[u8]) -> bool {
         const ISO_PACKET_LENGTH: usize = 960;
         const SDU_INFO_LENGTH: usize = 4;
-        let can_send = self.established_cis_handles.contains(&iso_handle)
+        let can_send = self.cis_links.contains_key(&iso_handle)
             || self.bis_directions.get(&iso_handle) == Some(&0);
         if !can_send || sdu.len() > 0x0FFF {
             return false;
@@ -4428,14 +4618,48 @@ impl Device {
                     cis_id,
                 }),
                 HciPacket::Event(Event::LeMeta(LeMetaEvent::CisEstablished {
-                    status: 0,
+                    status,
                     connection_handle,
-                    ..
+                    cig_sync_delay,
+                    cis_sync_delay,
+                    transport_latency_c_to_p,
+                    transport_latency_p_to_c,
+                    phy_c_to_p,
+                    phy_p_to_c,
+                    nse,
+                    bn_c_to_p,
+                    bn_p_to_c,
+                    ft_c_to_p,
+                    ft_p_to_c,
+                    max_pdu_c_to_p,
+                    max_pdu_p_to_c,
+                    iso_interval,
                 })) => {
-                    self.established_cis_handles.insert(connection_handle);
-                    self.iso_sequence_numbers
-                        .entry(connection_handle)
-                        .or_default();
+                    let link = CisLinkInfo {
+                        connection_handle,
+                        cig_sync_delay,
+                        cis_sync_delay,
+                        transport_latency_c_to_p,
+                        transport_latency_p_to_c,
+                        phy_c_to_p,
+                        phy_p_to_c,
+                        nse,
+                        bn_c_to_p,
+                        bn_p_to_c,
+                        ft_c_to_p,
+                        ft_p_to_c,
+                        max_pdu_c_to_p,
+                        max_pdu_p_to_c,
+                        iso_interval,
+                    };
+                    if status == 0 {
+                        self.cis_links.insert(connection_handle, link);
+                        self.iso_sequence_numbers
+                            .entry(connection_handle)
+                            .or_default();
+                    }
+                    self.cis_control_events
+                        .push(CisControlEvent::Established { status, link });
                 }
                 HciPacket::Event(Event::CommandComplete {
                     command_opcode,
@@ -4541,18 +4765,56 @@ impl Device {
                         connection_handle,
                     });
                 }
+                HciPacket::Event(Event::CommandStatus {
+                    status,
+                    command_opcode,
+                    ..
+                }) if matches!(
+                    command_opcode,
+                    bumble_hci::HCI_LE_CREATE_CIS_COMMAND
+                        | bumble_hci::HCI_LE_ACCEPT_CIS_REQUEST_COMMAND
+                ) =>
+                {
+                    self.cis_control_events
+                        .push(CisControlEvent::CommandStatus {
+                            command_opcode,
+                            status,
+                        });
+                }
+                HciPacket::Event(Event::CommandComplete {
+                    command_opcode,
+                    return_parameters: bumble_hci::ReturnParameters::Status { status },
+                    ..
+                }) if command_opcode == bumble_hci::HCI_LE_REJECT_CIS_REQUEST_COMMAND => {
+                    self.cis_control_events
+                        .push(CisControlEvent::CommandStatus {
+                            command_opcode,
+                            status,
+                        });
+                }
                 HciPacket::Event(Event::CommandComplete {
                     command_opcode,
                     return_parameters: bumble_hci::ReturnParameters::Raw { data },
                     ..
                 }) if command_opcode == bumble_hci::HCI_LE_SET_CIG_PARAMETERS_COMMAND => {
-                    if data.len() >= 3 && data[0] == 0 {
+                    if data.len() >= 3 {
+                        let status = data[0];
+                        let cig_id = data[1];
                         let count = usize::from(data[2]);
                         if data.len() == 3 + count * 2 {
-                            self.configured_cis_handles = data[3..]
+                            let connection_handles = data[3..]
                                 .chunks_exact(2)
                                 .map(|bytes| u16::from_le_bytes([bytes[0], bytes[1]]))
-                                .collect();
+                                .collect::<Vec<_>>();
+                            if status == 0 {
+                                self.configured_cis_handles = connection_handles.clone();
+                            }
+                            self.cis_control_events
+                                .push(CisControlEvent::CigConfigured {
+                                    status,
+                                    cig_id,
+                                    connection_handles,
+                                });
                         }
                     }
                 }
@@ -4563,7 +4825,7 @@ impl Device {
                 }) => {
                     let known_connection = self.le_connections.contains_key(&connection_handle)
                         || self.classic_connections.contains_key(&connection_handle)
-                        || self.established_cis_handles.contains(&connection_handle)
+                        || self.cis_links.contains_key(&connection_handle)
                         || self
                             .synchronous_connections
                             .iter()
@@ -4582,7 +4844,7 @@ impl Device {
                         .get(&connection_handle)
                         .map(|connection| connection.peer_address.clone());
                     self.encrypted_handles.remove(&connection_handle);
-                    self.established_cis_handles.remove(&connection_handle);
+                    self.cis_links.remove(&connection_handle);
                     self.iso_sequence_numbers.remove(&connection_handle);
                     self.iso_assemblers.remove(&connection_handle);
                     self.iso_inbox
