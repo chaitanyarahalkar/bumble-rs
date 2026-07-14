@@ -120,6 +120,7 @@ crate whose behavior is verified against the upstream Python.
 | 135. Broadcast ISO groups and streams | `bumble-controller` / `bumble-host` | ✅ BIGInfo + encrypted BIG sync + one-to-many BIS SDUs green |
 | 145. All-page local LE feature discovery | `bumble-hci` / `bumble-controller` / `bumble-transport` | ✅ 197th command + 248-byte return + preferred host reset path green |
 | 146. Complete controller data-return surface | `bumble-hci` / `bumble-controller` | ✅ all 31 data commands return upstream payloads; query-backed writes retain state |
+| 147. Complete software-controller configuration semantics | `bumble-controller` | ✅ all stateful upstream handlers explicit; legacy advertising/scan and pending-operation behavior green |
 | 103+. Repository completion audit and remaining gaps | workspace | in progress |
 
 The LE lifecycle is now complete end-to-end through library APIs: **connect →
@@ -169,12 +170,12 @@ size, to convey remaining surface.
 | `snoop.py` (0.3k) | `bumble-transport::snoop` | ✅ | Byte-exact BTSnoop and PCAP HCI-H4 writers, deterministic timestamp injection, direction/pseudo-header flags, file/pipe specification parsing, file-backed snoopers, and a transparent bidirectional `SnoopingTransport` wrapper. |
 | `decoder.py` (0.4k) | `bumble-codecs::g722` | ✅ | Stateful integer G.722 64 kbit/s lower/higher sub-band decoder, receive QMF, predictor adaptation, saturating arithmetic, signed PCM sample API, and little-endian byte output. The upstream sample's first 80-byte frame produces all 320 oracle PCM bytes exactly; split-frame decoding proves state continuity. |
 
-### HCI, controller & link — 🟡 HCI codec complete (full catalog, oracle-pinned); controller/link behavior partial
+### HCI, controller & link — 🟡 HCI codec and controller complete; link/LL behavior partial
 | Upstream (LOC) | Rust crate | Status | Notes |
 |---|---|---|---|
 | `hci.py` (8.3k) | `bumble-hci` | ✅ | **Full typed catalog: 197 command op codes + 81 event / LE-meta sub-event codes**, generated from upstream's declarative field specs by [`tools/hcigen`](bumble-hci/tools/hcigen/) and **byte-pinned against real Python Bumble** (321 oracle tests). Framing (Command/Event/ACL/SCO/ISO), `Command_Complete` with typed `ReturnParameters` including base/extended LMP pages and the 248-byte all-page LE feature catalog, the open-enum `Generic` tail, and upstream-equivalent ACL/L2CAP fragmentation/reassembly with PB-flag, length, continuation, handle, and overflow validation. Two phys-derived array commands and the two nested-report events are hand-written; everything else is generated. |
 | `vendor/{android,zephyr}/hci.py` | `bumble-hci::vendor` | ✅ | Android vendor-capability responses preserve all historical length prefixes; APCF, energy-info, A2DP-offload, and dynamic-buffer command/return payloads remain open where upstream does. Bluetooth Quality Reports decode every recognized report ID with signed radio metrics and opaque vendor tails. Zephyr read/write TX-power commands and return parameters preserve signed dBm values and open handle types. |
-| `controller.py` (2.8k) | `bumble-controller` | 🟡 | **Full command surface**: every command upstream's `controller.py` handles (93, via the generated [`command_surface`](bumble-controller/src/command_surface.rs) table) gets a reply of the matching HCI shape — all 31 data-return commands provide their upstream state/default payloads, config/set commands return Command Complete + SUCCESS, operations completing via a later event return Command Status, and commands upstream also doesn't handle receive the spec-correct "Unknown HCI Command". **Functionally simulated**: legacy, extended, and periodic LE advertising/scanning/synchronization; multi-set parameters/random addresses/fragmented data/scan responses; sync create/cancel/terminate, receive control, and PAST sync/set-info transfer over ACL; IRK resolving-list offload with identity-targeted RPA connections; ACL routing with PB/BC preservation and Number Of Completed Packets flow events; disconnection; stateful local-name, suggested-data-length, synchronous-flow-control, and LE/SSP host-feature reads/writes; per-connection data length, PHY, LE subrate, and Sniff/Active mode changes; and — via LL control-PDU exchange — **encryption start**, **remote-features**, and **CIS establishment**. CIG removal now returns and validates its identifier; CIS links retain Setup/Remove ISO data paths and route HCI ISO fragments with handle translation and completed-packet events. Also **classic (BR/EDR)** connection/name/base and extended feature-page exchange, accept-time and explicit role switching, and SCO/eSCO request/accept/reject/disconnect with synchronous-data routing. Upstream itself leaves LTK verification as a TODO and has no Classic-authentication or remote-version command handler; Rust retains those exact boundaries. |
+| `controller.py` (2.8k) | `bumble-controller` | ✅ | **Complete upstream command surface**: every one of the 93 generated handlers gets the matching Command Complete/Status shape; all 31 data commands provide their upstream state/default payloads; every stateful configuration handler retains its values; the ten remaining table fallbacks correspond exactly to upstream no-ops or TODO acknowledgements; and commands upstream also does not handle receive Unknown HCI Command. **Functionally simulated**: legacy, extended, and periodic LE advertising/scanning/synchronization; multi-set parameters/random addresses/fragmented data/scan responses; sync create/cancel/terminate, receive control, and PAST sync/set-info transfer over ACL; IRK resolving-list offload with identity-targeted RPA connections; ACL routing with PB/BC preservation and Number Of Completed Packets flow events; disconnection; event masks, Classic scan mode, default PHY, local name, suggested data length, synchronous flow control, and LE/SSP host features; per-connection data length, PHY, LE subrate, and Sniff/Active mode changes; and — via LL control-PDU exchange — **encryption start**, **remote features**, and **CIS establishment**. CIG removal validates its identifier; CIS links retain Setup/Remove ISO data paths and route HCI ISO fragments with handle translation and completed-packet events. Classic connection/name/base and extended feature-page exchange, accept-time and explicit role switching, and SCO/eSCO request/accept/reject/disconnect are live. Upstream's own LTK-verification TODO and absent Classic-authentication/remote-version handlers remain the boundary. |
 | `link.py` (0.15k) | `bumble-controller` | 🟡 | In-process **synchronous** `LocalLink` with LL-control, simplified LMP, ACL, and SCO/eSCO routing. Deferred: serialized over-the-air PDUs and async scheduling. |
 | `ll.py` (0.2k) | `bumble-controller` | 🟡 | Advertising/connection PDUs modeled as in-process structs, not serialized LL PDUs. Control PDUs (`EncReq`, `FeatureReq`/`PeripheralFeatureReq`/`FeatureRsp`, `TerminateInd`) are exchanged between controllers via `LocalLink::pump_ll` to drive the encryption-start, remote-features, and CIS-establishment (`CisReq`/`CisRsp`/`CisInd`) flows. |
 | `host.py` (2.1k) | `bumble-host` | 🟡 | `Device` glue (ATT↔L2CAP↔ACL sequencing + pairing transport), controller-buffer-sized outbound ACL fragmentation, per-connection inbound reassembly, a global/per-handle `DataPacketQueue` driven by Number Of Completed Packets, handle-indexed LE and Classic connection ownership, live LE signaling/credit-channel managers, LE/Classic encryption and remote-feature completion routing, resolving-list programming, Classic and LE L2CAP, Channel Sounding completion routing, plus connected and broadcast ISO audio APIs. The host pump advances LL, LMP, periodic-sync-transfer, BIG termination, and HCI/ACL traffic. Deferred: the broader host listener/convenience surface. |
@@ -3163,6 +3164,27 @@ concrete:
   defaults, write/read state transitions, invalid values, and successful plus
   repeated CIG removal. The generated command-surface documentation now records
   that every Data entry has a real payload rather than a documented stub.
+
+## Slice 147 — what's here
+
+With the data surface complete, the remaining controller audit isolated the
+configuration commands that upstream retains but Rust had treated as stateless
+successes. This slice closes that final software-controller gap:
+
+- Classic, page-2, and LE event masks; Classic scan mode; default PHY; legacy
+  advertising parameters and scan-response data; legacy scan parameters; and
+  duplicate filtering are retained and exposed through typed controller state.
+- Legacy advertising now uses the configured public/random address, advertising
+  event type, directed peer, and scan-response payload. Active legacy scans emit
+  the matching advertising plus scan-response reports, while parameter changes
+  during an enabled scan return Command Disallowed without corrupting state.
+- Legacy and extended connection starts now reject a second pending procedure
+  instead of silently replacing the first. Focused tests cover the stored
+  configuration, emitted PDUs/reports, validation, and pending-operation guard.
+
+The generated 93-handler audit now leaves only ten fallback commands, all of
+which are deliberate no-ops or TODO acknowledgements in upstream
+`controller.py`; every stateful or data-bearing handler is explicit in Rust.
 
 ## Acceptance
 

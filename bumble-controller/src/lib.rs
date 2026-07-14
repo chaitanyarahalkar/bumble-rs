@@ -312,6 +312,37 @@ struct ResolvingListEntry {
     local_irk: [u8; 16],
 }
 
+/// Legacy LE advertising parameters retained by the software controller.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LegacyAdvertisingParameters {
+    pub advertising_interval_min: u16,
+    pub advertising_interval_max: u16,
+    pub advertising_type: u8,
+    pub own_address_type: u8,
+    pub peer_address_type: u8,
+    pub peer_address: Address,
+    pub advertising_channel_map: u8,
+    pub advertising_filter_policy: u8,
+}
+
+/// Legacy LE scan parameters retained by the software controller.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LeScanParameters {
+    pub le_scan_type: u8,
+    pub le_scan_interval: u16,
+    pub le_scan_window: u16,
+    pub own_address_type: u8,
+    pub scanning_filter_policy: u8,
+}
+
+/// Controller-wide default LE PHY preferences.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DefaultPhy {
+    pub all_phys: u8,
+    pub tx_phys: u8,
+    pub rx_phys: u8,
+}
+
 /// The subset of extended-advertising parameters that affects the in-process
 /// link. The full command remains available through `bumble-hci`; these fields
 /// are the ones upstream's software controller retains for packet emission.
@@ -484,8 +515,12 @@ pub struct Controller {
     public_address: Address,
     random_address: Address,
     advertising_data: Vec<u8>,
+    scan_response_data: Vec<u8>,
+    legacy_advertising_parameters: LegacyAdvertisingParameters,
     advertising_enabled: bool,
     scanning_enabled: bool,
+    scan_parameters: LeScanParameters,
+    filter_duplicates: bool,
     extended_scanning: bool,
     extended_advertising_sets: Vec<ExtendedAdvertisingSet>,
     pending_periodic_sync: Option<PendingPeriodicSync>,
@@ -505,6 +540,11 @@ pub struct Controller {
     lmp_feature_pages: [[u8; 8]; 4],
     suggested_max_data_octets: u16,
     suggested_max_data_time: u16,
+    event_mask: [u8; 8],
+    event_mask_page_2: [u8; 8],
+    le_event_mask: [u8; 8],
+    classic_scan_enable: u8,
+    default_phy: DefaultPhy,
     host_queue: Vec<HciPacket>,
     /// LL control PDUs waiting to be delivered to a peer controller, as
     /// `(sender_self_address, receiver_peer_address, pdu)`. Drained by the link.
@@ -539,8 +579,27 @@ impl Controller {
             public_address,
             random_address: Address::from_bytes([0; 6], AddressType::RANDOM_DEVICE),
             advertising_data: Vec::new(),
+            scan_response_data: Vec::new(),
+            legacy_advertising_parameters: LegacyAdvertisingParameters {
+                advertising_interval_min: 0,
+                advertising_interval_max: 0,
+                advertising_type: ADV_IND,
+                own_address_type: ADDRESS_TYPE_RANDOM,
+                peer_address_type: ADDRESS_TYPE_PUBLIC,
+                peer_address: Address::from_bytes([0; 6], AddressType::PUBLIC_DEVICE),
+                advertising_channel_map: 0,
+                advertising_filter_policy: 0,
+            },
             advertising_enabled: false,
             scanning_enabled: false,
+            scan_parameters: LeScanParameters {
+                le_scan_type: 0,
+                le_scan_interval: 0x0010,
+                le_scan_window: 0x0010,
+                own_address_type: ADDRESS_TYPE_RANDOM,
+                scanning_filter_policy: 0,
+            },
+            filter_duplicates: false,
             extended_scanning: false,
             extended_advertising_sets: Vec::new(),
             pending_periodic_sync: None,
@@ -558,6 +617,15 @@ impl Controller {
             lmp_feature_pages: LMP_FEATURE_PAGES,
             suggested_max_data_octets: SUGGESTED_MAX_DATA_OCTETS,
             suggested_max_data_time: SUGGESTED_MAX_DATA_TIME,
+            event_mask: [0; 8],
+            event_mask_page_2: [0; 8],
+            le_event_mask: [0; 8],
+            classic_scan_enable: 0,
+            default_phy: DefaultPhy {
+                all_phys: 0,
+                tx_phys: 0,
+                rx_phys: 0,
+            },
             host_queue: Vec::new(),
             outbound_ll: Vec::new(),
             central_cis_links: Vec::new(),
@@ -599,6 +667,42 @@ impl Controller {
         self.scanning_enabled
     }
 
+    pub fn event_mask(&self) -> [u8; 8] {
+        self.event_mask
+    }
+
+    pub fn event_mask_page_2(&self) -> [u8; 8] {
+        self.event_mask_page_2
+    }
+
+    pub fn le_event_mask(&self) -> [u8; 8] {
+        self.le_event_mask
+    }
+
+    pub fn classic_scan_enable(&self) -> u8 {
+        self.classic_scan_enable
+    }
+
+    pub fn legacy_advertising_parameters(&self) -> &LegacyAdvertisingParameters {
+        &self.legacy_advertising_parameters
+    }
+
+    pub fn scan_response_data(&self) -> &[u8] {
+        &self.scan_response_data
+    }
+
+    pub fn scan_parameters(&self) -> LeScanParameters {
+        self.scan_parameters
+    }
+
+    pub fn filter_duplicates(&self) -> bool {
+        self.filter_duplicates
+    }
+
+    pub fn default_phy(&self) -> DefaultPhy {
+        self.default_phy
+    }
+
     /// Handle a single HCI command from the host, updating state and queuing a
     /// Command Complete acknowledgement.
     pub fn handle_command(&mut self, command: Command) {
@@ -609,6 +713,12 @@ impl Controller {
                 self.scanning_enabled = false;
                 self.extended_scanning = false;
                 self.advertising_data.clear();
+                self.scan_response_data.clear();
+                self.filter_duplicates = false;
+                self.event_mask = [0; 8];
+                self.event_mask_page_2 = [0; 8];
+                self.le_event_mask = [0; 8];
+                self.classic_scan_enable = 0;
                 self.extended_advertising_sets.clear();
                 self.pending_periodic_sync = None;
                 self.periodic_syncs.clear();
@@ -627,12 +737,31 @@ impl Controller {
                 self.rpa_timeout = 900;
                 self.ack(op_code, HCI_SUCCESS);
             }
+            Command::SetEventMask { event_mask } => {
+                self.event_mask = event_mask;
+                self.ack(op_code, HCI_SUCCESS);
+            }
+            Command::SetEventMaskPage2 { event_mask_page_2 } => {
+                self.event_mask_page_2 = event_mask_page_2;
+                self.ack(op_code, HCI_SUCCESS);
+            }
+            Command::LeSetEventMask { le_event_mask } => {
+                self.le_event_mask = le_event_mask;
+                self.ack(op_code, HCI_SUCCESS);
+            }
+            Command::WriteScanEnable { scan_enable } => {
+                self.classic_scan_enable = scan_enable;
+                self.ack(op_code, HCI_SUCCESS);
+            }
             Command::LeCreateConnection {
                 peer_address,
                 peer_address_type,
                 own_address_type,
                 ..
             } => {
+                if self.initiating.is_some() {
+                    return self.command_status(op_code, COMMAND_DISALLOWED_ERROR);
+                }
                 self.initiating = Some(PendingConnection {
                     peer_address,
                     peer_address_type,
@@ -650,16 +779,66 @@ impl Controller {
                 self.random_address = random_address;
                 self.ack(op_code, HCI_SUCCESS);
             }
+            Command::LeSetAdvertisingParameters {
+                advertising_interval_min,
+                advertising_interval_max,
+                advertising_type,
+                own_address_type,
+                peer_address_type,
+                peer_address,
+                advertising_channel_map,
+                advertising_filter_policy,
+            } => {
+                self.legacy_advertising_parameters = LegacyAdvertisingParameters {
+                    advertising_interval_min,
+                    advertising_interval_max,
+                    advertising_type,
+                    own_address_type,
+                    peer_address_type,
+                    peer_address,
+                    advertising_channel_map,
+                    advertising_filter_policy,
+                };
+                self.ack(op_code, HCI_SUCCESS);
+            }
             Command::LeSetAdvertisingData { advertising_data } => {
                 self.advertising_data = advertising_data;
+                self.ack(op_code, HCI_SUCCESS);
+            }
+            Command::LeSetScanResponseData { scan_response_data } => {
+                self.scan_response_data = scan_response_data;
                 self.ack(op_code, HCI_SUCCESS);
             }
             Command::LeSetAdvertisingEnable { advertising_enable } => {
                 self.advertising_enabled = advertising_enable != 0;
                 self.ack(op_code, HCI_SUCCESS);
             }
-            Command::LeSetScanEnable { le_scan_enable, .. } => {
+            Command::LeSetScanParameters {
+                le_scan_type,
+                le_scan_interval,
+                le_scan_window,
+                own_address_type,
+                scanning_filter_policy,
+            } => {
+                if self.scanning_enabled {
+                    self.ack(op_code, COMMAND_DISALLOWED_ERROR);
+                } else {
+                    self.scan_parameters = LeScanParameters {
+                        le_scan_type,
+                        le_scan_interval,
+                        le_scan_window,
+                        own_address_type,
+                        scanning_filter_policy,
+                    };
+                    self.ack(op_code, HCI_SUCCESS);
+                }
+            }
+            Command::LeSetScanEnable {
+                le_scan_enable,
+                filter_duplicates,
+            } => {
                 self.scanning_enabled = le_scan_enable != 0;
+                self.filter_duplicates = filter_duplicates != 0;
                 self.extended_scanning = false;
                 self.ack(op_code, HCI_SUCCESS);
             }
@@ -802,6 +981,9 @@ impl Controller {
                 own_address_type,
                 ..
             } => {
+                if self.initiating.is_some() {
+                    return self.command_status(op_code, COMMAND_DISALLOWED_ERROR);
+                }
                 self.initiating = Some(PendingConnection {
                     peer_address,
                     peer_address_type,
@@ -1126,6 +1308,18 @@ impl Controller {
             } => {
                 self.suggested_max_data_octets = suggested_max_tx_octets;
                 self.suggested_max_data_time = suggested_max_tx_time;
+                self.ack(op_code, HCI_SUCCESS);
+            }
+            Command::LeSetDefaultPhy {
+                all_phys,
+                tx_phys,
+                rx_phys,
+            } => {
+                self.default_phy = DefaultPhy {
+                    all_phys,
+                    tx_phys,
+                    rx_phys,
+                };
                 self.ack(op_code, HCI_SUCCESS);
             }
             Command::LeReadMaximumDataLength => {
@@ -3136,19 +3330,34 @@ impl Controller {
         if !self.advertising_enabled {
             return None;
         }
+        let parameters = &self.legacy_advertising_parameters;
+        let (address, address_type) = if parameters.own_address_type == ADDRESS_TYPE_PUBLIC {
+            (self.public_address.clone(), ADDRESS_TYPE_PUBLIC)
+        } else {
+            (self.random_address.clone(), ADDRESS_TYPE_RANDOM)
+        };
+        let event_type = match parameters.advertising_type {
+            0 => ADV_IND,
+            1 | 4 => 0x01,
+            2 => 0x02,
+            3 => 0x03,
+            _ => ADV_IND,
+        };
+        let direct_address =
+            matches!(parameters.advertising_type, 1 | 4).then(|| parameters.peer_address.clone());
         Some(AdvertisingPdu {
-            event_type: ADV_IND,
-            address_type: ADDRESS_TYPE_RANDOM,
-            address: self.random_address.clone(),
+            event_type,
+            address_type,
+            address,
             data: self.advertising_data.clone(),
-            scan_response_data: Vec::new(),
+            scan_response_data: self.scan_response_data.clone(),
             extended: false,
             advertising_handle: 0,
             advertising_sid: 0,
             primary_phy: LE_1M_PHY,
             secondary_phy: LE_1M_PHY,
             tx_power: 0,
-            direct_address: None,
+            direct_address,
         })
     }
 
@@ -3434,16 +3643,24 @@ impl Controller {
                 self.push_extended_advertising_report(pdu, true);
             }
         } else {
+            let mut reports = vec![AdvertisingReport {
+                event_type: pdu.event_type,
+                address_type: pdu.address_type,
+                address: pdu.address.clone(),
+                data: pdu.data.clone(),
+                rssi: DEFAULT_RSSI,
+            }];
+            if self.scan_parameters.le_scan_type != 0 && !pdu.scan_response_data.is_empty() {
+                reports.push(AdvertisingReport {
+                    event_type: 0x04,
+                    address_type: pdu.address_type,
+                    address: pdu.address.clone(),
+                    data: pdu.scan_response_data.clone(),
+                    rssi: DEFAULT_RSSI,
+                });
+            }
             self.host_queue.push(HciPacket::Event(Event::LeMeta(
-                LeMetaEvent::AdvertisingReport {
-                    reports: vec![AdvertisingReport {
-                        event_type: pdu.event_type,
-                        address_type: pdu.address_type,
-                        address: pdu.address.clone(),
-                        data: pdu.data.clone(),
-                        rssi: DEFAULT_RSSI,
-                    }],
-                },
+                LeMetaEvent::AdvertisingReport { reports },
             )));
         }
     }
