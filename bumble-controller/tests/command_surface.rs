@@ -42,9 +42,7 @@ fn status_only_command_is_accepted() {
 }
 
 #[test]
-fn data_command_is_acknowledged() {
-    // Read_Local_Version_Information (0x1001): a data read the sim doesn't model;
-    // it is acknowledged SUCCESS (documented stub), never rejected.
+fn data_command_returns_its_typed_payload() {
     let mut c = ctrl();
     c.handle_command(Command::ReadLocalVersionInformation);
     match one_reply(&mut c) {
@@ -54,7 +52,17 @@ fn data_command_is_acknowledged() {
             ..
         }) => {
             assert_eq!(command_opcode, 0x1001);
-            assert_eq!(return_parameters.status(), Some(0));
+            assert_eq!(
+                return_parameters,
+                ReturnParameters::ReadLocalVersionInformation {
+                    status: 0,
+                    hci_version: 9,
+                    hci_subversion: 0,
+                    lmp_version: 9,
+                    company_identifier: 0xFFFF,
+                    lmp_subversion: 0,
+                }
+            );
         }
         other => panic!("expected Command Complete, got {other:?}"),
     }

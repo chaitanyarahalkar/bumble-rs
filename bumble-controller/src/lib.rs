@@ -42,11 +42,11 @@
 //! Every command upstream's `controller.py` handles gets a well-formed reply of
 //! the matching HCI shape, driven by the generated [`command_surface`] table:
 //! configuration/"set" commands are acknowledged with Command Complete + SUCCESS
-//! (state is retained for the functionally modeled commands), read commands the
-//! sim can't model are acknowledged SUCCESS without a synthesized payload, and operations that
-//! complete via a later event (connect, encryption start, remote-features…) are
-//! answered with Command Status. A command upstream *also* doesn't handle gets
-//! the spec-correct "Unknown HCI Command" — an honest report, not a fake success.
+//! (state is retained for the functionally modeled commands), every data command
+//! returns its upstream state/default payload, and operations that complete via a
+//! later event (connect, encryption start, remote-features…) are answered with
+//! Command Status. A command upstream *also* doesn't handle gets the spec-correct
+//! "Unknown HCI Command" — an honest report, not a fake success.
 //!
 //! ## LL control-PDU exchange
 //!
@@ -153,6 +153,11 @@ const SUGGESTED_MAX_DATA_OCTETS: u16 = 27;
 const SUGGESTED_MAX_DATA_TIME: u16 = 0x0148;
 const MAX_ADVERTISING_DATA_LENGTH: u16 = 0x0672;
 const NUM_SUPPORTED_ADVERTISING_SETS: u8 = 0xF0;
+const FILTER_ACCEPT_LIST_SIZE: u8 = 8;
+const RESOLVING_LIST_SIZE: u8 = 8;
+const LE_STATES: [u8; 8] = [0xFF, 0xFF, 0x3F, 0xFF, 0xFF, 0x03, 0, 0];
+const LMP_FEATURE_SECURE_SIMPLE_PAIRING_HOST_SUPPORT: u8 = 0x01;
+const LMP_FEATURE_LE_SUPPORTED_HOST: u8 = 0x02;
 const LOCAL_SUPPORTED_COMMANDS: [u8; 64] = [
     0x20, 0x00, 0x80, 0x03, 0x00, 0xc0, 0x00, 0x00, 0x00, 0x00, 0xe4, 0x00, 0x00, 0x00, 0xa8, 0x22,
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0xf7, 0xff, 0xff, 0x7f, 0x00, 0x00, 0x00,
@@ -496,6 +501,10 @@ pub struct Controller {
     /// Monotonic counter backing `LE_Rand` — the software controller has no
     /// entropy source, so it returns a deterministic, ever-changing value.
     rand_counter: u64,
+    synchronous_flow_control_enabled: bool,
+    lmp_feature_pages: [[u8; 8]; 4],
+    suggested_max_data_octets: u16,
+    suggested_max_data_time: u16,
     host_queue: Vec<HciPacket>,
     /// LL control PDUs waiting to be delivered to a peer controller, as
     /// `(sender_self_address, receiver_peer_address, pdu)`. Drained by the link.
@@ -545,6 +554,10 @@ impl Controller {
             rpa_timeout: 900,
             next_handle: 1,
             rand_counter: 0,
+            synchronous_flow_control_enabled: false,
+            lmp_feature_pages: LMP_FEATURE_PAGES,
+            suggested_max_data_octets: SUGGESTED_MAX_DATA_OCTETS,
+            suggested_max_data_time: SUGGESTED_MAX_DATA_TIME,
             host_queue: Vec::new(),
             outbound_ll: Vec::new(),
             central_cis_links: Vec::new(),
@@ -867,6 +880,89 @@ impl Controller {
                     },
                 );
             }
+            Command::WriteLocalName { local_name } => {
+                let end = local_name
+                    .iter()
+                    .position(|byte| *byte == 0)
+                    .unwrap_or(local_name.len());
+                if let Ok(local_name) = std::str::from_utf8(&local_name[..end]) {
+                    self.name = local_name.to_string();
+                }
+                self.ack(op_code, HCI_SUCCESS);
+            }
+            Command::ReadClassOfDevice => {
+                self.complete(
+                    op_code,
+                    ReturnParameters::ReadClassOfDevice {
+                        status: HCI_SUCCESS,
+                        class_of_device: 0,
+                    },
+                );
+            }
+            Command::ReadSynchronousFlowControlEnable => {
+                self.complete(
+                    op_code,
+                    ReturnParameters::ReadSynchronousFlowControlEnable {
+                        status: HCI_SUCCESS,
+                        synchronous_flow_control_enable: u8::from(
+                            self.synchronous_flow_control_enabled,
+                        ),
+                    },
+                );
+            }
+            Command::WriteSynchronousFlowControlEnable {
+                synchronous_flow_control_enable,
+            } => {
+                if synchronous_flow_control_enable > 1 {
+                    self.ack(op_code, INVALID_COMMAND_PARAMETERS);
+                } else {
+                    self.synchronous_flow_control_enabled = synchronous_flow_control_enable != 0;
+                    self.ack(op_code, HCI_SUCCESS);
+                }
+            }
+            Command::WriteSimplePairingMode {
+                simple_pairing_mode,
+            } => {
+                if simple_pairing_mode != 0 {
+                    self.lmp_feature_pages[1][0] |= LMP_FEATURE_SECURE_SIMPLE_PAIRING_HOST_SUPPORT;
+                } else {
+                    self.lmp_feature_pages[1][0] &= !LMP_FEATURE_SECURE_SIMPLE_PAIRING_HOST_SUPPORT;
+                }
+                self.ack(op_code, HCI_SUCCESS);
+            }
+            Command::ReadLeHostSupport => {
+                self.complete(
+                    op_code,
+                    ReturnParameters::ReadLeHostSupport {
+                        status: HCI_SUCCESS,
+                        le_supported_host: u8::from(
+                            self.lmp_feature_pages[1][0] & LMP_FEATURE_LE_SUPPORTED_HOST != 0,
+                        ),
+                        unused: 0,
+                    },
+                );
+            }
+            Command::WriteLeHostSupport {
+                le_supported_host, ..
+            } => {
+                if le_supported_host != 0 {
+                    self.lmp_feature_pages[1][0] |= LMP_FEATURE_LE_SUPPORTED_HOST;
+                } else {
+                    self.lmp_feature_pages[1][0] &= !LMP_FEATURE_LE_SUPPORTED_HOST;
+                }
+                self.ack(op_code, HCI_SUCCESS);
+            }
+            Command::WriteAuthenticatedPayloadTimeout {
+                connection_handle, ..
+            } => {
+                self.complete(
+                    op_code,
+                    ReturnParameters::WriteAuthenticatedPayloadTimeout {
+                        status: HCI_SUCCESS,
+                        connection_handle,
+                    },
+                );
+            }
             Command::ReadLocalVersionInformation => {
                 self.complete(
                     op_code,
@@ -894,20 +990,22 @@ impl Controller {
                     op_code,
                     ReturnParameters::ReadLocalSupportedFeatures {
                         status: HCI_SUCCESS,
-                        lmp_features: LMP_FEATURE_PAGES[0],
+                        lmp_features: self.lmp_feature_pages[0],
                     },
                 );
             }
             Command::ReadLocalExtendedFeatures { page_number } => {
-                if let Some(extended_lmp_features) =
-                    LMP_FEATURE_PAGES.get(usize::from(page_number)).copied()
+                if let Some(extended_lmp_features) = self
+                    .lmp_feature_pages
+                    .get(usize::from(page_number))
+                    .copied()
                 {
                     self.complete(
                         op_code,
                         ReturnParameters::ReadLocalExtendedFeatures {
                             status: HCI_SUCCESS,
                             page_number,
-                            maximum_page_number: (LMP_FEATURE_PAGES.len() - 1) as u8,
+                            maximum_page_number: (self.lmp_feature_pages.len() - 1) as u8,
                             extended_lmp_features,
                         },
                     );
@@ -954,6 +1052,43 @@ impl Controller {
                     },
                 );
             }
+            Command::LeReadAdvertisingPhysicalChannelTxPower => {
+                self.complete(
+                    op_code,
+                    ReturnParameters::LeReadAdvertisingPhysicalChannelTxPower {
+                        status: HCI_SUCCESS,
+                        tx_power_level: 0,
+                    },
+                );
+            }
+            Command::LeReadFilterAcceptListSize => {
+                self.complete(
+                    op_code,
+                    ReturnParameters::LeReadFilterAcceptListSize {
+                        status: HCI_SUCCESS,
+                        filter_accept_list_size: FILTER_ACCEPT_LIST_SIZE,
+                    },
+                );
+            }
+            Command::LeReadSupportedStates => {
+                self.complete(
+                    op_code,
+                    ReturnParameters::LeReadSupportedStates {
+                        status: HCI_SUCCESS,
+                        le_states: LE_STATES,
+                    },
+                );
+            }
+            Command::LeReadTransmitPower => {
+                self.complete(
+                    op_code,
+                    ReturnParameters::LeReadTransmitPower {
+                        status: HCI_SUCCESS,
+                        min_tx_power: 0,
+                        max_tx_power: 0,
+                    },
+                );
+            }
             Command::LeReadLocalSupportedFeatures => {
                 self.complete(
                     op_code,
@@ -980,10 +1115,18 @@ impl Controller {
                     op_code,
                     ReturnParameters::LeReadSuggestedDefaultDataLength {
                         status: HCI_SUCCESS,
-                        suggested_max_tx_octets: SUGGESTED_MAX_DATA_OCTETS,
-                        suggested_max_tx_time: SUGGESTED_MAX_DATA_TIME,
+                        suggested_max_tx_octets: self.suggested_max_data_octets,
+                        suggested_max_tx_time: self.suggested_max_data_time,
                     },
                 );
+            }
+            Command::LeWriteSuggestedDefaultDataLength {
+                suggested_max_tx_octets,
+                suggested_max_tx_time,
+            } => {
+                self.suggested_max_data_octets = suggested_max_tx_octets;
+                self.suggested_max_data_time = suggested_max_tx_time;
+                self.ack(op_code, HCI_SUCCESS);
             }
             Command::LeReadMaximumDataLength => {
                 self.complete(
@@ -1032,8 +1175,9 @@ impl Controller {
             Command::LeReadResolvingListSize => {
                 self.complete(
                     op_code,
-                    ReturnParameters::Raw {
-                        data: vec![HCI_SUCCESS, 16],
+                    ReturnParameters::LeReadResolvingListSize {
+                        status: HCI_SUCCESS,
+                        resolving_list_size: RESOLVING_LIST_SIZE,
                     },
                 );
             }
@@ -1060,6 +1204,17 @@ impl Controller {
                 tx_octets,
                 tx_time,
             } => self.handle_set_data_length(op_code, connection_handle, tx_octets, tx_time),
+            Command::LeReadPhy { connection_handle } => {
+                self.complete(
+                    op_code,
+                    ReturnParameters::LeReadPhy {
+                        status: HCI_SUCCESS,
+                        connection_handle,
+                        tx_phy: LE_1M_PHY,
+                        rx_phy: LE_1M_PHY,
+                    },
+                );
+            }
             Command::LeSetPhy {
                 connection_handle,
                 all_phys,
@@ -1110,6 +1265,16 @@ impl Controller {
             ),
             Command::LeSetCigParameters { cig_id, cis_id, .. } => {
                 self.handle_set_cig_parameters(cig_id, &cis_id)
+            }
+            Command::LeRemoveCig { cig_id } => {
+                let previous_len = self.central_cis_links.len();
+                self.central_cis_links.retain(|link| link.cig_id != cig_id);
+                let status = if self.central_cis_links.len() < previous_len {
+                    HCI_SUCCESS
+                } else {
+                    INVALID_COMMAND_PARAMETERS
+                };
+                self.complete(op_code, ReturnParameters::LeRemoveCig { status, cig_id });
             }
             Command::LeCreateCis {
                 cis_connection_handle,
@@ -1238,9 +1403,10 @@ impl Controller {
             // [`command_surface`]). A command upstream also doesn't handle gets
             // the spec-correct "Unknown HCI Command".
             _ => match command_surface::response_kind(op_code) {
-                Some(command_surface::Resp::StatusOnly) | Some(command_surface::Resp::Data) => {
-                    self.ack(op_code, HCI_SUCCESS)
-                }
+                Some(command_surface::Resp::StatusOnly) => self.ack(op_code, HCI_SUCCESS),
+                // Every Data command parsed into a known variant is handled above.
+                // Keep this path for a Generic packet carrying a known opcode.
+                Some(command_surface::Resp::Data) => self.ack(op_code, HCI_SUCCESS),
                 Some(command_surface::Resp::Status) => self.command_status(op_code, HCI_SUCCESS),
                 None => self.ack(op_code, UNKNOWN_HCI_COMMAND_ERROR),
             },
@@ -2302,7 +2468,8 @@ impl Controller {
             connection.self_address.clone(),
             connection.peer_address.clone(),
         );
-        let features = LMP_FEATURE_PAGES
+        let features = self
+            .lmp_feature_pages
             .get(usize::from(page_number))
             .copied()
             .unwrap_or([0; 8]);
@@ -2679,7 +2846,7 @@ impl Controller {
                     self_addr,
                     sender_address.clone(),
                     lmp::ClassicPdu::FeaturesRes {
-                        features: LMP_FEATURE_PAGES[0],
+                        features: self.lmp_feature_pages[0],
                     },
                 );
             }
@@ -2700,7 +2867,8 @@ impl Controller {
                 }
             }
             lmp::ClassicPdu::FeaturesReqExt { page_number, .. } => {
-                let features = LMP_FEATURE_PAGES
+                let features = self
+                    .lmp_feature_pages
                     .get(usize::from(page_number))
                     .copied()
                     .unwrap_or([0; 8]);
@@ -2710,7 +2878,7 @@ impl Controller {
                     sender_address.clone(),
                     lmp::ClassicPdu::FeaturesResExt {
                         page_number,
-                        max_page_number: (LMP_FEATURE_PAGES.len() - 1) as u8,
+                        max_page_number: (self.lmp_feature_pages.len() - 1) as u8,
                         features,
                     },
                 );

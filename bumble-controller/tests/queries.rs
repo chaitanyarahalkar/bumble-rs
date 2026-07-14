@@ -25,6 +25,11 @@ fn only_complete(events: &[HciPacket]) -> &ReturnParameters {
     }
 }
 
+fn complete(controller: &mut Controller, command: Command) -> ReturnParameters {
+    controller.handle_command(command);
+    only_complete(&controller.drain_host_events()).clone()
+}
+
 #[test]
 fn read_bd_addr_returns_public_address() {
     let public = Address::parse("11:22:33:44:55:66", AddressType::PUBLIC_DEVICE).unwrap();
@@ -148,12 +153,253 @@ fn read_local_extended_features_returns_all_pages_and_rejects_overflow() {
 }
 
 #[test]
+fn remaining_data_queries_return_upstream_defaults() {
+    let mut controller = Controller::new("C", addr("00:11:22:33:44:55"));
+    assert_eq!(
+        complete(&mut controller, Command::ReadClassOfDevice),
+        ReturnParameters::ReadClassOfDevice {
+            status: 0,
+            class_of_device: 0,
+        }
+    );
+    assert_eq!(
+        complete(
+            &mut controller,
+            Command::LeReadAdvertisingPhysicalChannelTxPower,
+        ),
+        ReturnParameters::LeReadAdvertisingPhysicalChannelTxPower {
+            status: 0,
+            tx_power_level: 0,
+        }
+    );
+    assert_eq!(
+        complete(&mut controller, Command::LeReadFilterAcceptListSize),
+        ReturnParameters::LeReadFilterAcceptListSize {
+            status: 0,
+            filter_accept_list_size: 8,
+        }
+    );
+    assert_eq!(
+        complete(&mut controller, Command::LeReadSupportedStates),
+        ReturnParameters::LeReadSupportedStates {
+            status: 0,
+            le_states: [0xFF, 0xFF, 0x3F, 0xFF, 0xFF, 0x03, 0, 0],
+        }
+    );
+    assert_eq!(
+        complete(&mut controller, Command::LeReadResolvingListSize),
+        ReturnParameters::LeReadResolvingListSize {
+            status: 0,
+            resolving_list_size: 8,
+        }
+    );
+    assert_eq!(
+        complete(
+            &mut controller,
+            Command::LeReadPhy {
+                connection_handle: 0x0ABC,
+            },
+        ),
+        ReturnParameters::LeReadPhy {
+            status: 0,
+            connection_handle: 0x0ABC,
+            tx_phy: 1,
+            rx_phy: 1,
+        }
+    );
+    assert_eq!(
+        complete(&mut controller, Command::LeReadTransmitPower),
+        ReturnParameters::LeReadTransmitPower {
+            status: 0,
+            min_tx_power: 0,
+            max_tx_power: 0,
+        }
+    );
+}
+
+#[test]
+fn state_backed_queries_follow_writes() {
+    let mut controller = Controller::new("C", addr("00:11:22:33:44:55"));
+    let mut local_name = [0; 248];
+    local_name[..7].copy_from_slice(b"Renamed");
+    assert_eq!(
+        complete(&mut controller, Command::WriteLocalName { local_name }),
+        ReturnParameters::Status { status: 0 }
+    );
+    match complete(&mut controller, Command::ReadLocalName) {
+        ReturnParameters::ReadLocalName { local_name, .. } => {
+            assert_eq!(&local_name[..7], b"Renamed");
+            assert!(local_name[7..].iter().all(|byte| *byte == 0));
+        }
+        other => panic!("expected local name, got {other:?}"),
+    }
+
+    assert_eq!(
+        complete(&mut controller, Command::ReadSynchronousFlowControlEnable,),
+        ReturnParameters::ReadSynchronousFlowControlEnable {
+            status: 0,
+            synchronous_flow_control_enable: 0,
+        }
+    );
+    assert_eq!(
+        complete(
+            &mut controller,
+            Command::WriteSynchronousFlowControlEnable {
+                synchronous_flow_control_enable: 1,
+            },
+        ),
+        ReturnParameters::Status { status: 0 }
+    );
+    assert_eq!(
+        complete(&mut controller, Command::ReadSynchronousFlowControlEnable,),
+        ReturnParameters::ReadSynchronousFlowControlEnable {
+            status: 0,
+            synchronous_flow_control_enable: 1,
+        }
+    );
+    assert_eq!(
+        complete(
+            &mut controller,
+            Command::WriteSynchronousFlowControlEnable {
+                synchronous_flow_control_enable: 2,
+            },
+        ),
+        ReturnParameters::Status { status: 0x12 }
+    );
+
+    complete(
+        &mut controller,
+        Command::WriteSimplePairingMode {
+            simple_pairing_mode: 1,
+        },
+    );
+    complete(
+        &mut controller,
+        Command::WriteLeHostSupport {
+            le_supported_host: 1,
+            simultaneous_le_host: 1,
+        },
+    );
+    assert_eq!(
+        complete(&mut controller, Command::ReadLeHostSupport),
+        ReturnParameters::ReadLeHostSupport {
+            status: 0,
+            le_supported_host: 1,
+            unused: 0,
+        }
+    );
+    match complete(
+        &mut controller,
+        Command::ReadLocalExtendedFeatures { page_number: 1 },
+    ) {
+        ReturnParameters::ReadLocalExtendedFeatures {
+            extended_lmp_features,
+            ..
+        } => assert_eq!(extended_lmp_features[0] & 0x03, 0x03),
+        other => panic!("expected extended features, got {other:?}"),
+    }
+
+    assert_eq!(
+        complete(
+            &mut controller,
+            Command::WriteAuthenticatedPayloadTimeout {
+                connection_handle: 0x0ABC,
+                authenticated_payload_timeout: 0x0100,
+            },
+        ),
+        ReturnParameters::WriteAuthenticatedPayloadTimeout {
+            status: 0,
+            connection_handle: 0x0ABC,
+        }
+    );
+
+    assert_eq!(
+        complete(
+            &mut controller,
+            Command::LeWriteSuggestedDefaultDataLength {
+                suggested_max_tx_octets: 251,
+                suggested_max_tx_time: 2_120,
+            },
+        ),
+        ReturnParameters::Status { status: 0 }
+    );
+    assert_eq!(
+        complete(&mut controller, Command::LeReadSuggestedDefaultDataLength,),
+        ReturnParameters::LeReadSuggestedDefaultDataLength {
+            status: 0,
+            suggested_max_tx_octets: 251,
+            suggested_max_tx_time: 2_120,
+        }
+    );
+}
+
+#[test]
+fn remove_cig_returns_id_and_tracks_existing_groups() {
+    let mut controller = Controller::new("C", addr("00:11:22:33:44:55"));
+    let set_response = complete(
+        &mut controller,
+        Command::LeSetCigParameters {
+            cig_id: 7,
+            sdu_interval_c_to_p: 10_000,
+            sdu_interval_p_to_c: 10_000,
+            worst_case_sca: 0,
+            packing: 0,
+            framing: 0,
+            max_transport_latency_c_to_p: 10,
+            max_transport_latency_p_to_c: 10,
+            cis_id: vec![1],
+            max_sdu_c_to_p: vec![120],
+            max_sdu_p_to_c: vec![120],
+            phy_c_to_p: vec![1],
+            phy_p_to_c: vec![1],
+            rtn_c_to_p: vec![3],
+            rtn_p_to_c: vec![3],
+        },
+    );
+    assert!(matches!(
+        set_response,
+        ReturnParameters::Raw { ref data } if data.first() == Some(&0)
+    ));
+
+    let removed = complete(&mut controller, Command::LeRemoveCig { cig_id: 7 });
+    assert_eq!(
+        removed,
+        ReturnParameters::LeRemoveCig {
+            status: 0,
+            cig_id: 7,
+        }
+    );
+    assert_eq!(
+        ReturnParameters::parse(
+            Command::LeRemoveCig { cig_id: 7 }.op_code(),
+            &removed.to_bytes()
+        )
+        .unwrap(),
+        removed
+    );
+    assert_eq!(
+        complete(&mut controller, Command::LeRemoveCig { cig_id: 7 }),
+        ReturnParameters::LeRemoveCig {
+            status: 0x12,
+            cig_id: 7,
+        }
+    );
+}
+
+#[test]
 fn controller_information_queries_have_typed_serializable_payloads() {
     let mut c = Controller::new("C", addr("00:11:22:33:44:55"));
     let commands = [
         Command::ReadLocalVersionInformation,
         Command::ReadLocalSupportedCommands,
         Command::ReadLocalSupportedFeatures,
+        Command::ReadClassOfDevice,
+        Command::ReadSynchronousFlowControlEnable,
+        Command::ReadLeHostSupport,
+        Command::WriteAuthenticatedPayloadTimeout {
+            connection_handle: 0x0ABC,
+            authenticated_payload_timeout: 0x0100,
+        },
         Command::ReadBufferSize,
         Command::LeReadBufferSizeV2,
         Command::LeReadLocalSupportedFeatures,
@@ -162,6 +408,14 @@ fn controller_information_queries_have_typed_serializable_payloads() {
         Command::LeReadMaximumDataLength,
         Command::LeReadMaximumAdvertisingDataLength,
         Command::LeReadNumberOfSupportedAdvertisingSets,
+        Command::LeReadAdvertisingPhysicalChannelTxPower,
+        Command::LeReadFilterAcceptListSize,
+        Command::LeReadSupportedStates,
+        Command::LeReadResolvingListSize,
+        Command::LeReadPhy {
+            connection_handle: 0x0ABC,
+        },
+        Command::LeReadTransmitPower,
     ];
 
     for command in commands {

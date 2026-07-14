@@ -4,11 +4,11 @@
 //! that matches upstream's behavior, instead of a blanket "Unknown Command".
 //!
 //! - `StatusOnly`: config/set commands upstream accepts and returns
-//!   Command Complete + status SUCCESS for (it stores state; the in-process sim
-//!   has no state to store, so it simply acknowledges).
-//! - `Data`: commands that return read data. The controller answers the ones it
-//!   can model with real values (see `handle_command`); the rest are
-//!   acknowledged SUCCESS without a synthesized payload (documented stub).
+//!   Command Complete + status SUCCESS for. Functionally modeled state is
+//!   retained; no-op handlers match upstream no-ops.
+//! - `Data`: commands that return read or command-specific data. The controller
+//!   provides every entry's upstream state/default payload (see
+//!   `handle_command`).
 //! - `Status`: commands that start an operation and complete via a later event
 //!   (Command Status). Functionally simulated where the in-process link allows
 //!   (e.g. connect/disconnect); otherwise acknowledged with Command Status.
@@ -18,7 +18,7 @@
 pub enum Resp {
     /// Command Complete with a status-only return parameter.
     StatusOnly,
-    /// Command Complete carrying read data.
+    /// Command Complete carrying read or command-specific data.
     Data,
     /// Command Status (an operation that completes via a later event).
     Status,

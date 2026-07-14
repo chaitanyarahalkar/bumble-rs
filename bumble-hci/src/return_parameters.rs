@@ -2,8 +2,8 @@
 //!
 //! Ported from `bumble.hci` return-parameter classes. All typed return
 //! parameters begin with a status byte; per `HCI_StatusReturnParameters`, when
-//! the status is not SUCCESS the controller returns only the status and the
-//! remaining fields are absent — so parsing falls back to [`ReturnParameters::Status`].
+//! the status is not SUCCESS the parser does not decode any remaining fields
+//! and falls back to [`ReturnParameters::Status`].
 
 use crate::codes::*;
 use crate::{Reader, Result};
@@ -77,6 +77,23 @@ pub enum ReturnParameters {
         hc_total_num_acl_data_packets: u16,
         hc_total_num_synchronous_data_packets: u16,
     },
+    ReadClassOfDevice {
+        status: u8,
+        class_of_device: u32,
+    },
+    ReadSynchronousFlowControlEnable {
+        status: u8,
+        synchronous_flow_control_enable: u8,
+    },
+    ReadLeHostSupport {
+        status: u8,
+        le_supported_host: u8,
+        unused: u8,
+    },
+    WriteAuthenticatedPayloadTimeout {
+        status: u8,
+        connection_handle: u16,
+    },
     ReadVoiceSetting {
         status: u8,
         voice_setting: u16,
@@ -104,6 +121,37 @@ pub enum ReturnParameters {
     LeReadNumberOfSupportedAdvertisingSets {
         status: u8,
         num_supported_advertising_sets: u8,
+    },
+    LeReadAdvertisingPhysicalChannelTxPower {
+        status: u8,
+        tx_power_level: i8,
+    },
+    LeReadFilterAcceptListSize {
+        status: u8,
+        filter_accept_list_size: u8,
+    },
+    LeReadSupportedStates {
+        status: u8,
+        le_states: [u8; 8],
+    },
+    LeReadResolvingListSize {
+        status: u8,
+        resolving_list_size: u8,
+    },
+    LeReadPhy {
+        status: u8,
+        connection_handle: u16,
+        tx_phy: u8,
+        rx_phy: u8,
+    },
+    LeRemoveCig {
+        status: u8,
+        cig_id: u8,
+    },
+    LeReadTransmitPower {
+        status: u8,
+        min_tx_power: u8,
+        max_tx_power: u8,
     },
     LeReadMinimumSupportedConnectionInterval {
         status: u8,
@@ -153,12 +201,23 @@ impl ReturnParameters {
             | ReturnParameters::LeReadLocalSupportedFeatures { status, .. }
             | ReturnParameters::LeReadAllLocalSupportedFeatures { status, .. }
             | ReturnParameters::ReadBufferSize { status, .. }
+            | ReturnParameters::ReadClassOfDevice { status, .. }
+            | ReturnParameters::ReadSynchronousFlowControlEnable { status, .. }
+            | ReturnParameters::ReadLeHostSupport { status, .. }
+            | ReturnParameters::WriteAuthenticatedPayloadTimeout { status, .. }
             | ReturnParameters::ReadVoiceSetting { status, .. }
             | ReturnParameters::ReadLoopbackMode { status, .. }
             | ReturnParameters::LeReadSuggestedDefaultDataLength { status, .. }
             | ReturnParameters::LeReadMaximumDataLength { status, .. }
             | ReturnParameters::LeReadMaximumAdvertisingDataLength { status, .. }
             | ReturnParameters::LeReadNumberOfSupportedAdvertisingSets { status, .. }
+            | ReturnParameters::LeReadAdvertisingPhysicalChannelTxPower { status, .. }
+            | ReturnParameters::LeReadFilterAcceptListSize { status, .. }
+            | ReturnParameters::LeReadSupportedStates { status, .. }
+            | ReturnParameters::LeReadResolvingListSize { status, .. }
+            | ReturnParameters::LeReadPhy { status, .. }
+            | ReturnParameters::LeRemoveCig { status, .. }
+            | ReturnParameters::LeReadTransmitPower { status, .. }
             | ReturnParameters::LeReadMinimumSupportedConnectionInterval { status, .. }
             | ReturnParameters::ReadBdAddr { status, .. }
             | ReturnParameters::ReadLocalName { status, .. }
@@ -264,6 +323,36 @@ impl ReturnParameters {
                 p.extend_from_slice(&hc_total_num_acl_data_packets.to_le_bytes());
                 p.extend_from_slice(&hc_total_num_synchronous_data_packets.to_le_bytes());
             }
+            ReturnParameters::ReadClassOfDevice {
+                status,
+                class_of_device,
+            } => {
+                p.push(*status);
+                p.extend_from_slice(&class_of_device.to_le_bytes()[..3]);
+            }
+            ReturnParameters::ReadSynchronousFlowControlEnable {
+                status,
+                synchronous_flow_control_enable,
+            } => {
+                p.push(*status);
+                p.push(*synchronous_flow_control_enable);
+            }
+            ReturnParameters::ReadLeHostSupport {
+                status,
+                le_supported_host,
+                unused,
+            } => {
+                p.push(*status);
+                p.push(*le_supported_host);
+                p.push(*unused);
+            }
+            ReturnParameters::WriteAuthenticatedPayloadTimeout {
+                status,
+                connection_handle,
+            } => {
+                p.push(*status);
+                p.extend_from_slice(&connection_handle.to_le_bytes());
+            }
             ReturnParameters::ReadVoiceSetting {
                 status,
                 voice_setting,
@@ -313,6 +402,55 @@ impl ReturnParameters {
             } => {
                 p.push(*status);
                 p.push(*num_supported_advertising_sets);
+            }
+            ReturnParameters::LeReadAdvertisingPhysicalChannelTxPower {
+                status,
+                tx_power_level,
+            } => {
+                p.push(*status);
+                p.push(*tx_power_level as u8);
+            }
+            ReturnParameters::LeReadFilterAcceptListSize {
+                status,
+                filter_accept_list_size,
+            } => {
+                p.push(*status);
+                p.push(*filter_accept_list_size);
+            }
+            ReturnParameters::LeReadSupportedStates { status, le_states } => {
+                p.push(*status);
+                p.extend_from_slice(le_states);
+            }
+            ReturnParameters::LeReadResolvingListSize {
+                status,
+                resolving_list_size,
+            } => {
+                p.push(*status);
+                p.push(*resolving_list_size);
+            }
+            ReturnParameters::LeReadPhy {
+                status,
+                connection_handle,
+                tx_phy,
+                rx_phy,
+            } => {
+                p.push(*status);
+                p.extend_from_slice(&connection_handle.to_le_bytes());
+                p.push(*tx_phy);
+                p.push(*rx_phy);
+            }
+            ReturnParameters::LeRemoveCig { status, cig_id } => {
+                p.push(*status);
+                p.push(*cig_id);
+            }
+            ReturnParameters::LeReadTransmitPower {
+                status,
+                min_tx_power,
+                max_tx_power,
+            } => {
+                p.push(*status);
+                p.push(*min_tx_power);
+                p.push(*max_tx_power);
             }
             ReturnParameters::LeReadMinimumSupportedConnectionInterval {
                 status,
@@ -403,12 +541,23 @@ impl ReturnParameters {
                 | HCI_LE_READ_LOCAL_SUPPORTED_FEATURES_COMMAND
                 | HCI_LE_READ_ALL_LOCAL_SUPPORTED_FEATURES_COMMAND
                 | HCI_READ_BUFFER_SIZE_COMMAND
+                | HCI_READ_CLASS_OF_DEVICE_COMMAND
+                | HCI_READ_SYNCHRONOUS_FLOW_CONTROL_ENABLE_COMMAND
+                | HCI_READ_LE_HOST_SUPPORT_COMMAND
+                | HCI_WRITE_AUTHENTICATED_PAYLOAD_TIMEOUT_COMMAND
                 | HCI_READ_VOICE_SETTING_COMMAND
                 | HCI_READ_LOOPBACK_MODE_COMMAND
                 | HCI_LE_READ_SUGGESTED_DEFAULT_DATA_LENGTH_COMMAND
                 | HCI_LE_READ_MAXIMUM_DATA_LENGTH_COMMAND
                 | HCI_LE_READ_MAXIMUM_ADVERTISING_DATA_LENGTH_COMMAND
                 | HCI_LE_READ_NUMBER_OF_SUPPORTED_ADVERTISING_SETS_COMMAND
+                | HCI_LE_READ_ADVERTISING_PHYSICAL_CHANNEL_TX_POWER_COMMAND
+                | HCI_LE_READ_FILTER_ACCEPT_LIST_SIZE_COMMAND
+                | HCI_LE_READ_SUPPORTED_STATES_COMMAND
+                | HCI_LE_READ_RESOLVING_LIST_SIZE_COMMAND
+                | HCI_LE_READ_PHY_COMMAND
+                | HCI_LE_REMOVE_CIG_COMMAND
+                | HCI_LE_READ_TRANSMIT_POWER_COMMAND
                 | HCI_LE_READ_MINIMUM_SUPPORTED_CONNECTION_INTERVAL_COMMAND
                 | HCI_READ_BD_ADDR_COMMAND
                 | HCI_READ_LOCAL_NAME_COMMAND
@@ -421,7 +570,8 @@ impl ReturnParameters {
             });
         }
 
-        // Typed: on a non-SUCCESS status the extra fields are absent.
+        // Typed: on a non-SUCCESS status upstream stops after the status even if
+        // a producer included trailing command-specific fields.
         let status = first_status(data);
         if status != HCI_SUCCESS {
             return Ok(ReturnParameters::Status { status });
@@ -492,6 +642,27 @@ impl ReturnParameters {
                 hc_total_num_acl_data_packets: r.u16_le()?,
                 hc_total_num_synchronous_data_packets: r.u16_le()?,
             },
+            HCI_READ_CLASS_OF_DEVICE_COMMAND => ReturnParameters::ReadClassOfDevice {
+                status,
+                class_of_device: r.u24_le()?,
+            },
+            HCI_READ_SYNCHRONOUS_FLOW_CONTROL_ENABLE_COMMAND => {
+                ReturnParameters::ReadSynchronousFlowControlEnable {
+                    status,
+                    synchronous_flow_control_enable: r.u8()?,
+                }
+            }
+            HCI_READ_LE_HOST_SUPPORT_COMMAND => ReturnParameters::ReadLeHostSupport {
+                status,
+                le_supported_host: r.u8()?,
+                unused: r.u8()?,
+            },
+            HCI_WRITE_AUTHENTICATED_PAYLOAD_TIMEOUT_COMMAND => {
+                ReturnParameters::WriteAuthenticatedPayloadTimeout {
+                    status,
+                    connection_handle: r.u16_le()?,
+                }
+            }
             HCI_READ_VOICE_SETTING_COMMAND => ReturnParameters::ReadVoiceSetting {
                 status,
                 voice_setting: r.u16_le()?,
@@ -526,6 +697,41 @@ impl ReturnParameters {
                     num_supported_advertising_sets: r.u8()?,
                 }
             }
+            HCI_LE_READ_ADVERTISING_PHYSICAL_CHANNEL_TX_POWER_COMMAND => {
+                ReturnParameters::LeReadAdvertisingPhysicalChannelTxPower {
+                    status,
+                    tx_power_level: r.u8()? as i8,
+                }
+            }
+            HCI_LE_READ_FILTER_ACCEPT_LIST_SIZE_COMMAND => {
+                ReturnParameters::LeReadFilterAcceptListSize {
+                    status,
+                    filter_accept_list_size: r.u8()?,
+                }
+            }
+            HCI_LE_READ_SUPPORTED_STATES_COMMAND => ReturnParameters::LeReadSupportedStates {
+                status,
+                le_states: r.array::<8>()?,
+            },
+            HCI_LE_READ_RESOLVING_LIST_SIZE_COMMAND => ReturnParameters::LeReadResolvingListSize {
+                status,
+                resolving_list_size: r.u8()?,
+            },
+            HCI_LE_READ_PHY_COMMAND => ReturnParameters::LeReadPhy {
+                status,
+                connection_handle: r.u16_le()?,
+                tx_phy: r.u8()?,
+                rx_phy: r.u8()?,
+            },
+            HCI_LE_REMOVE_CIG_COMMAND => ReturnParameters::LeRemoveCig {
+                status,
+                cig_id: r.u8()?,
+            },
+            HCI_LE_READ_TRANSMIT_POWER_COMMAND => ReturnParameters::LeReadTransmitPower {
+                status,
+                min_tx_power: r.u8()?,
+                max_tx_power: r.u8()?,
+            },
             HCI_LE_READ_MINIMUM_SUPPORTED_CONNECTION_INTERVAL_COMMAND => {
                 let minimum_supported_connection_interval = r.u8()?;
                 let count = r.u8()? as usize;

@@ -62,6 +62,39 @@ fn classic_controller_information_returns_are_typed() {
         &[0, 0xFD, 0x03, 64, 10, 0, 4, 0],
     );
     round_trip(
+        HCI_READ_CLASS_OF_DEVICE_COMMAND,
+        ReturnParameters::ReadClassOfDevice {
+            status: 0,
+            class_of_device: 0x12_34_56,
+        },
+        &[0, 0x56, 0x34, 0x12],
+    );
+    round_trip(
+        HCI_READ_SYNCHRONOUS_FLOW_CONTROL_ENABLE_COMMAND,
+        ReturnParameters::ReadSynchronousFlowControlEnable {
+            status: 0,
+            synchronous_flow_control_enable: 1,
+        },
+        &[0, 1],
+    );
+    round_trip(
+        HCI_READ_LE_HOST_SUPPORT_COMMAND,
+        ReturnParameters::ReadLeHostSupport {
+            status: 0,
+            le_supported_host: 1,
+            unused: 0,
+        },
+        &[0, 1, 0],
+    );
+    round_trip(
+        HCI_WRITE_AUTHENTICATED_PAYLOAD_TIMEOUT_COMMAND,
+        ReturnParameters::WriteAuthenticatedPayloadTimeout {
+            status: 0,
+            connection_handle: 0x0ABC,
+        },
+        &[0, 0xBC, 0x0A],
+    );
+    round_trip(
         HCI_READ_VOICE_SETTING_COMMAND,
         ReturnParameters::ReadVoiceSetting {
             status: 0,
@@ -149,6 +182,65 @@ fn le_controller_information_returns_are_typed() {
         &[0, 16],
     );
     round_trip(
+        HCI_LE_READ_ADVERTISING_PHYSICAL_CHANNEL_TX_POWER_COMMAND,
+        ReturnParameters::LeReadAdvertisingPhysicalChannelTxPower {
+            status: 0,
+            tx_power_level: -7,
+        },
+        &[0, 0xF9],
+    );
+    round_trip(
+        HCI_LE_READ_FILTER_ACCEPT_LIST_SIZE_COMMAND,
+        ReturnParameters::LeReadFilterAcceptListSize {
+            status: 0,
+            filter_accept_list_size: 8,
+        },
+        &[0, 8],
+    );
+    round_trip(
+        HCI_LE_READ_SUPPORTED_STATES_COMMAND,
+        ReturnParameters::LeReadSupportedStates {
+            status: 0,
+            le_states: [0xFF, 0xFF, 0x3F, 0xFF, 0xFF, 0x03, 0, 0],
+        },
+        &[0, 0xFF, 0xFF, 0x3F, 0xFF, 0xFF, 0x03, 0, 0],
+    );
+    round_trip(
+        HCI_LE_READ_RESOLVING_LIST_SIZE_COMMAND,
+        ReturnParameters::LeReadResolvingListSize {
+            status: 0,
+            resolving_list_size: 8,
+        },
+        &[0, 8],
+    );
+    round_trip(
+        HCI_LE_READ_PHY_COMMAND,
+        ReturnParameters::LeReadPhy {
+            status: 0,
+            connection_handle: 0x0ABC,
+            tx_phy: 2,
+            rx_phy: 3,
+        },
+        &[0, 0xBC, 0x0A, 2, 3],
+    );
+    round_trip(
+        HCI_LE_REMOVE_CIG_COMMAND,
+        ReturnParameters::LeRemoveCig {
+            status: 0,
+            cig_id: 7,
+        },
+        &[0, 7],
+    );
+    round_trip(
+        HCI_LE_READ_TRANSMIT_POWER_COMMAND,
+        ReturnParameters::LeReadTransmitPower {
+            status: 0,
+            min_tx_power: 0,
+            max_tx_power: 0,
+        },
+        &[0, 0, 0],
+    );
+    round_trip(
         HCI_LE_READ_MINIMUM_SUPPORTED_CONNECTION_INTERVAL_COMMAND,
         ReturnParameters::LeReadMinimumSupportedConnectionInterval {
             status: 0,
@@ -169,6 +261,10 @@ fn typed_errors_fall_back_to_status_and_truncation_is_rejected() {
         HCI_READ_LOCAL_SUPPORTED_FEATURES_COMMAND,
         HCI_READ_LOCAL_EXTENDED_FEATURES_COMMAND,
         HCI_READ_BUFFER_SIZE_COMMAND,
+        HCI_READ_CLASS_OF_DEVICE_COMMAND,
+        HCI_READ_SYNCHRONOUS_FLOW_CONTROL_ENABLE_COMMAND,
+        HCI_READ_LE_HOST_SUPPORT_COMMAND,
+        HCI_WRITE_AUTHENTICATED_PAYLOAD_TIMEOUT_COMMAND,
         HCI_READ_VOICE_SETTING_COMMAND,
         HCI_LE_READ_BUFFER_SIZE_V2_COMMAND,
         HCI_LE_READ_LOCAL_SUPPORTED_FEATURES_COMMAND,
@@ -177,6 +273,13 @@ fn typed_errors_fall_back_to_status_and_truncation_is_rejected() {
         HCI_LE_READ_MAXIMUM_DATA_LENGTH_COMMAND,
         HCI_LE_READ_MAXIMUM_ADVERTISING_DATA_LENGTH_COMMAND,
         HCI_LE_READ_NUMBER_OF_SUPPORTED_ADVERTISING_SETS_COMMAND,
+        HCI_LE_READ_ADVERTISING_PHYSICAL_CHANNEL_TX_POWER_COMMAND,
+        HCI_LE_READ_FILTER_ACCEPT_LIST_SIZE_COMMAND,
+        HCI_LE_READ_SUPPORTED_STATES_COMMAND,
+        HCI_LE_READ_RESOLVING_LIST_SIZE_COMMAND,
+        HCI_LE_READ_PHY_COMMAND,
+        HCI_LE_REMOVE_CIG_COMMAND,
+        HCI_LE_READ_TRANSMIT_POWER_COMMAND,
         HCI_LE_READ_MINIMUM_SUPPORTED_CONNECTION_INTERVAL_COMMAND,
     ];
     for opcode in opcodes {
