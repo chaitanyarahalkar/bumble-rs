@@ -122,6 +122,7 @@ crate whose behavior is verified against the upstream Python.
 | 146. Complete controller data-return surface | `bumble-hci` / `bumble-controller` | ✅ all 31 data commands return upstream payloads; query-backed writes retain state |
 | 147. Complete software-controller configuration semantics | `bumble-controller` | ✅ all stateful upstream handlers explicit; legacy advertising/scan and pending-operation behavior green |
 | 148. Complete virtual-link and LL teardown semantics | `bumble-controller` / `bumble-host` | ✅ full LL opcode/model surface + pumped ACL/Classic/SCO/CIS teardown and reusable central CIS handles green |
+| 149. Complete Classic LMP codec and catalog | `bumble-controller::lmp` | ✅ 88 open opcodes + all 18 registered packet classes + strict byte round trips green |
 | 103+. Repository completion audit and remaining gaps | workspace | in progress |
 
 The LE lifecycle is now complete end-to-end through library APIs: **connect →
@@ -171,7 +172,7 @@ size, to convey remaining surface.
 | `snoop.py` (0.3k) | `bumble-transport::snoop` | ✅ | Byte-exact BTSnoop and PCAP HCI-H4 writers, deterministic timestamp injection, direction/pseudo-header flags, file/pipe specification parsing, file-backed snoopers, and a transparent bidirectional `SnoopingTransport` wrapper. |
 | `decoder.py` (0.4k) | `bumble-codecs::g722` | ✅ | Stateful integer G.722 64 kbit/s lower/higher sub-band decoder, receive QMF, predictor adaptation, saturating arithmetic, signed PCM sample API, and little-endian byte output. The upstream sample's first 80-byte frame produces all 320 oracle PCM bytes exactly; split-frame decoding proves state continuity. |
 
-### HCI, controller & link — 🟡 HCI/controller/link/LL complete; host and Classic LMP behavior partial
+### HCI, controller & link — 🟡 HCI/controller/link/LL/LMP complete; host behavior partial
 | Upstream (LOC) | Rust crate | Status | Notes |
 |---|---|---|---|
 | `hci.py` (8.3k) | `bumble-hci` | ✅ | **Full typed catalog: 197 command op codes + 81 event / LE-meta sub-event codes**, generated from upstream's declarative field specs by [`tools/hcigen`](bumble-hci/tools/hcigen/) and **byte-pinned against real Python Bumble** (321 oracle tests). Framing (Command/Event/ACL/SCO/ISO), `Command_Complete` with typed `ReturnParameters` including base/extended LMP pages and the 248-byte all-page LE feature catalog, the open-enum `Generic` tail, and upstream-equivalent ACL/L2CAP fragmentation/reassembly with PB-flag, length, continuation, handle, and overflow validation. Two phys-derived array commands and the two nested-report events are hand-written; everything else is generated. |
@@ -181,7 +182,7 @@ size, to convey remaining surface.
 | `ll.py` (0.2k) | `bumble-controller::ll` | ✅ | Complete upstream LL model surface: all 61 control opcodes plus every concrete control PDU (`TerminateInd`, `EncReq`, feature request/response forms, `CisReq`/`CisRsp`/`CisInd`, and `CisTerminateInd`). Advertising/connect behavior is carried by the controller's typed in-process advertising envelope. CIS termination removes peripheral state but preserves and unbinds the central handle, matching upstream so the same configured CIG can establish it again. |
 | `host.py` (2.1k) | `bumble-host` | 🟡 | `Device` glue (ATT↔L2CAP↔ACL sequencing + pairing transport), controller-buffer-sized outbound ACL fragmentation, per-connection inbound reassembly, a global/per-handle `DataPacketQueue` driven by Number Of Completed Packets, handle-indexed LE and Classic connection ownership, live LE signaling/credit-channel managers, LE/Classic encryption and remote-feature completion routing, resolving-list programming, Classic and LE L2CAP, Channel Sounding completion routing, plus connected and broadcast ISO audio APIs. The host pump advances LL, LMP, periodic-sync-transfer, BIG termination, and HCI/ACL traffic. Deferred: the broader host listener/convenience surface. |
 | `device.py` (7.0k) | `bumble-host` | 🟡 | High-level legacy, extended, and periodic LE advertising; active/passive scan reports; periodic sync create/cancel/terminate, fragmented-report assembly, and PAST sync/set-info transfer; identity/RPA-aware legacy and extended connection setup; handle-indexed LE/Classic peer, role, connection-parameter, LE-subrate, remote LE and multi-page LMP features, Sniff/Active, and Channel Sounding capability/config/procedure state; and disconnect run through `Device` without raw HCI. Extended and periodic data fragment across HCI commands up to the controller's 1650-byte limit. ATT/L2CAP, encryption, PAST, and ISO operations have explicit handle-selecting forms while legacy convenience calls use a selectable current connection. CIG/CIS and BIG/BIS creation, synchronization, data-path management, sequence numbering, 960-byte ISO fragmentation, and receive-side SDU reassembly are live. GATT/ATT, SMP, Classic, and synchronous operations are also exposed by the same type. Deferred: listener/async conveniences. |
-| `lmp.py` (0.4k) | `bumble-controller::lmp` | 🟡 | Classic Link Manager Protocol PDUs modeled as in-process structs (`HostConnectionReq`/accept/reject, role-switch request/accept/reject, `NameReq`/`NameRes`, base and extended `FeaturesReq`/`FeaturesRes`, synchronous request/accept/reject, `Detach`) driving the Classic connection/role/name/multi-page-features/SCO-eSCO flows via `LocalLink::pump_classic`. Authentication remains deferred; Classic encryption uses the port's existing state transition rather than the full LMP key exchange. |
+| `lmp.py` (0.4k) | `bumble-controller::lmp` | ✅ | Complete open 88-opcode catalog and byte codec for all 18 registered packet classes: base/extended accept/reject, `AuRand`, detach, SCO/eSCO setup/removal, host connection, switch, fragmented-name, and base/extended feature packets, plus unknown-opcode payload preservation and bounded truncation/length errors. Payload layouts are pinned to upstream's field serializer; two-byte escape opcodes use their intended `0x7Fxx` wire values. The controller's in-process semantic variants drive every LMP family upstream actually handles through `pump_classic`. Upstream's controller leaves `AuRand`/authentication unhandled, so no synthetic authentication flow is claimed. |
 
 ### L2CAP
 | Upstream (LOC) | Rust crate | Status | Notes |
@@ -3206,8 +3207,30 @@ missing behavior was teardown delivery and CIS lifetime:
   then establishes a replacement peer CIS with the same central handle.
 
 This closes `link.py` and `ll.py` for the port's in-process controller scope;
-the remaining work in this area is the separately tracked Classic LMP
-authentication/key-exchange surface.
+the adjacent Classic LMP byte-codec audit follows in Slice 149.
+
+## Slice 149 — what's here
+
+The adjacent LMP audit separated codec completeness from controller behavior.
+Unlike `ll.py`, upstream `lmp.py` does define a serialized packet layer, so this
+slice ports that missing layer rather than inventing an authentication state
+machine absent from upstream's own controller:
+
+- `lmp::Opcode` is an open 16-bit value with all 88 upstream names, one-byte
+  base encoding, two-byte escape encoding, offset parsing, and unknown-value
+  preservation.
+- `lmp::Packet` covers all 18 registered upstream classes, including the full
+  SCO/eSCO parameter records, 24-bit name length, base and extended feature
+  pages, and base/extended response opcodes. Unknown packets retain their raw
+  payload, while truncated and invalid fixed-size packets return typed errors.
+- Exact vectors cover every packet class in both directions. The payload bytes
+  come from upstream's HCI field serializer; extended opcode prefixes use the
+  intended `0x7Fxx` values, avoiding the source expression's shift-precedence
+  ambiguity while preserving the Bluetooth wire format.
+
+Together with the already-live `LocalLink::pump_classic` flows, this closes the
+`lmp.py` row. `AuRand` is codec-complete but intentionally has no controller
+state machine because current upstream logs it as unhandled too.
 
 ## Acceptance
 
