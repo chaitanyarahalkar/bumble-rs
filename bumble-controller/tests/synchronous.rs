@@ -192,6 +192,7 @@ fn enhanced_synchronous_connection_data_and_disconnect() {
     )));
 
     assert!(link.disconnect(central, central_sync, 0x13));
+    link.pump_classic();
     let central_done = link.drain_host_events(central);
     let peripheral_done = link.drain_host_events(peripheral);
     assert!(central_done.iter().any(|packet| matches!(
@@ -274,6 +275,7 @@ fn disconnecting_classic_acl_cascades_to_synchronous_children() {
     let (_, central_sync) = synchronous_complete(&link.drain_host_events(central)).unwrap();
 
     assert!(link.disconnect(central, central_acl, 0x13));
+    link.pump_classic();
     let central_done = link.drain_host_events(central);
     let peripheral_done = link.drain_host_events(peripheral);
     for (events, acl_handle, sync_handle) in [

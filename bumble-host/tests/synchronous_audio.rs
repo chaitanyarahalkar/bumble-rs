@@ -84,6 +84,7 @@ fn hfp_msbc_audio_lifecycle_through_device_api() {
 
     assert!(hf.disconnect_handle(&mut link, hf_sync, 0x13));
     hf.poll(&mut link);
+    link.pump_classic();
     ag.poll(&mut link);
     assert!(hf.synchronous_connections().is_empty());
     assert!(ag.synchronous_connections().is_empty());

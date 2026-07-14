@@ -50,7 +50,7 @@
 //!
 //! ## LL control-PDU exchange
 //!
-//! Two deep-behavior flows are simulated via Link-Layer control PDUs
+//! Deep controller behaviors are simulated via Link-Layer control PDUs
 //! ([`ll::ControlPdu`]) exchanged between controllers and routed by
 //! [`LocalLink::pump_ll`], mirroring upstream `controller.py`:
 //!
@@ -68,6 +68,9 @@
 //! - **CIS data**: Setup/Remove ISO Data Path retain directional state, and the
 //!   link routes HCI ISO fragments between peer CIS handles with completed-
 //!   packet flow events.
+//! - **Link teardown**: ACL and CIS disconnects cross the same queued LL path.
+//!   `CisTerminateInd` removes the peripheral CIS while keeping the central
+//!   handle configured for reuse, matching upstream's asymmetric lifetime.
 //! - **Broadcast ISO**: BIG creation publishes BIGInfo on the matching periodic
 //!   train; synchronized receivers allocate selected BIS handles, validate the
 //!   Broadcast Code, and receive one-to-many ISO traffic until either side
@@ -277,9 +280,10 @@ struct CisLink {
     cis_id: u8,
     /// The CIS connection handle (distinct from the ACL handle).
     handle: u16,
-    /// The endpoints of the ACL connection carrying this CIS.
-    acl_self: Address,
-    acl_peer: Address,
+    /// Endpoints of the ACL connection carrying this CIS. Central CIS handles
+    /// remain allocated after teardown, so an unbound link has no endpoints.
+    acl_self: Option<Address>,
+    acl_peer: Option<Address>,
     /// Installed ISO data paths, indexed by Setup ISO Data Path direction.
     data_paths: u8,
 }
@@ -736,6 +740,12 @@ impl Controller {
                 self.address_resolution_enabled = false;
                 self.rpa_timeout = 900;
                 self.ack(op_code, HCI_SUCCESS);
+            }
+            Command::Disconnect {
+                connection_handle,
+                reason,
+            } => {
+                self.request_disconnect(connection_handle, reason);
             }
             Command::SetEventMask { event_mask } => {
                 self.event_mask = event_mask;
@@ -2133,7 +2143,6 @@ impl Controller {
     /// allocated handles. The ACL endpoints are bound later by `LE_Create_CIS`.
     fn handle_set_cig_parameters(&mut self, cig_id: u8, cis_ids: &[u8]) {
         self.central_cis_links.retain(|l| l.cig_id != cig_id);
-        let unset = Address::from_bytes([0; 6], AddressType::RANDOM_DEVICE);
         let mut handles = Vec::with_capacity(cis_ids.len());
         for &cis_id in cis_ids {
             let handle = self.allocate_handle();
@@ -2142,8 +2151,8 @@ impl Controller {
                 cig_id,
                 cis_id,
                 handle,
-                acl_self: unset.clone(),
-                acl_peer: unset.clone(),
+                acl_self: None,
+                acl_peer: None,
                 data_paths: 0,
             });
         }
@@ -2173,8 +2182,8 @@ impl Controller {
             else {
                 return self.command_status(HCI_LE_CREATE_CIS_COMMAND, INVALID_COMMAND_PARAMETERS);
             };
-            link.acl_self = acl_self.clone();
-            link.acl_peer = acl_peer.clone();
+            link.acl_self = Some(acl_self.clone());
+            link.acl_peer = Some(acl_peer.clone());
             let (cig_id, cis_id) = (link.cig_id, link.cis_id);
             self.queue_ll(
                 acl_self,
@@ -2198,12 +2207,14 @@ impl Controller {
                 INVALID_COMMAND_PARAMETERS,
             );
         };
-        let (acl_self, acl_peer, cig_id, cis_id) = (
-            link.acl_self.clone(),
-            link.acl_peer.clone(),
-            link.cig_id,
-            link.cis_id,
-        );
+        let (Some(acl_self), Some(acl_peer)) = (link.acl_self.clone(), link.acl_peer.clone())
+        else {
+            return self.command_status(
+                HCI_LE_ACCEPT_CIS_REQUEST_COMMAND,
+                INVALID_COMMAND_PARAMETERS,
+            );
+        };
+        let (cig_id, cis_id) = (link.cig_id, link.cis_id);
         self.queue_ll(
             acl_self,
             acl_peer,
@@ -2469,8 +2480,8 @@ impl Controller {
             cig_id,
             cis_id,
             handle,
-            acl_self,
-            acl_peer,
+            acl_self: Some(acl_self),
+            acl_peer: Some(acl_peer),
             data_paths: 0,
         });
         self.host_queue
@@ -2514,6 +2525,31 @@ impl Controller {
                 iso_interval: 0,
             },
         )));
+    }
+
+    /// Apply upstream's asymmetric CIS teardown rule: peripheral CIS entries
+    /// are removed, while central entries keep their allocated handles so the
+    /// CIG can create them again until `LE_Remove_CIG` is issued.
+    fn on_le_cis_disconnected(&mut self, cig_id: u8, cis_id: u8, reason: u8) {
+        let handle = if let Some(index) = self
+            .peripheral_cis_links
+            .iter()
+            .position(|link| link.cig_id == cig_id && link.cis_id == cis_id)
+        {
+            self.peripheral_cis_links.remove(index).handle
+        } else if let Some(link) = self
+            .central_cis_links
+            .iter_mut()
+            .find(|link| link.cig_id == cig_id && link.cis_id == cis_id)
+        {
+            link.acl_self = None;
+            link.acl_peer = None;
+            link.data_paths = 0;
+            link.handle
+        } else {
+            return;
+        };
+        self.push_disconnection_complete(handle, reason);
     }
 
     /// Emit an `Encryption Change` (enabled) for a connection.
@@ -3198,12 +3234,12 @@ impl Controller {
                     .position(|c| c.peer_address == *sender_address)
                 {
                     let conn = self.classic_connections.remove(idx);
-                    self.host_queue
-                        .push(HciPacket::Event(Event::DisconnectionComplete {
-                            status: HCI_SUCCESS,
-                            connection_handle: conn.handle,
-                            reason: error_code,
-                        }));
+                    let dependent_handles =
+                        self.remove_synchronous_for_peer(&conn.self_address, &conn.peer_address);
+                    for handle in dependent_handles {
+                        self.push_disconnection_complete(handle, error_code);
+                    }
+                    self.push_disconnection_complete(conn.handle, error_code);
                 }
             }
         }
@@ -3312,6 +3348,11 @@ impl Controller {
             ll::ControlPdu::CisInd { cig_id, cis_id } => {
                 self.on_le_cis_established(cig_id, cis_id);
             }
+            ll::ControlPdu::CisTerminateInd {
+                cig_id,
+                cis_id,
+                error_code,
+            } => self.on_le_cis_disconnected(cig_id, cis_id, error_code),
             ll::ControlPdu::TerminateInd { error_code } => {
                 let peer = sender_address.clone();
                 self.on_peer_disconnect(&self_addr, &peer, ConnectionKind::LeAcl, error_code);
@@ -3714,34 +3755,6 @@ impl Controller {
         &self.synchronous_connections
     }
 
-    fn has_connection(
-        &self,
-        self_address: &Address,
-        peer_address: &Address,
-        kind: ConnectionKind,
-    ) -> bool {
-        let matches = |connection: &Connection| {
-            connection.self_address == *self_address && connection.peer_address == *peer_address
-        };
-        match kind {
-            ConnectionKind::LeAcl => self.connections.iter().any(matches),
-            ConnectionKind::ClassicAcl => self.classic_connections.iter().any(matches),
-            ConnectionKind::Synchronous => self.synchronous_connections.iter().any(|connection| {
-                connection.self_address == *self_address && connection.peer_address == *peer_address
-            }),
-            ConnectionKind::Iso { cig_id, cis_id } => self
-                .central_cis_links
-                .iter()
-                .chain(self.peripheral_cis_links.iter())
-                .any(|link| {
-                    link.cig_id == cig_id
-                        && link.cis_id == cis_id
-                        && link.acl_self == *self_address
-                        && link.acl_peer == *peer_address
-                }),
-        }
-    }
-
     /// `true` if an `LE_Create_Connection` is pending (initiating).
     pub fn is_initiating(&self) -> bool {
         self.initiating.is_some()
@@ -3892,27 +3905,26 @@ impl Controller {
             })
     }
 
-    /// Handle a host-initiated `HCI_Disconnect`: acknowledge with a Command
-    /// Status, emit a Disconnection Complete, and drop the connection. Returns
-    /// the endpoint addresses and connection kind so the link can notify the
-    /// peer, or `None` if no such connection existed.
-    pub fn request_disconnect(
-        &mut self,
-        handle: u16,
-        reason: u8,
-    ) -> Option<(Address, Address, ConnectionKind)> {
-        let (self_address, peer_address, kind, dependent_handles) = if let Some(index) =
-            self.connections.iter().position(|c| c.handle == handle)
-        {
+    /// Handle a host-initiated `HCI_Disconnect`: acknowledge with Command
+    /// Status, complete locally, and queue the same LL/LMP teardown object that
+    /// upstream sends through `LocalLink`. The peer observes it on the next
+    /// matching link pump.
+    pub fn request_disconnect(&mut self, handle: u16, reason: u8) -> bool {
+        self.command_status(HCI_DISCONNECT_COMMAND, HCI_SUCCESS);
+        if let Some(index) = self.connections.iter().position(|c| c.handle == handle) {
             let connection = self.connections.remove(index);
             let dependent_handles =
-                self.remove_cis_for_acl(&connection.self_address, &connection.peer_address);
-            (
+                self.disconnect_cis_for_acl(&connection.self_address, &connection.peer_address);
+            self.queue_ll(
                 connection.self_address,
                 connection.peer_address,
-                ConnectionKind::LeAcl,
-                dependent_handles,
-            )
+                ll::ControlPdu::TerminateInd { error_code: reason },
+            );
+            for dependent_handle in dependent_handles {
+                self.push_disconnection_complete(dependent_handle, reason);
+            }
+            self.push_disconnection_complete(handle, reason);
+            true
         } else if let Some(index) = self
             .classic_connections
             .iter()
@@ -3921,47 +3933,59 @@ impl Controller {
             let connection = self.classic_connections.remove(index);
             let dependent_synchronous_handles = self
                 .remove_synchronous_for_peer(&connection.self_address, &connection.peer_address);
-            (
+            self.queue_classic(
                 connection.self_address,
                 connection.peer_address,
-                ConnectionKind::ClassicAcl,
-                dependent_synchronous_handles,
-            )
+                lmp::ClassicPdu::Detach { error_code: reason },
+            );
+            for dependent_handle in dependent_synchronous_handles {
+                self.push_disconnection_complete(dependent_handle, reason);
+            }
+            self.push_disconnection_complete(handle, reason);
+            true
         } else if let Some(index) = self
             .synchronous_connections
             .iter()
             .position(|c| c.handle == handle)
         {
             let connection = self.synchronous_connections.remove(index);
-            (
+            self.queue_classic(
                 connection.self_address,
                 connection.peer_address,
-                ConnectionKind::Synchronous,
-                Vec::new(),
-            )
-        } else if let Some(connection) = self.remove_cis_by_handle(handle) {
-            (
-                connection.acl_self,
-                connection.acl_peer,
-                ConnectionKind::Iso {
-                    cig_id: connection.cig_id,
-                    cis_id: connection.cis_id,
-                },
-                Vec::new(),
-            )
+                lmp::ClassicPdu::SynchronousDetach { error_code: reason },
+            );
+            self.push_disconnection_complete(handle, reason);
+            true
+        } else if let Some((cig_id, cis_id, acl_self, acl_peer)) = self
+            .central_cis_links
+            .iter()
+            .chain(self.peripheral_cis_links.iter())
+            .find(|link| link.handle == handle)
+            .map(|link| {
+                (
+                    link.cig_id,
+                    link.cis_id,
+                    link.acl_self.clone(),
+                    link.acl_peer.clone(),
+                )
+            })
+        {
+            if let (Some(acl_self), Some(acl_peer)) = (acl_self, acl_peer) {
+                self.queue_ll(
+                    acl_self,
+                    acl_peer,
+                    ll::ControlPdu::CisTerminateInd {
+                        cig_id,
+                        cis_id,
+                        error_code: reason,
+                    },
+                );
+                self.on_le_cis_disconnected(cig_id, cis_id, reason);
+            }
+            true
         } else {
-            return None;
-        };
-        self.host_queue.push(HciPacket::Event(Event::CommandStatus {
-            status: HCI_SUCCESS,
-            num_hci_command_packets: 1,
-            command_opcode: HCI_DISCONNECT_COMMAND,
-        }));
-        for dependent_handle in dependent_handles {
-            self.push_disconnection_complete(dependent_handle, reason);
+            false
         }
-        self.push_disconnection_complete(handle, reason);
-        Some((self_address, peer_address, kind))
     }
 
     /// Notify this controller that the peer dropped the connection identified by
@@ -3981,7 +4005,7 @@ impl Controller {
                 .position(|c| c.self_address == *self_address && c.peer_address == *peer_address)
                 .map(|index| self.connections.remove(index))
                 .map(|connection| {
-                    let dependent_handles = self.remove_cis_for_acl(self_address, peer_address);
+                    let dependent_handles = self.disconnect_cis_for_acl(self_address, peer_address);
                     (connection.handle, dependent_handles)
                 }),
             ConnectionKind::ClassicAcl => self
@@ -4006,8 +4030,8 @@ impl Controller {
                     )
                 }),
             ConnectionKind::Iso { cig_id, cis_id } => self
-                .remove_cis_for_peer(self_address, peer_address, cig_id, cis_id)
-                .map(|connection| (connection.handle, Vec::new())),
+                .disconnect_cis_for_peer(self_address, peer_address, cig_id, cis_id)
+                .map(|handle| (handle, Vec::new())),
         };
         if let Some((handle, dependent_synchronous_handles)) = connection {
             for dependent_handle in dependent_synchronous_handles {
@@ -4037,53 +4061,54 @@ impl Controller {
         handles
     }
 
-    fn remove_cis_for_acl(&mut self, self_address: &Address, peer_address: &Address) -> Vec<u16> {
+    fn disconnect_cis_for_acl(
+        &mut self,
+        self_address: &Address,
+        peer_address: &Address,
+    ) -> Vec<u16> {
         let mut handles = Vec::new();
-        self.central_cis_links
-            .retain(|link| retain_other_cis(link, self_address, peer_address, &mut handles));
+        for link in &mut self.central_cis_links {
+            if link.acl_self.as_ref() == Some(self_address)
+                && link.acl_peer.as_ref() == Some(peer_address)
+            {
+                handles.push(link.handle);
+                link.acl_self = None;
+                link.acl_peer = None;
+                link.data_paths = 0;
+            }
+        }
         self.peripheral_cis_links
             .retain(|link| retain_other_cis(link, self_address, peer_address, &mut handles));
         handles
     }
 
-    fn remove_cis_by_handle(&mut self, handle: u16) -> Option<CisLink> {
-        if let Some(index) = self
-            .central_cis_links
-            .iter()
-            .position(|link| link.handle == handle)
-        {
-            return Some(self.central_cis_links.remove(index));
-        }
-        self.peripheral_cis_links
-            .iter()
-            .position(|link| link.handle == handle)
-            .map(|index| self.peripheral_cis_links.remove(index))
-    }
-
-    fn remove_cis_for_peer(
+    fn disconnect_cis_for_peer(
         &mut self,
         self_address: &Address,
         peer_address: &Address,
         cig_id: u8,
         cis_id: u8,
-    ) -> Option<CisLink> {
-        if let Some(index) = self.central_cis_links.iter().position(|link| {
+    ) -> Option<u16> {
+        if let Some(link) = self.central_cis_links.iter_mut().find(|link| {
             link.cig_id == cig_id
                 && link.cis_id == cis_id
-                && link.acl_self == *self_address
-                && link.acl_peer == *peer_address
+                && link.acl_self.as_ref() == Some(self_address)
+                && link.acl_peer.as_ref() == Some(peer_address)
         }) {
-            return Some(self.central_cis_links.remove(index));
+            link.acl_self = None;
+            link.acl_peer = None;
+            link.data_paths = 0;
+            return Some(link.handle);
         }
         self.peripheral_cis_links
             .iter()
             .position(|link| {
                 link.cig_id == cig_id
                     && link.cis_id == cis_id
-                    && link.acl_self == *self_address
-                    && link.acl_peer == *peer_address
+                    && link.acl_self.as_ref() == Some(self_address)
+                    && link.acl_peer.as_ref() == Some(peer_address)
             })
-            .map(|index| self.peripheral_cis_links.remove(index))
+            .map(|index| self.peripheral_cis_links.remove(index).handle)
     }
 
     fn push_disconnection_complete(&mut self, connection_handle: u16, reason: u8) {
@@ -4255,7 +4280,8 @@ fn retain_other_cis(
     peer_address: &Address,
     removed_handles: &mut Vec<u16>,
 ) -> bool {
-    if link.acl_self == *self_address && link.acl_peer == *peer_address {
+    if link.acl_self.as_ref() == Some(self_address) && link.acl_peer.as_ref() == Some(peer_address)
+    {
         removed_handles.push(link.handle);
         false
     } else {
@@ -4677,23 +4703,11 @@ impl LocalLink {
         true
     }
 
-    /// Disconnect the connection `connection_handle` on controller `from`,
-    /// notifying both sides with a Disconnection Complete. Returns `true` if the
-    /// connection existed.
+    /// Disconnect the connection `connection_handle` on controller `from`.
+    /// The initiating side completes immediately; the peer receives the queued
+    /// LL or LMP teardown when [`Self::pump_ll`] or [`Self::pump_classic`] runs.
+    /// Returns `true` if the connection or configured CIS handle existed.
     pub fn disconnect(&mut self, from: usize, connection_handle: u16, reason: u8) -> bool {
-        let Some((self_address, peer_address, kind)) =
-            self.controllers[from].request_disconnect(connection_handle, reason)
-        else {
-            return false;
-        };
-
-        // Notify the peer (its endpoints are the mirror of ours).
-        let peer = self.controllers.iter().enumerate().position(|(i, ctrl)| {
-            i != from && ctrl.has_connection(&peer_address, &self_address, kind)
-        });
-        if let Some(i) = peer {
-            self.controllers[i].on_peer_disconnect(&peer_address, &self_address, kind, reason);
-        }
-        true
+        self.controllers[from].request_disconnect(connection_handle, reason)
     }
 }

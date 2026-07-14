@@ -216,3 +216,92 @@ fn iso_data_path_rejects_unknown_handles_and_directions() {
     assert_eq!(setup_path(&mut link, central, 0x0FFF, 0), 0x02);
     assert_eq!(setup_path(&mut link, central, central_cis, 2), 0x12);
 }
+
+#[test]
+fn cis_termination_is_pumped_and_central_handle_can_be_reused() {
+    let (mut link, central, peripheral, central_cis, peripheral_cis) = connected_cis();
+    let acl_handle = link.controller(central).connections()[0].handle;
+
+    link.handle_command(
+        central,
+        Command::Disconnect {
+            connection_handle: central_cis,
+            reason: 0x13,
+        },
+    );
+    let central_events = link.drain_host_events(central);
+    assert!(central_events.iter().any(|packet| matches!(
+        packet,
+        HciPacket::Event(Event::CommandStatus { status: 0, .. })
+    )));
+    assert!(central_events.iter().any(|packet| matches!(
+        packet,
+        HciPacket::Event(Event::DisconnectionComplete {
+            connection_handle,
+            reason: 0x13,
+            ..
+        }) if *connection_handle == central_cis
+    )));
+    assert!(link.drain_host_events(peripheral).is_empty());
+
+    link.pump_ll();
+    let peripheral_events = link.drain_host_events(peripheral);
+    assert!(peripheral_events.iter().any(|packet| matches!(
+        packet,
+        HciPacket::Event(Event::DisconnectionComplete {
+            connection_handle,
+            reason: 0x13,
+            ..
+        }) if *connection_handle == peripheral_cis
+    )));
+
+    // Upstream keeps central CIS handles allocated after teardown. Reusing the
+    // same handle starts a fresh CIS exchange and allocates a new peer handle.
+    link.handle_command(
+        central,
+        Command::LeCreateCis {
+            cis_connection_handle: vec![central_cis],
+            acl_connection_handle: vec![acl_handle],
+        },
+    );
+    assert!(link
+        .drain_host_events(central)
+        .iter()
+        .any(|packet| matches!(
+            packet,
+            HciPacket::Event(Event::CommandStatus { status: 0, .. })
+        )));
+    link.pump_ll();
+    let replacement_peripheral_cis = link
+        .drain_host_events(peripheral)
+        .iter()
+        .find_map(|packet| match packet {
+            HciPacket::Event(Event::LeMeta(LeMetaEvent::CisRequest {
+                cis_connection_handle,
+                ..
+            })) => Some(*cis_connection_handle),
+            _ => None,
+        })
+        .expect("replacement CIS request");
+    assert_ne!(replacement_peripheral_cis, peripheral_cis);
+
+    link.handle_command(
+        peripheral,
+        Command::LeAcceptCisRequest {
+            connection_handle: replacement_peripheral_cis,
+        },
+    );
+    let _ = link.drain_host_events(peripheral);
+    link.pump_ll();
+    assert!(link
+        .drain_host_events(central)
+        .iter()
+        .any(|packet| matches!(
+            packet,
+            HciPacket::Event(Event::LeMeta(LeMetaEvent::CisEstablished {
+                status: 0,
+                connection_handle,
+                ..
+            })) if *connection_handle == central_cis
+        )));
+}

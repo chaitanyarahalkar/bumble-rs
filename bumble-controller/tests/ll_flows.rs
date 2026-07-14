@@ -5,6 +5,7 @@
 //! Features event) — driven over the in-process `LocalLink`.
 
 use bumble::{Address, AddressType};
+use bumble_controller::ll::{ControlOpcode, ControlPdu};
 use bumble_controller::{Controller, LocalLink};
 use bumble_hci::{Command, Event, HciPacket, LeMetaEvent};
 
@@ -76,6 +77,74 @@ fn has_encryption_change(events: &[HciPacket]) -> bool {
             })
         )
     })
+}
+
+#[test]
+fn modeled_control_pdus_report_their_catalog_opcodes() {
+    let cases = [
+        (
+            ControlPdu::TerminateInd { error_code: 0x13 },
+            ControlOpcode::TerminateInd,
+        ),
+        (
+            ControlPdu::EncReq {
+                rand: [0; 8],
+                ediv: 0,
+                ltk: [0; 16],
+            },
+            ControlOpcode::EncReq,
+        ),
+        (
+            ControlPdu::FeatureReq {
+                feature_set: [0; 8],
+            },
+            ControlOpcode::FeatureReq,
+        ),
+        (
+            ControlPdu::FeatureRsp {
+                feature_set: [0; 8],
+            },
+            ControlOpcode::FeatureRsp,
+        ),
+        (
+            ControlPdu::PeripheralFeatureReq {
+                feature_set: [0; 8],
+            },
+            ControlOpcode::PeripheralFeatureReq,
+        ),
+        (
+            ControlPdu::CisReq {
+                cig_id: 1,
+                cis_id: 2,
+            },
+            ControlOpcode::CisReq,
+        ),
+        (
+            ControlPdu::CisRsp {
+                cig_id: 1,
+                cis_id: 2,
+            },
+            ControlOpcode::CisRsp,
+        ),
+        (
+            ControlPdu::CisInd {
+                cig_id: 1,
+                cis_id: 2,
+            },
+            ControlOpcode::CisInd,
+        ),
+        (
+            ControlPdu::CisTerminateInd {
+                cig_id: 1,
+                cis_id: 2,
+                error_code: 0x13,
+            },
+            ControlOpcode::CisTerminateInd,
+        ),
+    ];
+    for (pdu, opcode) in cases {
+        assert_eq!(pdu.opcode(), opcode);
+    }
 }
 
 #[test]
