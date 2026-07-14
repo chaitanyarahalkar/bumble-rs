@@ -1,11 +1,14 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use bumble::{Address, AddressType};
+use bumble_controller::{Controller, LocalLink};
 use bumble_hci::{AclDataPacket, Command, HciPacket, IsoDataPacket};
 use bumble_host::{
-    Device, DeviceConfiguration, DeviceConfigurationError, HostTransport, DEVICE_DEFAULT_ADDRESS,
-    DEVICE_DEFAULT_ADVERTISING_INTERVAL, DEVICE_DEFAULT_LE_RPA_TIMEOUT, DEVICE_DEFAULT_NAME,
+    pump, Device, DeviceConfiguration, DeviceConfigurationError, DevicePowerError, HostTransport,
+    DEVICE_DEFAULT_ADDRESS, DEVICE_DEFAULT_ADVERTISING_INTERVAL, DEVICE_DEFAULT_LE_RPA_TIMEOUT,
+    DEVICE_DEFAULT_NAME,
 };
+use bumble_smp::verify_resolvable_private_address;
 
 #[derive(Default)]
 struct CapturingTransport {
@@ -210,6 +213,248 @@ fn file_constructor_and_configured_advertising_are_live() {
             advertising_enable: 1,
         }
     );
+}
+
+#[test]
+fn default_power_on_generates_and_programs_a_static_address() {
+    let mut device = Device::new(3);
+    let mut transport = CapturingTransport::default();
+
+    device.power_on(&mut transport).unwrap();
+
+    assert!(device.is_powered_on());
+    assert!(device.static_address().is_static());
+    assert_eq!(device.random_address(), device.static_address());
+    assert_eq!(transport.commands.len(), 4);
+    assert_eq!(transport.commands[0], (3, Command::Reset));
+    assert_eq!(transport.commands[1], (3, Command::ReadBdAddr));
+    assert_eq!(
+        transport.commands[2],
+        (
+            3,
+            Command::WriteLeHostSupport {
+                le_supported_host: 1,
+                simultaneous_le_host: 0,
+            },
+        )
+    );
+    assert_eq!(
+        transport.commands[3].1,
+        Command::LeSetRandomAddress {
+            random_address: device.random_address().clone(),
+        }
+    );
+
+    device.power_off();
+    assert!(!device.is_powered_on());
+}
+
+#[test]
+fn privacy_and_optional_le_features_follow_power_on_configuration() {
+    let irk = [
+        0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE,
+        0xFF,
+    ];
+    let config = DeviceConfiguration {
+        address: Address::parse("C0:11:22:33:44:55", AddressType::RANDOM_DEVICE).unwrap(),
+        irk: irk.to_vec(),
+        le_privacy_enabled: true,
+        address_resolution_offload: true,
+        cis_enabled: true,
+        le_subrate_enabled: true,
+        channel_sounding_enabled: true,
+        le_shorter_connection_intervals_enabled: true,
+        ..DeviceConfiguration::default()
+    };
+    let mut device = Device::from_config(0, config);
+    let mut transport = CapturingTransport::default();
+
+    device.power_on(&mut transport).unwrap();
+
+    assert!(verify_resolvable_private_address(
+        &irk,
+        device.random_address()
+    ));
+    assert_eq!(transport.commands.len(), 10);
+    assert!(matches!(
+        transport.commands[3].1,
+        Command::LeSetRandomAddress { .. }
+    ));
+    assert_eq!(
+        transport.commands[4].1,
+        Command::LeSetAddressResolutionEnable {
+            address_resolution_enable: 1,
+        }
+    );
+    for (index, bit_number) in [(5, 32), (6, 38), (7, 47), (9, 73)] {
+        assert_eq!(
+            transport.commands[index].1,
+            Command::LeSetHostFeature {
+                bit_number,
+                bit_value: 1,
+            }
+        );
+    }
+    assert_eq!(
+        transport.commands[8].1,
+        Command::LeCsReadLocalSupportedCapabilities
+    );
+
+    let rotated = device.update_rpa(&mut transport).unwrap();
+    assert!(verify_resolvable_private_address(&irk, &rotated));
+    assert_eq!(device.random_address(), &rotated);
+    assert_eq!(
+        transport.commands.last().unwrap().1,
+        Command::LeSetRandomAddress {
+            random_address: rotated,
+        }
+    );
+}
+
+#[test]
+fn classic_power_on_matches_upstream_visibility_and_security_order() {
+    let config = DeviceConfiguration {
+        name: "Rust Bumble".into(),
+        class_of_device: 0x123456,
+        le_enabled: false,
+        classic_enabled: true,
+        classic_ssp_enabled: false,
+        classic_sc_enabled: true,
+        connectable: false,
+        discoverable: true,
+        ..DeviceConfiguration::default()
+    };
+    let mut device = Device::from_config(4, config);
+    let mut transport = CapturingTransport::default();
+
+    device.power_on(&mut transport).unwrap();
+
+    assert_eq!(transport.commands.len(), 12);
+    assert_eq!(
+        transport.commands[2].1,
+        Command::WriteLeHostSupport {
+            le_supported_host: 0,
+            simultaneous_le_host: 0,
+        }
+    );
+    assert!(matches!(
+        &transport.commands[3].1,
+        Command::WriteLocalName { local_name }
+            if &local_name[..11] == b"Rust Bumble"
+                && local_name[11..].iter().all(|byte| *byte == 0)
+    ));
+    assert_eq!(
+        transport.commands[4].1,
+        Command::WriteClassOfDevice {
+            class_of_device: 0x123456,
+        }
+    );
+    assert_eq!(
+        transport.commands[5].1,
+        Command::WriteSimplePairingMode {
+            simple_pairing_mode: 0,
+        }
+    );
+    assert_eq!(
+        transport.commands[6].1,
+        Command::WriteSecureConnectionsHostSupport {
+            secure_connections_host_support: 1,
+        }
+    );
+    assert_eq!(
+        transport.commands[7].1,
+        Command::WriteScanEnable { scan_enable: 1 }
+    );
+    assert!(matches!(
+        &transport.commands[8].1,
+        Command::WriteExtendedInquiryResponse {
+            fec_required: 0,
+            extended_inquiry_response,
+        } if &extended_inquiry_response[..13] == b"\x0C\x09Rust Bumble"
+            && extended_inquiry_response[13..].iter().all(|byte| *byte == 0)
+    ));
+    assert_eq!(
+        transport.commands[9].1,
+        Command::WriteScanEnable { scan_enable: 1 }
+    );
+    assert_eq!(
+        transport.commands[10].1,
+        Command::WritePageScanType { page_scan_type: 1 }
+    );
+    assert_eq!(
+        transport.commands[11].1,
+        Command::WriteInquiryScanType { scan_type: 1 }
+    );
+}
+
+#[test]
+fn configured_power_on_is_live_against_the_software_controller() {
+    let public = Address::parse("00:11:22:33:44:55", AddressType::PUBLIC_DEVICE).unwrap();
+    let random = Address::parse("C0:11:22:33:44:66", AddressType::RANDOM_DEVICE).unwrap();
+    let mut link = LocalLink::new();
+    let controller_id = link.add_controller(Controller::new("before", public.clone()));
+    let config = DeviceConfiguration {
+        name: "Powered".into(),
+        address: random.clone(),
+        class_of_device: 0x654321,
+        classic_enabled: true,
+        cis_enabled: true,
+        le_subrate_enabled: true,
+        le_shorter_connection_intervals_enabled: true,
+        ..DeviceConfiguration::default()
+    };
+    let mut device = Device::from_config(controller_id, config);
+
+    device.power_on(&mut link).unwrap();
+    pump(&mut link, std::slice::from_mut(&mut device));
+
+    assert_eq!(device.public_address(), Some(&public));
+    let controller = link.controller(controller_id);
+    assert_eq!(controller.name, "Powered");
+    assert_eq!(controller.random_address(), &random);
+    assert_eq!(controller.class_of_device(), 0x654321);
+    assert_eq!(controller.classic_scan_enable(), 3);
+    assert!(controller.secure_connections_host_support());
+    assert_eq!(controller.page_scan_type(), 1);
+    assert_eq!(controller.inquiry_scan_type(), 1);
+    assert_eq!(
+        &controller.extended_inquiry_response()[..9],
+        b"\x08\x09Powered"
+    );
+    for bit_number in [32usize, 38, 73] {
+        assert_ne!(
+            controller.local_le_features()[bit_number / 8] & (1 << (bit_number % 8)),
+            0
+        );
+    }
+}
+
+#[test]
+fn power_on_validation_is_atomic() {
+    let config = DeviceConfiguration {
+        le_privacy_enabled: true,
+        irk: vec![0; 15],
+        ..DeviceConfiguration::default()
+    };
+    let mut device = Device::from_config(0, config);
+    let mut transport = CapturingTransport::default();
+    assert_eq!(
+        device.power_on(&mut transport),
+        Err(DevicePowerError::InvalidIrkLength { actual: 15 })
+    );
+    assert!(transport.commands.is_empty());
+
+    let config = DeviceConfiguration {
+        classic_enabled: true,
+        class_of_device: 0x0100_0000,
+        ..DeviceConfiguration::default()
+    };
+    let mut device = Device::from_config(0, config);
+    assert_eq!(
+        device.power_on(&mut transport),
+        Err(DevicePowerError::ClassOfDeviceOutOfRange { value: 0x0100_0000 })
+    );
+    assert!(transport.commands.is_empty());
 }
 
 #[test]

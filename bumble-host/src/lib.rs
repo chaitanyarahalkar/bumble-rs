@@ -67,6 +67,77 @@ fn advertising_interval_units(milliseconds: f64) -> Option<u16> {
         .then_some(units as u16)
 }
 
+const LE_FEATURE_CONNECTED_ISOCHRONOUS_STREAM: u8 = 32;
+const LE_FEATURE_CONNECTION_SUBRATING_HOST_SUPPORT: u8 = 38;
+const LE_FEATURE_CHANNEL_SOUNDING_HOST_SUPPORT: u8 = 47;
+const LE_FEATURE_SHORTER_CONNECTION_INTERVALS_HOST_SUPPORT: u8 = 73;
+
+/// Validation failures raised before a configured [`Device`] is powered on.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DevicePowerError {
+    InvalidIrkLength { actual: usize },
+    LocalNameTooLong { actual: usize, maximum: usize },
+    ClassOfDeviceOutOfRange { value: u32 },
+    NotPoweredOn,
+    PrivacyDisabled,
+}
+
+impl std::fmt::Display for DevicePowerError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidIrkLength { actual } => {
+                write!(f, "IRK must contain 16 bytes, got {actual}")
+            }
+            Self::LocalNameTooLong { actual, maximum } => write!(
+                f,
+                "UTF-8 local name is {actual} bytes, maximum is {maximum}"
+            ),
+            Self::ClassOfDeviceOutOfRange { value } => {
+                write!(f, "Class of Device 0x{value:08X} does not fit in 24 bits")
+            }
+            Self::NotPoweredOn => write!(f, "device is not powered on"),
+            Self::PrivacyDisabled => write!(f, "LE privacy is disabled"),
+        }
+    }
+}
+
+impl std::error::Error for DevicePowerError {}
+
+fn random_static_address() -> Address {
+    let random = bumble_crypto::random_128();
+    let mut bytes: [u8; 6] = random[..6].try_into().expect("six-byte slice");
+    bytes[5] |= 0xC0;
+    Address::from_bytes(bytes, bumble::AddressType::RANDOM_DEVICE)
+}
+
+fn padded_local_name(name: &str) -> Result<[u8; 248], DevicePowerError> {
+    let bytes = name.as_bytes();
+    if bytes.len() > 248 {
+        return Err(DevicePowerError::LocalNameTooLong {
+            actual: bytes.len(),
+            maximum: 248,
+        });
+    }
+    let mut local_name = [0; 248];
+    local_name[..bytes.len()].copy_from_slice(bytes);
+    Ok(local_name)
+}
+
+fn default_inquiry_response(name: &str) -> Result<[u8; 240], DevicePowerError> {
+    let bytes = name.as_bytes();
+    if bytes.len() > 238 {
+        return Err(DevicePowerError::LocalNameTooLong {
+            actual: bytes.len(),
+            maximum: 238,
+        });
+    }
+    let mut response = [0; 240];
+    response[0] = (bytes.len() + 1) as u8;
+    response[1] = 0x09;
+    response[2..2 + bytes.len()].copy_from_slice(bytes);
+    Ok(response)
+}
+
 /// Stable server context identity for a connection's fixed ATT bearer.
 pub const fn att_bearer_id(connection_handle: u16) -> u64 {
     connection_handle as u64
@@ -1303,6 +1374,10 @@ pub struct PeriodicAdvertisement {
 /// ATT↔L2CAP↔ACL sequencing.
 pub struct Device {
     pub config: DeviceConfiguration,
+    powered_on: bool,
+    public_address: Option<Address>,
+    static_address: Address,
+    random_address: Address,
     controller_id: usize,
     server: Option<Box<dyn AttRequestHandler>>,
     connection_handle: Option<u16>,
@@ -1383,8 +1458,14 @@ pub struct Device {
 impl Device {
     /// A client-only device (no attribute server).
     pub fn new(controller_id: usize) -> Device {
+        let config = DeviceConfiguration::default();
+        let static_address = config.address.clone();
         Device {
-            config: DeviceConfiguration::default(),
+            config,
+            powered_on: false,
+            public_address: None,
+            random_address: static_address.clone(),
+            static_address,
             controller_id,
             server: None,
             connection_handle: None,
@@ -1465,8 +1546,14 @@ impl Device {
     /// A device that also answers ATT requests using the given handler
     /// (an [`bumble_gatt::AttServer`] or a full [`bumble_gatt::GattServer`]).
     pub fn with_server(controller_id: usize, server: impl AttRequestHandler + 'static) -> Device {
+        let config = DeviceConfiguration::default();
+        let static_address = config.address.clone();
         Device {
-            config: DeviceConfiguration::default(),
+            config,
+            powered_on: false,
+            public_address: None,
+            random_address: static_address.clone(),
+            static_address,
             controller_id,
             server: Some(Box::new(server)),
             connection_handle: None,
@@ -1547,7 +1634,7 @@ impl Device {
     /// Build a client-only device from a reusable upstream-style configuration.
     pub fn from_config(controller_id: usize, config: DeviceConfiguration) -> Device {
         let mut device = Self::new(controller_id);
-        device.config = config;
+        device.install_configuration(config);
         device
     }
 
@@ -1569,8 +1656,220 @@ impl Device {
         server: impl AttRequestHandler + 'static,
     ) -> Device {
         let mut device = Self::with_server(controller_id, server);
-        device.config = config;
+        device.install_configuration(config);
         device
+    }
+
+    fn install_configuration(&mut self, config: DeviceConfiguration) {
+        self.static_address = config.address.clone();
+        self.random_address = config.address.clone();
+        self.config = config;
+    }
+
+    /// Whether the configured controller setup has been submitted successfully.
+    pub fn is_powered_on(&self) -> bool {
+        self.powered_on
+    }
+
+    /// Public controller address learned from `HCI_Read_BD_ADDR` after power-on.
+    pub fn public_address(&self) -> Option<&Address> {
+        self.public_address.as_ref()
+    }
+
+    /// Stable random identity configured for this device.
+    pub fn static_address(&self) -> &Address {
+        &self.static_address
+    }
+
+    /// Random address currently programmed into the controller.
+    pub fn random_address(&self) -> &Address {
+        &self.random_address
+    }
+
+    /// Reset and configure the controller from this device's loaded configuration.
+    ///
+    /// This is the command-oriented counterpart to upstream `Device.power_on`.
+    /// Command completions remain asynchronous and are consumed by [`Device::poll`],
+    /// matching the rest of this crate's explicit event-journal design.
+    pub fn power_on(&mut self, link: &mut LocalLink) -> Result<(), DevicePowerError> {
+        let (local_name, inquiry_response) = if self.config.classic_enabled {
+            if self.config.class_of_device > 0x00FF_FFFF {
+                return Err(DevicePowerError::ClassOfDeviceOutOfRange {
+                    value: self.config.class_of_device,
+                });
+            }
+            (
+                Some(padded_local_name(&self.config.name)?),
+                Some(default_inquiry_response(&self.config.name)?),
+            )
+        } else {
+            (None, None)
+        };
+
+        let irk = if self.config.le_privacy_enabled {
+            Some(self.config.irk.as_slice().try_into().map_err(|_| {
+                DevicePowerError::InvalidIrkLength {
+                    actual: self.config.irk.len(),
+                }
+            })?)
+        } else {
+            None
+        };
+
+        let any_random = Address::from_bytes([0; 6], bumble::AddressType::RANDOM_DEVICE);
+        if self.static_address == any_random {
+            self.static_address = random_static_address();
+        }
+        self.random_address = if let Some(irk) = irk {
+            bumble_smp::generate_resolvable_private_address(irk)
+        } else {
+            self.static_address.clone()
+        };
+
+        self.powered_on = false;
+        self.public_address = None;
+        self.send_hci_command(link, Command::Reset);
+        self.send_hci_command(link, Command::ReadBdAddr);
+        self.send_hci_command(
+            link,
+            Command::WriteLeHostSupport {
+                le_supported_host: u8::from(self.config.le_enabled),
+                simultaneous_le_host: u8::from(self.config.le_simultaneous_enabled),
+            },
+        );
+
+        if self.config.le_enabled {
+            self.send_hci_command(
+                link,
+                Command::LeSetRandomAddress {
+                    random_address: self.random_address.clone(),
+                },
+            );
+            if self.config.address_resolution_offload {
+                self.send_hci_command(
+                    link,
+                    Command::LeSetAddressResolutionEnable {
+                        address_resolution_enable: 1,
+                    },
+                );
+            }
+            if self.config.cis_enabled {
+                self.send_hci_command(
+                    link,
+                    Command::LeSetHostFeature {
+                        bit_number: LE_FEATURE_CONNECTED_ISOCHRONOUS_STREAM,
+                        bit_value: 1,
+                    },
+                );
+            }
+            if self.config.le_subrate_enabled {
+                self.send_hci_command(
+                    link,
+                    Command::LeSetHostFeature {
+                        bit_number: LE_FEATURE_CONNECTION_SUBRATING_HOST_SUPPORT,
+                        bit_value: 1,
+                    },
+                );
+            }
+            if self.config.channel_sounding_enabled {
+                self.send_hci_command(
+                    link,
+                    Command::LeSetHostFeature {
+                        bit_number: LE_FEATURE_CHANNEL_SOUNDING_HOST_SUPPORT,
+                        bit_value: 1,
+                    },
+                );
+                self.send_hci_command(link, Command::LeCsReadLocalSupportedCapabilities);
+            }
+            if self.config.le_shorter_connection_intervals_enabled {
+                self.send_hci_command(
+                    link,
+                    Command::LeSetHostFeature {
+                        bit_number: LE_FEATURE_SHORTER_CONNECTION_INTERVALS_HOST_SUPPORT,
+                        bit_value: 1,
+                    },
+                );
+            }
+        }
+
+        if self.config.classic_enabled {
+            self.send_hci_command(
+                link,
+                Command::WriteLocalName {
+                    local_name: local_name.expect("validated for Classic configuration"),
+                },
+            );
+            self.send_hci_command(
+                link,
+                Command::WriteClassOfDevice {
+                    class_of_device: self.config.class_of_device,
+                },
+            );
+            self.send_hci_command(
+                link,
+                Command::WriteSimplePairingMode {
+                    simple_pairing_mode: u8::from(self.config.classic_ssp_enabled),
+                },
+            );
+            self.send_hci_command(
+                link,
+                Command::WriteSecureConnectionsHostSupport {
+                    secure_connections_host_support: u8::from(self.config.classic_sc_enabled),
+                },
+            );
+            let scan_enable =
+                u8::from(self.config.discoverable) | (u8::from(self.config.connectable) << 1);
+            // Upstream applies connectability, then discoverability and its EIR.
+            self.send_hci_command(link, Command::WriteScanEnable { scan_enable });
+            self.send_hci_command(
+                link,
+                Command::WriteExtendedInquiryResponse {
+                    fec_required: 0,
+                    extended_inquiry_response: inquiry_response
+                        .expect("validated for Classic configuration"),
+                },
+            );
+            self.send_hci_command(link, Command::WriteScanEnable { scan_enable });
+            if self.config.classic_interlaced_scan_enabled {
+                self.send_hci_command(link, Command::WritePageScanType { page_scan_type: 1 });
+                self.send_hci_command(link, Command::WriteInquiryScanType { scan_type: 1 });
+            }
+        }
+
+        self.powered_on = true;
+        Ok(())
+    }
+
+    /// Mark the host side powered off after any transport-specific flush.
+    pub fn power_off(&mut self) {
+        self.powered_on = false;
+    }
+
+    /// Generate and program a fresh resolvable private address.
+    ///
+    /// Callers provide the scheduling policy, which keeps this synchronous host
+    /// independent of any particular async runtime.
+    pub fn update_rpa(&mut self, link: &mut LocalLink) -> Result<Address, DevicePowerError> {
+        if !self.powered_on {
+            return Err(DevicePowerError::NotPoweredOn);
+        }
+        if !self.config.le_privacy_enabled {
+            return Err(DevicePowerError::PrivacyDisabled);
+        }
+        let irk: &[u8; 16] = self.config.irk.as_slice().try_into().map_err(|_| {
+            DevicePowerError::InvalidIrkLength {
+                actual: self.config.irk.len(),
+            }
+        })?;
+        let address = bumble_smp::generate_resolvable_private_address(irk);
+        self.random_address = address.clone();
+        self.send_hci_command(
+            link,
+            Command::LeSetRandomAddress {
+                random_address: address.clone(),
+            },
+        );
+        Ok(address)
     }
 
     pub fn controller_id(&self) -> usize {
@@ -5168,6 +5467,14 @@ impl Device {
                     }
                     self.cis_control_events
                         .push(CisControlEvent::Established { status, link });
+                }
+                HciPacket::Event(Event::CommandComplete {
+                    command_opcode,
+                    return_parameters:
+                        bumble_hci::ReturnParameters::ReadBdAddr { status: 0, bd_addr },
+                    ..
+                }) if command_opcode == bumble_hci::HCI_READ_BD_ADDR_COMMAND => {
+                    self.public_address = Some(bd_addr);
                 }
                 HciPacket::Event(Event::CommandComplete {
                     command_opcode,

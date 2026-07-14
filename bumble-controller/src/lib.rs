@@ -162,6 +162,7 @@ const RESOLVING_LIST_SIZE: u8 = 8;
 const LE_STATES: [u8; 8] = [0xFF, 0xFF, 0x3F, 0xFF, 0xFF, 0x03, 0, 0];
 const LMP_FEATURE_SECURE_SIMPLE_PAIRING_HOST_SUPPORT: u8 = 0x01;
 const LMP_FEATURE_LE_SUPPORTED_HOST: u8 = 0x02;
+const LMP_FEATURE_SECURE_CONNECTIONS_HOST_SUPPORT: u8 = 0x08;
 const LOCAL_SUPPORTED_COMMANDS: [u8; 64] = [
     0x20, 0x00, 0x80, 0x03, 0x00, 0xc0, 0x00, 0x00, 0x00, 0x00, 0xe4, 0x00, 0x00, 0x00, 0xa8, 0x22,
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0xf7, 0xff, 0xff, 0x7f, 0x00, 0x00, 0x00,
@@ -530,6 +531,11 @@ pub struct Controller {
     pub name: String,
     public_address: Address,
     random_address: Address,
+    class_of_device: u32,
+    extended_inquiry_response: [u8; 240],
+    secure_connections_host_support: bool,
+    inquiry_scan_type: u8,
+    page_scan_type: u8,
     advertising_data: Vec<u8>,
     scan_response_data: Vec<u8>,
     legacy_advertising_parameters: LegacyAdvertisingParameters,
@@ -554,6 +560,7 @@ pub struct Controller {
     rand_counter: u64,
     synchronous_flow_control_enabled: bool,
     lmp_feature_pages: [[u8; 8]; 4],
+    local_le_features: [u8; 248],
     suggested_max_data_octets: u16,
     suggested_max_data_time: u16,
     event_mask: [u8; 8],
@@ -592,10 +599,17 @@ impl Controller {
     /// Create a controller with the given name and public address. The random
     /// address starts as all-zero until set via `LE_Set_Random_Address`.
     pub fn new(name: &str, public_address: Address) -> Controller {
+        let mut local_le_features = [0; 248];
+        local_le_features[..LOCAL_LE_FEATURES.len()].copy_from_slice(&LOCAL_LE_FEATURES);
         Controller {
             name: name.to_string(),
             public_address,
             random_address: Address::from_bytes([0; 6], AddressType::RANDOM_DEVICE),
+            class_of_device: 0,
+            extended_inquiry_response: [0; 240],
+            secure_connections_host_support: false,
+            inquiry_scan_type: 0,
+            page_scan_type: 0,
             advertising_data: Vec::new(),
             scan_response_data: Vec::new(),
             legacy_advertising_parameters: LegacyAdvertisingParameters {
@@ -633,6 +647,7 @@ impl Controller {
             rand_counter: 0,
             synchronous_flow_control_enabled: false,
             lmp_feature_pages: LMP_FEATURE_PAGES,
+            local_le_features,
             suggested_max_data_octets: SUGGESTED_MAX_DATA_OCTETS,
             suggested_max_data_time: SUGGESTED_MAX_DATA_TIME,
             event_mask: [0; 8],
@@ -667,6 +682,30 @@ impl Controller {
 
     pub fn random_address(&self) -> &Address {
         &self.random_address
+    }
+
+    pub fn class_of_device(&self) -> u32 {
+        self.class_of_device
+    }
+
+    pub fn extended_inquiry_response(&self) -> &[u8; 240] {
+        &self.extended_inquiry_response
+    }
+
+    pub fn secure_connections_host_support(&self) -> bool {
+        self.secure_connections_host_support
+    }
+
+    pub fn inquiry_scan_type(&self) -> u8 {
+        self.inquiry_scan_type
+    }
+
+    pub fn page_scan_type(&self) -> u8 {
+        self.page_scan_type
+    }
+
+    pub fn local_le_features(&self) -> &[u8; 248] {
+        &self.local_le_features
     }
 
     /// Set the policy copied to subsequently received Classic ACL requests.
@@ -738,6 +777,15 @@ impl Controller {
                 self.event_mask_page_2 = [0; 8];
                 self.le_event_mask = [0; 8];
                 self.classic_scan_enable = 0;
+                self.class_of_device = 0;
+                self.extended_inquiry_response = [0; 240];
+                self.secure_connections_host_support = false;
+                self.inquiry_scan_type = 0;
+                self.page_scan_type = 0;
+                self.lmp_feature_pages = LMP_FEATURE_PAGES;
+                self.local_le_features = [0; 248];
+                self.local_le_features[..LOCAL_LE_FEATURES.len()]
+                    .copy_from_slice(&LOCAL_LE_FEATURES);
                 self.extended_advertising_sets.clear();
                 self.pending_periodic_sync = None;
                 self.periodic_syncs.clear();
@@ -1105,9 +1153,44 @@ impl Controller {
                     op_code,
                     ReturnParameters::ReadClassOfDevice {
                         status: HCI_SUCCESS,
-                        class_of_device: 0,
+                        class_of_device: self.class_of_device,
                     },
                 );
+            }
+            Command::WriteClassOfDevice { class_of_device } => {
+                if class_of_device > 0x00FF_FFFF {
+                    self.ack(op_code, INVALID_COMMAND_PARAMETERS);
+                } else {
+                    self.class_of_device = class_of_device;
+                    self.ack(op_code, HCI_SUCCESS);
+                }
+            }
+            Command::WriteInquiryScanType { scan_type } => {
+                if scan_type > 1 {
+                    self.ack(op_code, INVALID_COMMAND_PARAMETERS);
+                } else {
+                    self.inquiry_scan_type = scan_type;
+                    self.ack(op_code, HCI_SUCCESS);
+                }
+            }
+            Command::WritePageScanType { page_scan_type } => {
+                if page_scan_type > 1 {
+                    self.ack(op_code, INVALID_COMMAND_PARAMETERS);
+                } else {
+                    self.page_scan_type = page_scan_type;
+                    self.ack(op_code, HCI_SUCCESS);
+                }
+            }
+            Command::WriteExtendedInquiryResponse {
+                fec_required,
+                extended_inquiry_response,
+            } => {
+                if fec_required > 1 {
+                    self.ack(op_code, INVALID_COMMAND_PARAMETERS);
+                } else {
+                    self.extended_inquiry_response = extended_inquiry_response;
+                    self.ack(op_code, HCI_SUCCESS);
+                }
             }
             Command::ReadSynchronousFlowControlEnable => {
                 self.complete(
@@ -1161,6 +1244,22 @@ impl Controller {
                     self.lmp_feature_pages[1][0] &= !LMP_FEATURE_LE_SUPPORTED_HOST;
                 }
                 self.ack(op_code, HCI_SUCCESS);
+            }
+            Command::WriteSecureConnectionsHostSupport {
+                secure_connections_host_support,
+            } => {
+                if secure_connections_host_support > 1 {
+                    self.ack(op_code, INVALID_COMMAND_PARAMETERS);
+                } else {
+                    self.secure_connections_host_support = secure_connections_host_support != 0;
+                    if self.secure_connections_host_support {
+                        self.lmp_feature_pages[1][0] |= LMP_FEATURE_SECURE_CONNECTIONS_HOST_SUPPORT;
+                    } else {
+                        self.lmp_feature_pages[1][0] &=
+                            !LMP_FEATURE_SECURE_CONNECTIONS_HOST_SUPPORT;
+                    }
+                    self.ack(op_code, HCI_SUCCESS);
+                }
             }
             Command::WriteAuthenticatedPayloadTimeout {
                 connection_handle, ..
@@ -1300,25 +1399,47 @@ impl Controller {
                 );
             }
             Command::LeReadLocalSupportedFeatures => {
+                let mut le_features = [0; 8];
+                le_features.copy_from_slice(&self.local_le_features[..8]);
                 self.complete(
                     op_code,
                     ReturnParameters::LeReadLocalSupportedFeatures {
                         status: HCI_SUCCESS,
-                        le_features: LOCAL_LE_FEATURES,
+                        le_features,
                     },
                 );
             }
             Command::LeReadAllLocalSupportedFeatures => {
-                let mut le_features = [0; 248];
-                le_features[..LOCAL_LE_FEATURES.len()].copy_from_slice(&LOCAL_LE_FEATURES);
+                let max_page = self
+                    .local_le_features
+                    .iter()
+                    .rposition(|byte| *byte != 0)
+                    .map_or(0, |index| index / 8) as u8;
                 self.complete(
                     op_code,
                     ReturnParameters::LeReadAllLocalSupportedFeatures {
                         status: HCI_SUCCESS,
-                        max_page: 0,
-                        le_features: Box::new(le_features),
+                        max_page,
+                        le_features: Box::new(self.local_le_features),
                     },
                 );
+            }
+            Command::LeSetHostFeature {
+                bit_number,
+                bit_value,
+            } => {
+                let byte_index = usize::from(bit_number / 8);
+                let bit_mask = 1 << (bit_number % 8);
+                if bit_value > 1 || byte_index >= self.local_le_features.len() {
+                    self.ack(op_code, INVALID_COMMAND_PARAMETERS);
+                } else {
+                    if bit_value == 0 {
+                        self.local_le_features[byte_index] &= !bit_mask;
+                    } else {
+                        self.local_le_features[byte_index] |= bit_mask;
+                    }
+                    self.ack(op_code, HCI_SUCCESS);
+                }
             }
             Command::LeReadSuggestedDefaultDataLength => {
                 self.complete(
@@ -2074,14 +2195,12 @@ impl Controller {
             conn.role,
         );
         self.command_status(HCI_LE_READ_REMOTE_FEATURES_COMMAND, HCI_SUCCESS);
+        let mut feature_set = [0; 8];
+        feature_set.copy_from_slice(&self.local_le_features[..8]);
         let req = if role == ROLE_CENTRAL {
-            ll::ControlPdu::FeatureReq {
-                feature_set: LOCAL_LE_FEATURES,
-            }
+            ll::ControlPdu::FeatureReq { feature_set }
         } else {
-            ll::ControlPdu::PeripheralFeatureReq {
-                feature_set: LOCAL_LE_FEATURES,
-            }
+            ll::ControlPdu::PeripheralFeatureReq { feature_set }
         };
         self.queue_ll(self_addr, peer_addr, req);
     }
@@ -3445,6 +3564,8 @@ impl Controller {
             return;
         };
         let (self_addr, handle) = (conn.self_address.clone(), conn.handle);
+        let mut local_feature_set = [0; 8];
+        local_feature_set.copy_from_slice(&self.local_le_features[..8]);
         match pdu {
             ll::ControlPdu::EncReq { .. } => self.on_le_encrypted(handle),
             ll::ControlPdu::FeatureReq { .. } | ll::ControlPdu::PeripheralFeatureReq { .. } => {
@@ -3452,7 +3573,7 @@ impl Controller {
                     self_addr,
                     sender_address.clone(),
                     ll::ControlPdu::FeatureRsp {
-                        feature_set: LOCAL_LE_FEATURES,
+                        feature_set: local_feature_set,
                     },
                 );
             }
