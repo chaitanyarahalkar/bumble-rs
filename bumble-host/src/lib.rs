@@ -1378,6 +1378,8 @@ pub struct Device {
     public_address: Option<Address>,
     static_address: Address,
     random_address: Address,
+    local_channel_sounding_capabilities: Option<ChannelSoundingCapabilities>,
+    local_channel_sounding_capabilities_status: Option<u8>,
     controller_id: usize,
     server: Option<Box<dyn AttRequestHandler>>,
     connection_handle: Option<u16>,
@@ -1466,6 +1468,8 @@ impl Device {
             public_address: None,
             random_address: static_address.clone(),
             static_address,
+            local_channel_sounding_capabilities: None,
+            local_channel_sounding_capabilities_status: None,
             controller_id,
             server: None,
             connection_handle: None,
@@ -1554,6 +1558,8 @@ impl Device {
             public_address: None,
             random_address: static_address.clone(),
             static_address,
+            local_channel_sounding_capabilities: None,
+            local_channel_sounding_capabilities_status: None,
             controller_id,
             server: Some(Box::new(server)),
             connection_handle: None,
@@ -1686,6 +1692,16 @@ impl Device {
         &self.random_address
     }
 
+    /// Local controller Channel Sounding capabilities learned during power-on.
+    pub fn local_channel_sounding_capabilities(&self) -> Option<ChannelSoundingCapabilities> {
+        self.local_channel_sounding_capabilities
+    }
+
+    /// Completion status for the power-on local Channel Sounding capability read.
+    pub fn local_channel_sounding_capabilities_status(&self) -> Option<u8> {
+        self.local_channel_sounding_capabilities_status
+    }
+
     /// Reset and configure the controller from this device's loaded configuration.
     ///
     /// This is the command-oriented counterpart to upstream `Device.power_on`.
@@ -1728,6 +1744,8 @@ impl Device {
 
         self.powered_on = false;
         self.public_address = None;
+        self.local_channel_sounding_capabilities = None;
+        self.local_channel_sounding_capabilities_status = None;
         self.send_hci_command(link, Command::Reset);
         self.send_hci_command(link, Command::ReadBdAddr);
         self.send_hci_command(
@@ -5467,6 +5485,72 @@ impl Device {
                     }
                     self.cis_control_events
                         .push(CisControlEvent::Established { status, link });
+                }
+                HciPacket::Event(Event::CommandComplete {
+                    command_opcode,
+                    return_parameters:
+                        bumble_hci::ReturnParameters::LeCsReadLocalSupportedCapabilities {
+                            status,
+                            num_config_supported,
+                            max_consecutive_procedures_supported,
+                            num_antennas_supported,
+                            max_antenna_paths_supported,
+                            roles_supported,
+                            modes_supported,
+                            rtt_capability,
+                            rtt_aa_only_n,
+                            rtt_sounding_n,
+                            rtt_random_sequence_n,
+                            nadm_sounding_capability,
+                            nadm_random_capability,
+                            cs_sync_phys_supported,
+                            subfeatures_supported,
+                            t_ip1_times_supported,
+                            t_ip2_times_supported,
+                            t_fcs_times_supported,
+                            t_pm_times_supported,
+                            t_sw_time_supported,
+                            tx_snr_capability,
+                        },
+                    ..
+                }) if command_opcode
+                    == bumble_hci::HCI_LE_CS_READ_LOCAL_SUPPORTED_CAPABILITIES_COMMAND =>
+                {
+                    self.local_channel_sounding_capabilities_status = Some(status);
+                    if status == 0 {
+                        self.local_channel_sounding_capabilities =
+                            Some(ChannelSoundingCapabilities {
+                                num_config_supported,
+                                max_consecutive_procedures_supported,
+                                num_antennas_supported,
+                                max_antenna_paths_supported,
+                                roles_supported,
+                                modes_supported,
+                                rtt_capability,
+                                rtt_aa_only_n,
+                                rtt_sounding_n,
+                                rtt_random_sequence_n,
+                                nadm_sounding_capability,
+                                nadm_random_capability,
+                                cs_sync_phys_supported,
+                                subfeatures_supported,
+                                t_ip1_times_supported,
+                                t_ip2_times_supported,
+                                t_fcs_times_supported,
+                                t_pm_times_supported,
+                                t_sw_time_supported,
+                                tx_snr_capability,
+                            });
+                    }
+                }
+                HciPacket::Event(Event::CommandComplete {
+                    command_opcode,
+                    return_parameters: bumble_hci::ReturnParameters::Status { status },
+                    ..
+                }) if command_opcode
+                    == bumble_hci::HCI_LE_CS_READ_LOCAL_SUPPORTED_CAPABILITIES_COMMAND =>
+                {
+                    self.local_channel_sounding_capabilities_status = Some(status);
                 }
                 HciPacket::Event(Event::CommandComplete {
                     command_opcode,

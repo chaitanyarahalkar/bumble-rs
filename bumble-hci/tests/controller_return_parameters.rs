@@ -155,6 +155,37 @@ fn le_controller_information_returns_are_typed() {
         &all_le_feature_bytes,
     );
     round_trip(
+        HCI_LE_CS_READ_LOCAL_SUPPORTED_CAPABILITIES_COMMAND,
+        ReturnParameters::LeCsReadLocalSupportedCapabilities {
+            status: 0,
+            num_config_supported: 4,
+            max_consecutive_procedures_supported: 0x1234,
+            num_antennas_supported: 2,
+            max_antenna_paths_supported: 4,
+            roles_supported: 3,
+            modes_supported: 7,
+            rtt_capability: 8,
+            rtt_aa_only_n: 9,
+            rtt_sounding_n: 10,
+            rtt_random_sequence_n: 11,
+            nadm_sounding_capability: 0x0C0D,
+            nadm_random_capability: 0x0E0F,
+            cs_sync_phys_supported: 0x10,
+            subfeatures_supported: 0x1112,
+            t_ip1_times_supported: 0x1314,
+            t_ip2_times_supported: 0x1516,
+            t_fcs_times_supported: 0x1718,
+            t_pm_times_supported: 0x191A,
+            t_sw_time_supported: 0x1B,
+            tx_snr_capability: 0x1C,
+        },
+        &[
+            0x00, 0x04, 0x34, 0x12, 0x02, 0x04, 0x03, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0D, 0x0C,
+            0x0F, 0x0E, 0x10, 0x12, 0x11, 0x14, 0x13, 0x16, 0x15, 0x18, 0x17, 0x1A, 0x19, 0x1B,
+            0x1C,
+        ],
+    );
+    round_trip(
         HCI_LE_READ_SUGGESTED_DEFAULT_DATA_LENGTH_COMMAND,
         ReturnParameters::LeReadSuggestedDefaultDataLength {
             status: 0,

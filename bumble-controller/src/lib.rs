@@ -171,8 +171,9 @@ const LOCAL_SUPPORTED_COMMANDS: [u8; 64] = [
 ];
 /// The LE features bitmap reported by `LE_Read_Local_Supported_Features`.
 /// Bit 12 advertises extended advertising; bits 28-31 advertise the central /
-/// peripheral CIS and broadcaster / synchronized-receiver ISO paths.
-const LOCAL_LE_FEATURES: [u8; 8] = [0x00, 0x10, 0x00, 0xF0, 0, 0, 0, 0];
+/// peripheral CIS and broadcaster / synchronized-receiver ISO paths; bit 46
+/// advertises the Channel Sounding command/event model implemented below.
+const LOCAL_LE_FEATURES: [u8; 8] = [0x00, 0x10, 0x00, 0xF0, 0, 0x40, 0, 0];
 /// PHY value for LE 1M, reported when no specific PHY was requested.
 const LE_1M_PHY: u8 = 1;
 /// The four LMP feature pages exposed by upstream's software-controller
@@ -1421,6 +1422,34 @@ impl Controller {
                         status: HCI_SUCCESS,
                         max_page,
                         le_features: Box::new(self.local_le_features),
+                    },
+                );
+            }
+            Command::LeCsReadLocalSupportedCapabilities => {
+                self.complete(
+                    op_code,
+                    ReturnParameters::LeCsReadLocalSupportedCapabilities {
+                        status: HCI_SUCCESS,
+                        num_config_supported: 4,
+                        max_consecutive_procedures_supported: 16,
+                        num_antennas_supported: 1,
+                        max_antenna_paths_supported: 1,
+                        roles_supported: 0x03,
+                        modes_supported: 0x01,
+                        rtt_capability: 0x01,
+                        rtt_aa_only_n: 1,
+                        rtt_sounding_n: 1,
+                        rtt_random_sequence_n: 1,
+                        nadm_sounding_capability: 0x0001,
+                        nadm_random_capability: 0x0001,
+                        cs_sync_phys_supported: 0x01,
+                        subfeatures_supported: 0,
+                        t_ip1_times_supported: 0x000F,
+                        t_ip2_times_supported: 0x000F,
+                        t_fcs_times_supported: 0x000F,
+                        t_pm_times_supported: 0x000F,
+                        t_sw_time_supported: 0x01,
+                        tx_snr_capability: 0x01,
                     },
                 );
             }

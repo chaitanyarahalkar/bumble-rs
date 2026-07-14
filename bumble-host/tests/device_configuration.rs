@@ -400,6 +400,7 @@ fn configured_power_on_is_live_against_the_software_controller() {
         classic_enabled: true,
         cis_enabled: true,
         le_subrate_enabled: true,
+        channel_sounding_enabled: true,
         le_shorter_connection_intervals_enabled: true,
         ..DeviceConfiguration::default()
     };
@@ -409,6 +410,11 @@ fn configured_power_on_is_live_against_the_software_controller() {
     pump(&mut link, std::slice::from_mut(&mut device));
 
     assert_eq!(device.public_address(), Some(&public));
+    assert_eq!(device.local_channel_sounding_capabilities_status(), Some(0));
+    let capabilities = device.local_channel_sounding_capabilities().unwrap();
+    assert_eq!(capabilities.num_config_supported, 4);
+    assert_eq!(capabilities.max_consecutive_procedures_supported, 16);
+    assert_eq!(capabilities.roles_supported, 3);
     let controller = link.controller(controller_id);
     assert_eq!(controller.name, "Powered");
     assert_eq!(controller.random_address(), &random);

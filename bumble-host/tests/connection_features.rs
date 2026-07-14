@@ -36,7 +36,7 @@ fn device_reads_live_le_and_all_classic_feature_pages() {
             .le_connection(le_handle)
             .unwrap()
             .peer_le_features,
-        Some([0x00, 0x10, 0x00, 0xF0, 0, 0, 0, 0])
+        Some([0x00, 0x10, 0x00, 0xF0, 0, 0x40, 0, 0])
     );
 
     devices[0].connect_classic(&mut link, peripheral_address.clone());

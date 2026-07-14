@@ -87,7 +87,7 @@ fn le_read_local_supported_features_returns_bitmap() {
             le_features,
         } => {
             assert_eq!(*status, 0);
-            assert_eq!(*le_features, [0x00, 0x10, 0x00, 0xF0, 0, 0, 0, 0]);
+            assert_eq!(*le_features, [0x00, 0x10, 0x00, 0xF0, 0, 0x40, 0, 0]);
         }
         other => panic!("expected LE feature params, got {other:?}"),
     }
@@ -113,11 +113,43 @@ fn le_read_all_local_supported_features_returns_padded_catalog() {
         } => {
             assert_eq!(*status, 0);
             assert_eq!(*max_page, 0);
-            assert_eq!(&le_features[..8], &[0x00, 0x10, 0x00, 0xF0, 0, 0, 0, 0]);
+            assert_eq!(&le_features[..8], &[0x00, 0x10, 0x00, 0xF0, 0, 0x40, 0, 0]);
             assert!(le_features[8..].iter().all(|feature| *feature == 0));
         }
         other => panic!("expected all LE feature params, got {other:?}"),
     }
+}
+
+#[test]
+fn channel_sounding_local_capabilities_are_typed() {
+    let mut controller = Controller::new("C", addr("00:11:22:33:44:55"));
+    controller.handle_command(Command::LeCsReadLocalSupportedCapabilities);
+    assert_eq!(
+        only_complete(&controller.drain_host_events()),
+        &ReturnParameters::LeCsReadLocalSupportedCapabilities {
+            status: 0,
+            num_config_supported: 4,
+            max_consecutive_procedures_supported: 16,
+            num_antennas_supported: 1,
+            max_antenna_paths_supported: 1,
+            roles_supported: 3,
+            modes_supported: 1,
+            rtt_capability: 1,
+            rtt_aa_only_n: 1,
+            rtt_sounding_n: 1,
+            rtt_random_sequence_n: 1,
+            nadm_sounding_capability: 1,
+            nadm_random_capability: 1,
+            cs_sync_phys_supported: 1,
+            subfeatures_supported: 0,
+            t_ip1_times_supported: 0x000F,
+            t_ip2_times_supported: 0x000F,
+            t_fcs_times_supported: 0x000F,
+            t_pm_times_supported: 0x000F,
+            t_sw_time_supported: 1,
+            tx_snr_capability: 1,
+        }
+    );
 }
 
 #[test]
@@ -404,6 +436,7 @@ fn controller_information_queries_have_typed_serializable_payloads() {
         Command::LeReadBufferSizeV2,
         Command::LeReadLocalSupportedFeatures,
         Command::LeReadAllLocalSupportedFeatures,
+        Command::LeCsReadLocalSupportedCapabilities,
         Command::LeReadSuggestedDefaultDataLength,
         Command::LeReadMaximumDataLength,
         Command::LeReadMaximumAdvertisingDataLength,

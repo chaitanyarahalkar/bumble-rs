@@ -74,6 +74,29 @@ pub enum ReturnParameters {
         max_page: u8,
         le_features: Box<[u8; 248]>,
     },
+    LeCsReadLocalSupportedCapabilities {
+        status: u8,
+        num_config_supported: u8,
+        max_consecutive_procedures_supported: u16,
+        num_antennas_supported: u8,
+        max_antenna_paths_supported: u8,
+        roles_supported: u8,
+        modes_supported: u8,
+        rtt_capability: u8,
+        rtt_aa_only_n: u8,
+        rtt_sounding_n: u8,
+        rtt_random_sequence_n: u8,
+        nadm_sounding_capability: u16,
+        nadm_random_capability: u16,
+        cs_sync_phys_supported: u8,
+        subfeatures_supported: u16,
+        t_ip1_times_supported: u16,
+        t_ip2_times_supported: u16,
+        t_fcs_times_supported: u16,
+        t_pm_times_supported: u16,
+        t_sw_time_supported: u8,
+        tx_snr_capability: u8,
+    },
     ReadBufferSize {
         status: u8,
         hc_acl_data_packet_length: u16,
@@ -217,6 +240,7 @@ impl ReturnParameters {
             | ReturnParameters::ReadLocalExtendedFeatures { status, .. }
             | ReturnParameters::LeReadLocalSupportedFeatures { status, .. }
             | ReturnParameters::LeReadAllLocalSupportedFeatures { status, .. }
+            | ReturnParameters::LeCsReadLocalSupportedCapabilities { status, .. }
             | ReturnParameters::ReadBufferSize { status, .. }
             | ReturnParameters::ReadClassOfDevice { status, .. }
             | ReturnParameters::ReadSynchronousFlowControlEnable { status, .. }
@@ -335,6 +359,51 @@ impl ReturnParameters {
                 p.push(*status);
                 p.push(*max_page);
                 p.extend_from_slice(le_features.as_ref());
+            }
+            ReturnParameters::LeCsReadLocalSupportedCapabilities {
+                status,
+                num_config_supported,
+                max_consecutive_procedures_supported,
+                num_antennas_supported,
+                max_antenna_paths_supported,
+                roles_supported,
+                modes_supported,
+                rtt_capability,
+                rtt_aa_only_n,
+                rtt_sounding_n,
+                rtt_random_sequence_n,
+                nadm_sounding_capability,
+                nadm_random_capability,
+                cs_sync_phys_supported,
+                subfeatures_supported,
+                t_ip1_times_supported,
+                t_ip2_times_supported,
+                t_fcs_times_supported,
+                t_pm_times_supported,
+                t_sw_time_supported,
+                tx_snr_capability,
+            } => {
+                p.push(*status);
+                p.push(*num_config_supported);
+                p.extend_from_slice(&max_consecutive_procedures_supported.to_le_bytes());
+                p.push(*num_antennas_supported);
+                p.push(*max_antenna_paths_supported);
+                p.push(*roles_supported);
+                p.push(*modes_supported);
+                p.push(*rtt_capability);
+                p.push(*rtt_aa_only_n);
+                p.push(*rtt_sounding_n);
+                p.push(*rtt_random_sequence_n);
+                p.extend_from_slice(&nadm_sounding_capability.to_le_bytes());
+                p.extend_from_slice(&nadm_random_capability.to_le_bytes());
+                p.push(*cs_sync_phys_supported);
+                p.extend_from_slice(&subfeatures_supported.to_le_bytes());
+                p.extend_from_slice(&t_ip1_times_supported.to_le_bytes());
+                p.extend_from_slice(&t_ip2_times_supported.to_le_bytes());
+                p.extend_from_slice(&t_fcs_times_supported.to_le_bytes());
+                p.extend_from_slice(&t_pm_times_supported.to_le_bytes());
+                p.push(*t_sw_time_supported);
+                p.push(*tx_snr_capability);
             }
             ReturnParameters::ReadBufferSize {
                 status,
@@ -588,6 +657,7 @@ impl ReturnParameters {
                 | HCI_READ_LOCAL_EXTENDED_FEATURES_COMMAND
                 | HCI_LE_READ_LOCAL_SUPPORTED_FEATURES_COMMAND
                 | HCI_LE_READ_ALL_LOCAL_SUPPORTED_FEATURES_COMMAND
+                | HCI_LE_CS_READ_LOCAL_SUPPORTED_CAPABILITIES_COMMAND
                 | HCI_READ_BUFFER_SIZE_COMMAND
                 | HCI_READ_CLASS_OF_DEVICE_COMMAND
                 | HCI_READ_SYNCHRONOUS_FLOW_CONTROL_ENABLE_COMMAND
@@ -685,6 +755,31 @@ impl ReturnParameters {
                     status,
                     max_page: r.u8()?,
                     le_features: Box::new(r.array::<248>()?),
+                }
+            }
+            HCI_LE_CS_READ_LOCAL_SUPPORTED_CAPABILITIES_COMMAND => {
+                ReturnParameters::LeCsReadLocalSupportedCapabilities {
+                    status,
+                    num_config_supported: r.u8()?,
+                    max_consecutive_procedures_supported: r.u16_le()?,
+                    num_antennas_supported: r.u8()?,
+                    max_antenna_paths_supported: r.u8()?,
+                    roles_supported: r.u8()?,
+                    modes_supported: r.u8()?,
+                    rtt_capability: r.u8()?,
+                    rtt_aa_only_n: r.u8()?,
+                    rtt_sounding_n: r.u8()?,
+                    rtt_random_sequence_n: r.u8()?,
+                    nadm_sounding_capability: r.u16_le()?,
+                    nadm_random_capability: r.u16_le()?,
+                    cs_sync_phys_supported: r.u8()?,
+                    subfeatures_supported: r.u16_le()?,
+                    t_ip1_times_supported: r.u16_le()?,
+                    t_ip2_times_supported: r.u16_le()?,
+                    t_fcs_times_supported: r.u16_le()?,
+                    t_pm_times_supported: r.u16_le()?,
+                    t_sw_time_supported: r.u8()?,
+                    tx_snr_capability: r.u8()?,
                 }
             }
             HCI_READ_BUFFER_SIZE_COMMAND => ReturnParameters::ReadBufferSize {
