@@ -14,6 +14,9 @@ use bumble_gatt::{
 };
 use bumble_profiles::gap::GenericAccessService;
 use bumble_profiles::gatt_service::{GenericAttributeProfileService, EATT_SUPPORTED};
+use bumble_smp::{
+    AcceptAllDelegate, IdentityAddressType, IoCapability, PairingConfig, PairingManager,
+};
 use serde::Deserialize;
 use serde_json::{Map, Value};
 
@@ -158,6 +161,33 @@ impl Default for DeviceConfiguration {
 }
 
 impl DeviceConfiguration {
+    pub(crate) fn build_pairing_manager(&self) -> Result<PairingManager, DeviceConfigurationError> {
+        let io_capability = IoCapability::try_from(self.io_capability).map_err(|error| {
+            DeviceConfigurationError::InvalidField {
+                field: "io_capability",
+                message: error.to_string(),
+            }
+        })?;
+        let identity_address_type = match self.identity_address_type {
+            None => None,
+            Some(0) => Some(IdentityAddressType::Public),
+            Some(1) => Some(IdentityAddressType::Random),
+            Some(value) => {
+                return Err(DeviceConfigurationError::InvalidField {
+                    field: "identity_address_type",
+                    message: format!("expected 0 (public) or 1 (random), got {value}"),
+                });
+            }
+        };
+        let mut pairing_config = PairingConfig::default();
+        pairing_config.capabilities.io_capability = io_capability;
+        pairing_config.identity_address_type = identity_address_type;
+        let mut manager =
+            PairingManager::new(pairing_config, Box::new(|_, _| Box::new(AcceptAllDelegate)));
+        manager.set_debug_mode(self.smp_debug_mode);
+        Ok(manager)
+    }
+
     pub(crate) fn build_gatt_server(&self) -> Result<GattServer, DeviceConfigurationError> {
         let mut definitions = self
             .gatt_services

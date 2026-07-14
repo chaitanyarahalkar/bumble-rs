@@ -416,7 +416,7 @@ impl PairingConfig {
 
 /// Synchronous counterpart of Bumble's async pairing delegate. Stateful test
 /// or UI adapters can implement this trait and drive the sans-I/O session.
-pub trait PairingDelegate {
+pub trait PairingDelegate: Send {
     fn accept(&mut self) -> bool {
         true
     }

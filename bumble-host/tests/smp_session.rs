@@ -3,7 +3,7 @@ use bumble::{Address, AddressType};
 use bumble_controller::{Controller, LocalLink};
 use bumble_crypto::EccKey;
 use bumble_hci::Command;
-use bumble_host::{pump, Device};
+use bumble_host::{pump, Device, DeviceConfiguration, DeviceEvent};
 use bumble_smp::{
     security_request, security_request_action, AcceptAllDelegate, AuthReq, IoCapability,
     KeyDistribution, LegacyPairingSession, ManagedPairingState, PairingCapabilities, PairingConfig,
@@ -376,4 +376,81 @@ fn pairing_manager_owns_live_session_encryption_distribution_and_bonding() {
     let mut store = MemoryKeyStore::new();
     assert!(managers[0].store_bond(handle, &mut store).unwrap());
     assert_eq!(store.get_all().unwrap().len(), 1);
+}
+
+#[test]
+fn configured_devices_automatically_drive_secure_connections_pairing() {
+    let mut link = LocalLink::new();
+    let central = link.add_controller(Controller::new("C", address("00:00:00:00:00:01")));
+    let peripheral = link.add_controller(Controller::new("P", address("00:00:00:00:00:02")));
+    let mut devices = [
+        Device::from_config(
+            central,
+            DeviceConfiguration {
+                address: address("C4:F2:17:1A:1D:AA"),
+                gap_service_enabled: false,
+                gatt_service_enabled: false,
+                identity_address_type: Some(1),
+                io_capability: IoCapability::NoInputNoOutput as u8,
+                smp_debug_mode: true,
+                ..DeviceConfiguration::default()
+            },
+        )
+        .unwrap(),
+        Device::from_config(
+            peripheral,
+            DeviceConfiguration {
+                address: address("C4:F2:17:1A:1D:BB"),
+                gap_service_enabled: false,
+                gatt_service_enabled: false,
+                identity_address_type: Some(1),
+                io_capability: IoCapability::NoInputNoOutput as u8,
+                smp_debug_mode: false,
+                ..DeviceConfiguration::default()
+            },
+        )
+        .unwrap(),
+    ];
+
+    assert!(devices.iter().all(Device::has_pairing_manager));
+    assert_eq!(devices[0].pairing_debug_mode(), Some(true));
+    assert_eq!(devices[1].pairing_debug_mode(), Some(false));
+    assert_eq!(
+        devices[0].pairing_ecc_public_key().unwrap().0,
+        [
+            0x20, 0xB0, 0x03, 0xD2, 0xF2, 0x97, 0xBE, 0x2C, 0x5E, 0x2C, 0x83, 0xA7, 0xE9, 0xF9,
+            0xA5, 0xB9, 0xEF, 0xF4, 0x91, 0x11, 0xAC, 0xF4, 0xFD, 0xDB, 0xCC, 0x03, 0x01, 0x48,
+            0x0E, 0x35, 0x9D, 0xE6,
+        ]
+    );
+
+    connect(&mut link, central, peripheral);
+    pump(&mut link, &mut devices);
+    let handle = devices[0].connection_handle().unwrap();
+    for device in &mut devices {
+        device.take_device_events();
+    }
+
+    devices[0].pair(&mut link).unwrap();
+    pump(&mut link, &mut devices);
+
+    for device in &mut devices {
+        assert!(device.is_encrypted());
+        assert_eq!(
+            device.pairing_state(handle),
+            Some(ManagedPairingState::SecureConnections(
+                ScPairingState::Complete
+            ))
+        );
+        assert!(device.pairing_keys(handle).unwrap().ltk.is_some());
+        assert!(device.take_pairing_errors().is_empty());
+        assert!(device.take_long_term_key_requests().is_empty());
+        assert!(device.take_device_events().iter().any(|event| matches!(
+            event,
+            DeviceEvent::PairingComplete {
+                connection_handle,
+                ..
+            } if *connection_handle == handle
+        )));
+    }
 }

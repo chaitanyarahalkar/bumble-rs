@@ -506,3 +506,28 @@ fn invalid_configured_gatt_definitions_are_reported_with_paths() {
         );
     }
 }
+
+#[test]
+fn invalid_pairing_configuration_is_rejected_during_device_construction() {
+    for (config, expected_field) in [
+        (
+            DeviceConfiguration {
+                io_capability: 5,
+                ..DeviceConfiguration::default()
+            },
+            "io_capability",
+        ),
+        (
+            DeviceConfiguration {
+                identity_address_type: Some(2),
+                ..DeviceConfiguration::default()
+            },
+            "identity_address_type",
+        ),
+    ] {
+        assert!(matches!(
+            Device::from_config(0, config),
+            Err(DeviceConfigurationError::InvalidField { field, .. }) if field == expected_field
+        ));
+    }
+}

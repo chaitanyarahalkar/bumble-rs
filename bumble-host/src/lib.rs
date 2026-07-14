@@ -29,6 +29,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
+use bumble::keys::PairingKeys;
 use bumble::{Address, AdvertisingData};
 use bumble_att::AttPdu;
 use bumble_controller::LocalLink as ControllerLocalLink;
@@ -43,6 +44,10 @@ use bumble_l2cap::{
     Error as L2capError, L2capPdu, LeCreditBasedChannel, LeCreditBasedChannelSpec,
     LeCreditChannelManager, L2CAP_LE_PSM_DYNAMIC_RANGE_END, L2CAP_LE_PSM_DYNAMIC_RANGE_START,
     L2CAP_LE_SIGNALING_CID, L2CAP_SIGNALING_CID,
+};
+use bumble_smp::{
+    ManagedPairingState, PairingConnection, PairingFailureReason, PairingManager, PairingRole,
+    PairingState, ScPairingState, SmpPdu,
 };
 
 mod configuration;
@@ -819,6 +824,14 @@ pub enum DeviceEvent {
     },
     LeConnectionControl(LeConnectionControlEvent),
     ClassicPairing(ClassicPairingEvent),
+    PairingComplete {
+        connection_handle: u16,
+        keys: Box<PairingKeys>,
+    },
+    PairingFailed {
+        connection_handle: u16,
+        reason: PairingFailureReason,
+    },
     EncryptionChange {
         status: u8,
         connection_handle: u16,
@@ -1430,6 +1443,10 @@ pub struct Device {
     /// Received payloads on non-ATT L2CAP channels, as `(handle, cid, payload)`.
     l2cap_inbox: Vec<(u16, u16, Vec<u8>)>,
     security_requests: Vec<(u16, u8)>,
+    pairing_manager: Option<PairingManager>,
+    pairing_encryption_started: BTreeSet<u16>,
+    pairing_terminal_handles: BTreeSet<u16>,
+    pairing_errors: Vec<(u16, String)>,
     long_term_key_requests: Vec<LongTermKeyRequestInfo>,
     connection_feature_errors: Vec<ConnectionFeatureError>,
     connection_control_events: Vec<LeConnectionControlEvent>,
@@ -1519,6 +1536,10 @@ impl Device {
             inbox: Vec::new(),
             l2cap_inbox: Vec::new(),
             security_requests: Vec::new(),
+            pairing_manager: None,
+            pairing_encryption_started: BTreeSet::new(),
+            pairing_terminal_handles: BTreeSet::new(),
+            pairing_errors: Vec::new(),
             long_term_key_requests: Vec::new(),
             connection_feature_errors: Vec::new(),
             connection_control_events: Vec::new(),
@@ -1609,6 +1630,10 @@ impl Device {
             inbox: Vec::new(),
             l2cap_inbox: Vec::new(),
             security_requests: Vec::new(),
+            pairing_manager: None,
+            pairing_encryption_started: BTreeSet::new(),
+            pairing_terminal_handles: BTreeSet::new(),
+            pairing_errors: Vec::new(),
             long_term_key_requests: Vec::new(),
             connection_feature_errors: Vec::new(),
             connection_control_events: Vec::new(),
@@ -1642,18 +1667,8 @@ impl Device {
         controller_id: usize,
         config: DeviceConfiguration,
     ) -> Result<Device, DeviceConfigurationError> {
-        let eatt_enabled = config.eatt_enabled;
         let server = config.build_gatt_server()?;
-        let mut device = Self::with_server_and_config(controller_id, config, server);
-        if eatt_enabled {
-            device
-                .register_eatt_server(LeCreditBasedChannelSpec::default())
-                .map_err(|error| DeviceConfigurationError::InvalidField {
-                    field: "eatt_enabled",
-                    message: error.to_string(),
-                })?;
-        }
-        Ok(device)
+        Self::with_server_and_config(controller_id, config, server)
     }
 
     /// Load an upstream-style configured device and GATT server from a JSON file.
@@ -1669,10 +1684,21 @@ impl Device {
         controller_id: usize,
         config: DeviceConfiguration,
         server: impl AttRequestHandler + 'static,
-    ) -> Device {
+    ) -> Result<Device, DeviceConfigurationError> {
+        let eatt_enabled = config.eatt_enabled;
+        let pairing_manager = config.build_pairing_manager()?;
         let mut device = Self::with_server(controller_id, server);
         device.install_configuration(config);
-        device
+        device.pairing_manager = Some(pairing_manager);
+        if eatt_enabled {
+            device
+                .register_eatt_server(LeCreditBasedChannelSpec::default())
+                .map_err(|error| DeviceConfigurationError::InvalidField {
+                    field: "eatt_enabled",
+                    message: error.to_string(),
+                })?;
+        }
+        Ok(device)
     }
 
     fn install_configuration(&mut self, config: DeviceConfiguration) {
@@ -4611,7 +4637,8 @@ impl Device {
     }
 
     /// Remove Security Request authentication bitmasks observed on the SMP
-    /// fixed channel. The raw PDU remains available through [`Self::take_l2cap`].
+    /// fixed channel. Unmanaged devices also retain the raw PDU through
+    /// [`Self::take_l2cap`].
     pub fn take_security_requests(&mut self) -> Vec<u8> {
         std::mem::take(&mut self.security_requests)
             .into_iter()
@@ -4628,6 +4655,66 @@ impl Device {
             .into_iter()
             .map(|(_, authentication)| authentication)
             .collect()
+    }
+
+    pub fn has_pairing_manager(&self) -> bool {
+        self.pairing_manager.is_some()
+    }
+
+    pub fn pairing_debug_mode(&self) -> Option<bool> {
+        self.pairing_manager
+            .as_ref()
+            .map(PairingManager::debug_mode)
+    }
+
+    pub fn pairing_ecc_public_key(&mut self) -> Option<([u8; 32], [u8; 32])> {
+        self.pairing_manager
+            .as_mut()
+            .map(PairingManager::ecc_public_key)
+    }
+
+    pub fn pairing_state(&self, connection_handle: u16) -> Option<ManagedPairingState> {
+        self.pairing_manager
+            .as_ref()
+            .and_then(|manager| manager.state(connection_handle))
+    }
+
+    pub fn pairing_failure(&self, connection_handle: u16) -> Option<PairingFailureReason> {
+        self.pairing_manager
+            .as_ref()
+            .and_then(|manager| manager.failure(connection_handle))
+    }
+
+    pub fn pairing_keys(&self, connection_handle: u16) -> Option<PairingKeys> {
+        self.pairing_manager
+            .as_ref()
+            .and_then(|manager| manager.pairing_keys(connection_handle))
+    }
+
+    pub fn take_pairing_errors(&mut self) -> Vec<(u16, String)> {
+        std::mem::take(&mut self.pairing_errors)
+    }
+
+    pub fn pair(&mut self, link: &mut LocalLink) -> bumble_smp::Result<()> {
+        let handle = self
+            .connection_handle
+            .ok_or_else(|| bumble_smp::Error::InvalidPacket("no active LE connection".into()))?;
+        self.pair_on_handle(link, handle)
+    }
+
+    pub fn pair_on_handle(
+        &mut self,
+        link: &mut LocalLink,
+        connection_handle: u16,
+    ) -> bumble_smp::Result<()> {
+        let manager = self.pairing_manager.as_mut().ok_or_else(|| {
+            bumble_smp::Error::InvalidPacket("device has no configured pairing manager".into())
+        })?;
+        manager.set_connection_role(connection_handle, PairingRole::Initiator)?;
+        manager.pair(connection_handle)?;
+        self.pairing_encryption_started.remove(&connection_handle);
+        self.pairing_terminal_handles.remove(&connection_handle);
+        self.flush_pairing_manager(link, connection_handle)
     }
 
     /// Remove all pending LE Long Term Key requests emitted by the controller.
@@ -4677,6 +4764,88 @@ impl Device {
         )
     }
 
+    fn flush_pairing_manager(
+        &mut self,
+        link: &mut LocalLink,
+        connection_handle: u16,
+    ) -> bumble_smp::Result<()> {
+        let (outbound, state, encryption_key, failure, pairing_keys) = {
+            let manager = self.pairing_manager.as_mut().ok_or_else(|| {
+                bumble_smp::Error::InvalidPacket("device has no configured pairing manager".into())
+            })?;
+            (
+                manager.drain_outbound(),
+                manager.state(connection_handle),
+                manager.encryption_key(connection_handle),
+                manager.failure(connection_handle),
+                manager.pairing_keys(connection_handle),
+            )
+        };
+
+        for (handle, pdu) in outbound {
+            if !self.send_l2cap_on_handle(link, handle, SMP_CID, &pdu.to_bytes()) {
+                return Err(bumble_smp::Error::InvalidPacket(format!(
+                    "failed to send SMP PDU on handle 0x{handle:04X}"
+                )));
+            }
+        }
+
+        let waiting_for_encryption = matches!(
+            state,
+            Some(ManagedPairingState::Legacy(PairingState::WaitEncryption))
+                | Some(ManagedPairingState::SecureConnections(
+                    ScPairingState::WaitEncryption
+                ))
+        );
+        let local_is_central = self
+            .le_connections
+            .get(&connection_handle)
+            .is_some_and(|connection| connection.role == bumble_controller::ROLE_CENTRAL);
+        if waiting_for_encryption
+            && local_is_central
+            && self.pairing_encryption_started.insert(connection_handle)
+        {
+            let key = encryption_key.ok_or_else(|| {
+                bumble_smp::Error::InvalidPacket(
+                    "pairing reached encryption without an STK/LTK".into(),
+                )
+            })?;
+            if !self.enable_encryption_on_handle(link, connection_handle, key) {
+                return Err(bumble_smp::Error::InvalidPacket(format!(
+                    "failed to start pairing encryption on handle 0x{connection_handle:04X}"
+                )));
+            }
+        }
+
+        if let Some(reason) = failure {
+            if self.pairing_terminal_handles.insert(connection_handle) {
+                self.emit_device_event(DeviceEvent::PairingFailed {
+                    connection_handle,
+                    reason,
+                });
+            }
+        } else if matches!(
+            state,
+            Some(ManagedPairingState::Legacy(PairingState::Complete))
+                | Some(ManagedPairingState::SecureConnections(
+                    ScPairingState::Complete
+                ))
+        ) && self.pairing_terminal_handles.insert(connection_handle)
+        {
+            let keys = pairing_keys.ok_or_else(|| {
+                bumble_smp::Error::InvalidPacket(
+                    "completed pairing did not retain pairing keys".into(),
+                )
+            })?;
+            self.emit_device_event(DeviceEvent::PairingComplete {
+                connection_handle,
+                keys: Box::new(keys),
+            });
+        }
+
+        Ok(())
+    }
+
     fn on_le_connection_complete(
         &mut self,
         connection_handle: u16,
@@ -4717,6 +4886,26 @@ impl Device {
                 channel_sounding_procedures: BTreeMap::new(),
             },
         );
+        if let Some(manager) = self.pairing_manager.as_mut() {
+            let pairing_role = if role == bumble_controller::ROLE_CENTRAL {
+                PairingRole::Initiator
+            } else {
+                PairingRole::Responder
+            };
+            if let Err(error) = manager.register_connection(PairingConnection::le(
+                connection_handle,
+                pairing_role,
+                self.random_address.clone(),
+                self.le_connections
+                    .get(&connection_handle)
+                    .expect("connection was just inserted")
+                    .peer_address
+                    .clone(),
+            )) {
+                self.pairing_errors
+                    .push((connection_handle, error.to_string()));
+            }
+        }
         let mut manager = LeCreditChannelManager::new();
         for spec in self.le_credit_server_specs.values().copied() {
             manager
@@ -4751,6 +4940,39 @@ impl Device {
             self.encrypted_handles.insert(connection_handle);
         } else {
             self.encrypted_handles.remove(&connection_handle);
+        }
+    }
+
+    fn advance_pairing_encryption(
+        &mut self,
+        link: &mut LocalLink,
+        connection_handle: u16,
+        encryption_enabled: u8,
+    ) {
+        if encryption_enabled == 0 {
+            return;
+        }
+        let waiting = self.pairing_manager.as_ref().is_some_and(|manager| {
+            matches!(
+                manager.state(connection_handle),
+                Some(ManagedPairingState::Legacy(PairingState::WaitEncryption))
+                    | Some(ManagedPairingState::SecureConnections(
+                        ScPairingState::WaitEncryption
+                    ))
+            )
+        });
+        if !waiting {
+            return;
+        }
+        let result = self
+            .pairing_manager
+            .as_mut()
+            .expect("pairing manager was checked above")
+            .mark_encrypted(connection_handle)
+            .and_then(|()| self.flush_pairing_manager(link, connection_handle));
+        if let Err(error) = result {
+            self.pairing_errors
+                .push((connection_handle, error.to_string()));
         }
     }
 
@@ -5251,11 +5473,21 @@ impl Device {
                     connection_handle,
                     random_number,
                     encryption_diversifier,
-                })) => self.long_term_key_requests.push(LongTermKeyRequestInfo {
-                    connection_handle,
-                    random_number,
-                    encryption_diversifier,
-                }),
+                })) => {
+                    let pairing_key = self
+                        .pairing_manager
+                        .as_ref()
+                        .and_then(|manager| manager.encryption_key(connection_handle));
+                    if let Some(key) = pairing_key {
+                        self.reply_long_term_key_request(link, connection_handle, key);
+                    } else {
+                        self.long_term_key_requests.push(LongTermKeyRequestInfo {
+                            connection_handle,
+                            random_number,
+                            encryption_diversifier,
+                        });
+                    }
+                }
                 HciPacket::Event(Event::LeMeta(
                     LeMetaEvent::PeriodicAdvertisingSyncEstablished {
                         status,
@@ -5931,6 +6163,13 @@ impl Device {
                         .retain(|(handle, _, _)| *handle != connection_handle);
                     self.security_requests
                         .retain(|(handle, _)| *handle != connection_handle);
+                    if let Some(manager) = self.pairing_manager.as_mut() {
+                        manager.disconnect(connection_handle);
+                    }
+                    self.pairing_encryption_started.remove(&connection_handle);
+                    self.pairing_terminal_handles.remove(&connection_handle);
+                    self.pairing_errors
+                        .retain(|(handle, _)| *handle != connection_handle);
                     self.long_term_key_requests
                         .retain(|request| request.connection_handle != connection_handle);
                     self.connection_feature_errors
@@ -6360,6 +6599,11 @@ impl Device {
                 }) => {
                     if status == 0 {
                         self.update_connection_encryption(connection_handle, encryption_enabled, 0);
+                        self.advance_pairing_encryption(
+                            link,
+                            connection_handle,
+                            encryption_enabled,
+                        );
                     }
                     self.emit_device_event(DeviceEvent::EncryptionChange {
                         status,
@@ -6379,6 +6623,11 @@ impl Device {
                             connection_handle,
                             encryption_enabled,
                             encryption_key_size,
+                        );
+                        self.advance_pairing_encryption(
+                            link,
+                            connection_handle,
+                            encryption_enabled,
                         );
                     }
                     self.emit_device_event(DeviceEvent::EncryptionChange {
@@ -6627,10 +6876,27 @@ impl Device {
             }
             return;
         }
-        // Non-ATT channels (e.g. SMP on 0x0006) are queued raw for the caller.
+        // Configured devices route SMP through their handle-keyed pairing
+        // manager. Client-only devices retain the raw channel behavior.
         if l2cap.cid != ATT_CID {
             if l2cap.cid == SMP_CID && l2cap.payload.len() == 2 && l2cap.payload[0] == 0x0B {
                 self.security_requests.push((handle, l2cap.payload[1]));
+            }
+            if l2cap.cid == SMP_CID && self.pairing_manager.is_some() {
+                let result = SmpPdu::from_bytes(&l2cap.payload).and_then(|pdu| {
+                    let manager = self
+                        .pairing_manager
+                        .as_mut()
+                        .expect("pairing manager was checked above");
+                    if matches!(pdu, SmpPdu::PairingRequest(_)) && manager.state(handle).is_none() {
+                        manager.set_connection_role(handle, PairingRole::Responder)?;
+                    }
+                    manager.receive(handle, pdu)
+                });
+                if let Err(error) = result.and_then(|()| self.flush_pairing_manager(link, handle)) {
+                    self.pairing_errors.push((handle, error.to_string()));
+                }
+                return;
             }
             self.l2cap_inbox.push((handle, l2cap.cid, l2cap.payload));
             return;

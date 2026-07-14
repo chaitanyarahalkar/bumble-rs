@@ -12,6 +12,11 @@ use crate::{
     ScPairingState, SmpPdu,
 };
 
+const SMP_DEBUG_KEY_PRIVATE: [u8; 32] = [
+    0x3F, 0x49, 0xF6, 0xD4, 0xA3, 0xC5, 0x5F, 0x38, 0x74, 0xC9, 0xB3, 0xE3, 0xD2, 0x10, 0x3F, 0x50,
+    0x4A, 0xFF, 0x60, 0x7B, 0xEB, 0x40, 0xB7, 0x99, 0x58, 0x99, 0xB8, 0xA6, 0xCD, 0x3C, 0x1A, 0xBD,
+];
+
 pub type PairingDelegateFactory =
     Box<dyn FnMut(u16, PairingRole) -> Box<dyn PairingDelegate> + Send>;
 
@@ -173,6 +178,8 @@ pub struct PairingManager {
     sessions: BTreeMap<u16, ManagedSession>,
     outbound: VecDeque<(u16, SmpPdu)>,
     security_requests: VecDeque<(u16, AuthReq)>,
+    ecc_key: Option<EccKey>,
+    debug_mode: bool,
 }
 
 impl PairingManager {
@@ -184,7 +191,27 @@ impl PairingManager {
             sessions: BTreeMap::new(),
             outbound: VecDeque::new(),
             security_requests: VecDeque::new(),
+            ecc_key: None,
+            debug_mode: false,
         }
+    }
+
+    /// Select the Bluetooth specification's fixed Secure Connections debug key.
+    pub fn set_debug_mode(&mut self, enabled: bool) {
+        if self.debug_mode != enabled {
+            self.debug_mode = enabled;
+            self.ecc_key = None;
+        }
+    }
+
+    pub fn debug_mode(&self) -> bool {
+        self.debug_mode
+    }
+
+    /// Public coordinates of the manager-level SC key used by new sessions.
+    pub fn ecc_public_key(&mut self) -> ([u8; 32], [u8; 32]) {
+        let key = self.ecc_key();
+        (key.public_x(), key.public_y())
     }
 
     pub fn register_connection(&mut self, connection: PairingConnection) -> Result<()> {
@@ -373,7 +400,7 @@ impl PairingManager {
                     delegate,
                     initiator_address,
                     responder_address,
-                    EccKey::generate(),
+                    self.ecc_key(),
                     random_128(),
                 )?,
             )))
@@ -387,6 +414,14 @@ impl PairingManager {
                 random_128(),
             )?)))
         }
+    }
+
+    fn ecc_key(&mut self) -> EccKey {
+        if self.debug_mode {
+            return EccKey::from_private_key_bytes(&SMP_DEBUG_KEY_PRIVATE)
+                .expect("the Bluetooth SMP debug private key is valid");
+        }
+        self.ecc_key.get_or_insert_with(EccKey::generate).clone()
     }
 
     fn collect_outbound(&mut self, handle: u16) {
