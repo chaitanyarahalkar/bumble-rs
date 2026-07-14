@@ -11,7 +11,7 @@ spec=json.load(open(BASE+"spec.json"))["commands"]
 RESERVED={"type","ref","match","move","box","fn","let","mut","use","mod","loop","impl",
           "in","as","dyn","self","crate","super","where","async","await","yield","gen","try","fn_"}
 EMBED={"HCI_LE_Set_Extended_Scan_Parameters_Command","HCI_LE_Extended_Create_Connection_Command"}
-SKIP={"HCI_LE_Read_All_Local_Supported_Features_Command"}
+SKIP=set()
 ADV={"HCI_LE_Set_Advertising_Data_Command","HCI_LE_Set_Scan_Response_Data_Command"}
 
 def variant(cls):
@@ -257,7 +257,7 @@ EMB_PARSE='''            HCI_LE_SET_EXTENDED_SCAN_PARAMETERS_COMMAND => {
                 let initiator_filter_policy = r.u8()?;
                 let own_address_type = r.u8()?;
                 let peer_address_type = r.u8()?;
-                let peer_address = addr(&mut r)?;
+                let peer_address = random_addr(&mut r)?;
                 let initiating_phys = r.u8()?;
                 let n = initiating_phys.count_ones() as usize;
                 let mut scan_intervals = Vec::with_capacity(n);
@@ -389,12 +389,30 @@ impl CodingFormat {
         vendor_specific_codec_id: 0,
     };
 
-    fn to_bytes(self) -> [u8; 5] {
+    /// `CodecID::LC3` (0x06) with no company/vendor id.
+    pub const LC3: CodingFormat = CodingFormat {
+        coding_format: 0x06,
+        company_id: 0,
+        vendor_specific_codec_id: 0,
+    };
+
+    pub fn to_bytes(self) -> [u8; 5] {
         let mut out = [0u8; 5];
         out[0] = self.coding_format;
         out[1..3].copy_from_slice(&self.company_id.to_le_bytes());
         out[3..5].copy_from_slice(&self.vendor_specific_codec_id.to_le_bytes());
         out
+    }
+
+    /// Parse the exact five-byte HCI Coding Format representation.
+    pub fn from_bytes(data: &[u8]) -> Result<CodingFormat> {
+        if data.len() != 5 {
+            return Err(Error::InvalidPacket(format!(
+                "coding format has length {}, expected 5",
+                data.len()
+            )));
+        }
+        Self::read(&mut Reader::new(data, 0))
     }
 
     fn read(r: &mut Reader) -> Result<CodingFormat> {
@@ -498,7 +516,8 @@ out.append('''            Command::Generic { parameters, .. } => p.extend_from_s
     pub fn from_parameters(op_code: u16, parameters: &[u8]) -> Result<Command> {
         // Classic HCI BD_ADDR fields do not carry an address type and therefore
         // denote public device addresses. LE fields that are paired with a
-        // separate type byte retain random-device reconstruction.
+        // separate type byte retain the historical random-device reconstruction
+        // below until the enclosing command applies that type.
         let addr = |r: &mut Reader| -> Result<Address> {
             Ok(Address::from_bytes(
                 r.array::<6>()?,

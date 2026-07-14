@@ -118,13 +118,14 @@ crate whose behavior is verified against the upstream Python.
 | 101. Periodic advertising and synchronization | `bumble-controller` / `bumble-host` | ✅ 600-byte train + create/cancel/receive/terminate flow green |
 | 102. Periodic Advertising Sync Transfer | `bumble-controller` / `bumble-host` | ✅ sync + set-info transfer over live LE ACL green |
 | 135. Broadcast ISO groups and streams | `bumble-controller` / `bumble-host` | ✅ BIGInfo + encrypted BIG sync + one-to-many BIS SDUs green |
+| 145. All-page local LE feature discovery | `bumble-hci` / `bumble-controller` / `bumble-transport` | ✅ 197th command + 248-byte return + preferred host reset path green |
 | 103+. Repository completion audit and remaining gaps | workspace | in progress |
 
 The LE lifecycle is now complete end-to-end through library APIs: **connect →
 discover → read/write → notify → disconnect** between two virtual devices — and
 **every crate is integrated**, with `bumble-crypto` now driving SMP pairing.
 
-The HCI codec is now a **complete typed catalog**: all 196 command op codes and
+The HCI codec is now a **complete typed catalog**: all 197 command op codes and
 81 event / LE-meta sub-event codes, **generated** from upstream `bumble.hci`'s
 declarative field specs by [`tools/hcigen`](bumble-hci/tools/hcigen/). The
 generator introspects each command/event class, normalizes its fields to a
@@ -170,7 +171,7 @@ size, to convey remaining surface.
 ### HCI, controller & link — 🟡 HCI codec complete (full catalog, oracle-pinned); controller/link behavior partial
 | Upstream (LOC) | Rust crate | Status | Notes |
 |---|---|---|---|
-| `hci.py` (8.3k) | `bumble-hci` | ✅ | **Full typed catalog: 196 command op codes + 81 event / LE-meta sub-event codes**, generated from upstream's declarative field specs by [`tools/hcigen`](bumble-hci/tools/hcigen/) and **byte-pinned against real Python Bumble** (320 oracle tests). Framing (Command/Event/ACL/SCO/ISO), `Command_Complete` with typed `ReturnParameters` including base and extended local feature pages, the open-enum `Generic` tail, and upstream-equivalent ACL/L2CAP fragmentation/reassembly with PB-flag, length, continuation, handle, and overflow validation. Two phys-derived array commands and the two nested-report events are hand-written; everything else is generated. |
+| `hci.py` (8.3k) | `bumble-hci` | ✅ | **Full typed catalog: 197 command op codes + 81 event / LE-meta sub-event codes**, generated from upstream's declarative field specs by [`tools/hcigen`](bumble-hci/tools/hcigen/) and **byte-pinned against real Python Bumble** (321 oracle tests). Framing (Command/Event/ACL/SCO/ISO), `Command_Complete` with typed `ReturnParameters` including base/extended LMP pages and the 248-byte all-page LE feature catalog, the open-enum `Generic` tail, and upstream-equivalent ACL/L2CAP fragmentation/reassembly with PB-flag, length, continuation, handle, and overflow validation. Two phys-derived array commands and the two nested-report events are hand-written; everything else is generated. |
 | `vendor/{android,zephyr}/hci.py` | `bumble-hci::vendor` | ✅ | Android vendor-capability responses preserve all historical length prefixes; APCF, energy-info, A2DP-offload, and dynamic-buffer command/return payloads remain open where upstream does. Bluetooth Quality Reports decode every recognized report ID with signed radio metrics and opaque vendor tails. Zephyr read/write TX-power commands and return parameters preserve signed dBm values and open handle types. |
 | `controller.py` (2.8k) | `bumble-controller` | 🟡 | **Full command surface**: every command upstream's `controller.py` handles (93, via the generated [`command_surface`](bumble-controller/src/command_surface.rs) table) gets a reply of the matching HCI shape — Command Complete + SUCCESS for config/set commands, Command Status for operations completing via a later event, and the spec-correct "Unknown HCI Command" for anything upstream also doesn't handle. **Functionally simulated**: legacy, extended, and periodic LE advertising/scanning/synchronization; multi-set parameters/random addresses/fragmented data/scan responses; sync create/cancel/terminate, receive control, and PAST sync/set-info transfer over ACL; IRK resolving-list offload with identity-targeted RPA connections; ACL routing with PB/BC preservation and Number Of Completed Packets flow events; disconnection; the read commands (`Read_BD_ADDR`/`Read_Local_Name`/`LE_Read_Buffer_Size`/`LE_Read_Local_Supported_Features`/`LE_Rand`); per-connection data length, PHY, LE subrate, and Sniff/Active mode changes; and — via LL control-PDU exchange — **encryption start**, **remote-features**, and **CIS establishment**. CIS links retain Setup/Remove ISO data paths and route HCI ISO fragments with handle translation and completed-packet events. Also **classic (BR/EDR)** connection/name/base and extended feature-page exchange, accept-time and explicit role switching, and SCO/eSCO request/accept/reject/disconnect with synchronous-data routing. Other read commands are acknowledged SUCCESS **without a synthesized payload**. Upstream itself leaves LTK verification as a TODO and has no Classic-authentication or remote-version command handler; Rust retains those exact boundaries. |
 | `link.py` (0.15k) | `bumble-controller` | 🟡 | In-process **synchronous** `LocalLink` with LL-control, simplified LMP, ACL, and SCO/eSCO routing. Deferred: serialized over-the-air PDUs and async scheduling. |
@@ -201,7 +202,7 @@ size, to convey remaining surface.
 ### Transports & drivers
 | Upstream | Rust crate | Status | Notes |
 |---|---|---|---|
-| `transport/*` — USB, UART/serial, TCP, WebSocket, UDP, PTY, android-netsim, vhci, … | `bumble-transport` | 🟡 | Incremental H4 framing accepts fragmented/coalesced streams and vendor packet layouts. Bumble transport-name/metadata dispatch opens file, serial/UART with RTS/CTS, raw PTY, TCP, UDP, Unix, WebSocket, Linux VHCI/raw HCI user-channel sockets, libusb Bluetooth-controller endpoints, Android emulator gRPC, and Android netsim host/controller packet streams. The typed HCI bridge pumps both directions with packet replacement, sender short-circuit responses, and trace hooks; `HciCommandChannel` correlates synchronous command responses while preserving unrelated traffic. `ExternalHost` resets controllers, discovers version plus LE/base-or-multi-page LMP feature catalogs, installs both event-mask pages, and configures ACL/ISO flow control. BTSnoop/PCAP writers can wrap any bidirectional transport, and the bounded BTSnoop reader handles H1/H4 captures, timestamps, drops, and truncation. USB covers discovery, class/forced interface selection, commands, events, ACL, and outgoing ISO-over-bulk compatibility. Deferred: USB SCO/isochronous input, DSR/DTR flow control (not exposed by the current `serialport` backend), and narrower platform-specific endpoints. |
+| `transport/*` — USB, UART/serial, TCP, WebSocket, UDP, PTY, android-netsim, vhci, … | `bumble-transport` | 🟡 | Incremental H4 framing accepts fragmented/coalesced streams and vendor packet layouts. Bumble transport-name/metadata dispatch opens file, serial/UART with RTS/CTS, raw PTY, TCP, UDP, Unix, WebSocket, Linux VHCI/raw HCI user-channel sockets, libusb Bluetooth-controller endpoints, Android emulator gRPC, and Android netsim host/controller packet streams. The typed HCI bridge pumps both directions with packet replacement, sender short-circuit responses, and trace hooks; `HciCommandChannel` correlates synchronous command responses while preserving unrelated traffic. `ExternalHost` resets controllers, discovers version plus the all-page LE feature catalog (with legacy eight-byte fallback) and base-or-multi-page LMP features, installs both event-mask pages, and configures ACL/ISO flow control. BTSnoop/PCAP writers can wrap any bidirectional transport, and the bounded BTSnoop reader handles H1/H4 captures, timestamps, drops, and truncation. USB covers discovery, class/forced interface selection, commands, events, ACL, and outgoing ISO-over-bulk compatibility. Deferred: USB SCO/isochronous input, DSR/DTR flow control (not exposed by the current `serialport` backend), and narrower platform-specific endpoints. |
 | `drivers/*` — Intel, Realtek | `bumble-drivers` | ✅ | Both upstream driver modules and the RTK-before-Intel selector are ported behind a transport-neutral host contract. Intel covers open version TLVs, RSA/ECDSA SFI secure send, boot/reset vendor events, and DDC priority. Realtek covers all upstream USB IDs and 13 controller descriptors, epatch extension/table parsing, ROM patch choice, config append, download-index wrap/end markers, reset retry, and firmware lookup. The legacy 8723A download remains the same explicit no-op as upstream Bumble. |
 
 ### Classic Bluetooth (BR/EDR)
@@ -3125,6 +3126,23 @@ local capability discovery instead of stopping at command and buffer sizes:
   supported, in addition to the existing Classic and LE masks. Codec,
   controller, and scripted external-host tests pin the full command sequence,
   masks, feature pages, typed fields, error fallback, and device queue sizing.
+
+## Slice 145 — what's here
+
+Current upstream added `LE Read All Local Supported Features` after the prior
+196-command HCI snapshot. This slice closes that drift through every layer:
+
+- `hcigen` now extracts and regenerates the command instead of deliberately
+  excluding it. Generator templates also retain the existing public coding-
+  format helpers and address-type reconstruction across clean regeneration.
+- The HCI codec exposes the `0x2087` command and its exact status, max-page, and
+  248-byte feature return. The software controller advertises the matching
+  Supported Commands bit and returns its LE feature bitmap zero-padded to the
+  upstream width.
+- External host reset and `bumble-controller-info` prefer the all-page command
+  when advertised, retaining the max page and full bitmap, while preserving the
+  legacy eight-byte fallback for older controllers. Oracle, typed-return,
+  controller, and scripted transport tests pin both paths.
 
 ## Acceptance
 

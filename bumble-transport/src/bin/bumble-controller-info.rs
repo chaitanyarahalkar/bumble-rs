@@ -241,9 +241,26 @@ fn run_report<T: PacketSource + PacketSink>(
         _ => None,
     };
     let _ = query(&mut channel, Command::ReadLocalSupportedFeatures)?;
-    if let Some(ReturnParameters::LeReadLocalSupportedFeatures { le_features, .. }) =
-        query(&mut channel, Command::LeReadLocalSupportedFeatures)?
-    {
+    let supports_all_local_le_features = supported_commands.as_ref().is_some_and(|commands| {
+        supported_command_names(commands)
+            .contains(&"HCI_LE_READ_ALL_LOCAL_SUPPORTED_FEATURES_COMMAND")
+    });
+    let le_features = if supports_all_local_le_features {
+        match query(&mut channel, Command::LeReadAllLocalSupportedFeatures)? {
+            Some(ReturnParameters::LeReadAllLocalSupportedFeatures { le_features, .. }) => {
+                Some(le_features.to_vec())
+            }
+            _ => None,
+        }
+    } else {
+        match query(&mut channel, Command::LeReadLocalSupportedFeatures)? {
+            Some(ReturnParameters::LeReadLocalSupportedFeatures { le_features, .. }) => {
+                Some(le_features.to_vec())
+            }
+            _ => None,
+        }
+    };
+    if let Some(le_features) = le_features {
         lines.push("LE Features:".into());
         lines.extend(
             le_feature_names(&le_features)
@@ -558,7 +575,8 @@ mod tests {
         let address = Address::parse("00:11:22:33:44:55", AddressType::PUBLIC_DEVICE).unwrap();
         let mut supported_commands = [0; 64];
         supported_commands[5] = 0x80;
-        let mut le_features = [0; 8];
+        supported_commands[47] = 0x04;
+        let mut le_features = [0; 248];
         le_features[0] = 1;
         le_features[1] = 0x10;
         let responses = BTreeMap::from([
@@ -603,10 +621,11 @@ mod tests {
                 },
             ),
             (
-                Command::LeReadLocalSupportedFeatures.op_code(),
-                ReturnParameters::LeReadLocalSupportedFeatures {
+                Command::LeReadAllLocalSupportedFeatures.op_code(),
+                ReturnParameters::LeReadAllLocalSupportedFeatures {
                     status: 0,
-                    le_features,
+                    max_page: 0,
+                    le_features: Box::new(le_features),
                 },
             ),
             (

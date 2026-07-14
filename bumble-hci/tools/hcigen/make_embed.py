@@ -135,7 +135,7 @@ EMB["event_tail"]='''    /// Serialize to the full wire packet.
         let addr = |r: &mut Reader| -> Result<Address> {
             Ok(Address::from_bytes(
                 r.array::<6>()?,
-                AddressType::RANDOM_DEVICE,
+                AddressType::PUBLIC_DEVICE,
             ))
         };
         let mut r = Reader::new(parameters, 0);
@@ -220,7 +220,7 @@ EMB["from_subevent_tail"]='''            HCI_LE_ADVERTISING_REPORT_EVENT => {
                 for _ in 0..num_reports {
                     let event_type = r.u8()?;
                     let address_type = r.u8()?;
-                    let address = Address::from_bytes(r.array::<6>()?, AddressType::RANDOM_DEVICE);
+                    let address = Address::from_bytes(r.array::<6>()?, AddressType(address_type));
                     let data_length = r.u8()? as usize;
                     let data = r.take(data_length)?.to_vec();
                     let rssi = r.u8()? as i8;
@@ -240,7 +240,7 @@ EMB["from_subevent_tail"]='''            HCI_LE_ADVERTISING_REPORT_EVENT => {
                 for _ in 0..num_reports {
                     let event_type = r.u16_le()?;
                     let address_type = r.u8()?;
-                    let address = Address::from_bytes(r.array::<6>()?, AddressType::RANDOM_DEVICE);
+                    let address = Address::from_bytes(r.array::<6>()?, AddressType(address_type));
                     let primary_phy = r.u8()?;
                     let secondary_phy = r.u8()?;
                     let advertising_sid = r.u8()?;
@@ -249,7 +249,7 @@ EMB["from_subevent_tail"]='''            HCI_LE_ADVERTISING_REPORT_EVENT => {
                     let periodic_advertising_interval = r.u16_le()?;
                     let direct_address_type = r.u8()?;
                     let direct_address =
-                        Address::from_bytes(r.array::<6>()?, AddressType::RANDOM_DEVICE);
+                        Address::from_bytes(r.array::<6>()?, AddressType(direct_address_type));
                     let data_length = r.u8()? as usize;
                     let data = r.take(data_length)?.to_vec();
                     reports.push(ExtendedAdvertisingReport {

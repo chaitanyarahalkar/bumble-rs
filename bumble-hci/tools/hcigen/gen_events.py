@@ -146,8 +146,7 @@ print(f"events: regular={len(reg)} meta={len(meta)} self-check OK skipped {len(s
 # ============ regenerate FULL codes.rs (commands + events + subevents) ============
 def cmd_variant(cls):
     toks=cls[len("HCI_"):-len("_Command")].split("_"); return "".join(t[:1].upper()+t[1:].lower() for t in toks if t)
-cmd_codes={cls.upper():e["code"] for cls,e in cspec.items()
-           if cls not in ("HCI_LE_Read_All_Local_Supported_Features_Command",)}
+cmd_codes={cls.upper():e["code"] for cls,e in cspec.items()}
 cmd_codes["HCI_LE_SET_EXTENDED_SCAN_PARAMETERS_COMMAND"]=0x2041
 cmd_codes["HCI_LE_EXTENDED_CREATE_CONNECTION_COMMAND"]=0x2043
 # event/subevent codes (generated ones + the hand-written specials we skipped)

@@ -100,6 +100,18 @@ fn le_controller_information_returns_are_typed() {
         },
         &[0, 0xFF, 1, 2, 3, 4, 5, 6, 7],
     );
+    let all_le_features = core::array::from_fn(|index| index as u8);
+    let mut all_le_feature_bytes = vec![0, 3];
+    all_le_feature_bytes.extend_from_slice(&all_le_features);
+    round_trip(
+        HCI_LE_READ_ALL_LOCAL_SUPPORTED_FEATURES_COMMAND,
+        ReturnParameters::LeReadAllLocalSupportedFeatures {
+            status: 0,
+            max_page: 3,
+            le_features: Box::new(all_le_features),
+        },
+        &all_le_feature_bytes,
+    );
     round_trip(
         HCI_LE_READ_SUGGESTED_DEFAULT_DATA_LENGTH_COMMAND,
         ReturnParameters::LeReadSuggestedDefaultDataLength {
@@ -160,6 +172,7 @@ fn typed_errors_fall_back_to_status_and_truncation_is_rejected() {
         HCI_READ_VOICE_SETTING_COMMAND,
         HCI_LE_READ_BUFFER_SIZE_V2_COMMAND,
         HCI_LE_READ_LOCAL_SUPPORTED_FEATURES_COMMAND,
+        HCI_LE_READ_ALL_LOCAL_SUPPORTED_FEATURES_COMMAND,
         HCI_LE_READ_SUGGESTED_DEFAULT_DATA_LENGTH_COMMAND,
         HCI_LE_READ_MAXIMUM_DATA_LENGTH_COMMAND,
         HCI_LE_READ_MAXIMUM_ADVERTISING_DATA_LENGTH_COMMAND,

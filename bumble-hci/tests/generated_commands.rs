@@ -1802,6 +1802,11 @@ fn cmd_lesubraterequest() {
 }
 
 #[test]
+fn cmd_lereadalllocalsupportedfeatures() {
+    check(Command::LeReadAllLocalSupportedFeatures, "01872000");
+}
+
+#[test]
 fn cmd_lecsreadlocalsupportedcapabilities() {
     check(Command::LeCsReadLocalSupportedCapabilities, "01892000");
 }

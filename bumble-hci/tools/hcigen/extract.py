@@ -72,7 +72,7 @@ def body_bytes(cls):
     return HCI_Object.dict_to_bytes(vals, fields)
 
 CUSTOM={'HCI_LE_Extended_Create_Connection_Command','HCI_LE_Set_Extended_Scan_Parameters_Command',
-        'HCI_LE_Read_All_Local_Supported_Features_Command','HCI_LE_Meta_Event'}
+        'HCI_LE_Meta_Event'}
 
 def build(reg, is_cmd):
     specs={}; oracle={}; errs=[]

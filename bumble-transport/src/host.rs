@@ -52,7 +52,8 @@ pub struct LocalControllerVersion {
 pub struct ExternalControllerInfo {
     pub supported_commands: [u8; 64],
     pub local_version: Option<LocalControllerVersion>,
-    pub local_le_features: Option<[u8; 8]>,
+    pub local_le_features: Option<Vec<u8>>,
+    pub local_le_features_max_page: Option<u8>,
     pub local_lmp_features: Vec<[u8; 8]>,
     pub acl_data_packet_length: u16,
     pub total_num_acl_data_packets: u16,
@@ -1376,12 +1377,25 @@ impl ExternalHost {
                 None
             };
 
-        let local_le_features = if supported_names
-            .contains(&"HCI_LE_READ_LOCAL_SUPPORTED_FEATURES_COMMAND")
+        let (local_le_features, local_le_features_max_page) = if supported_names
+            .contains(&"HCI_LE_READ_ALL_LOCAL_SUPPORTED_FEATURES_COMMAND")
         {
+            match self.send_successful_command(Command::LeReadAllLocalSupportedFeatures, timeout)? {
+                ReturnParameters::LeReadAllLocalSupportedFeatures {
+                    max_page,
+                    le_features,
+                    ..
+                } => (Some(le_features.to_vec()), Some(max_page)),
+                response => {
+                    return Err(Error::Remote(format!(
+                        "unexpected LE Read All Local Supported Features response: {response:?}"
+                    )))
+                }
+            }
+        } else if supported_names.contains(&"HCI_LE_READ_LOCAL_SUPPORTED_FEATURES_COMMAND") {
             match self.send_successful_command(Command::LeReadLocalSupportedFeatures, timeout)? {
                 ReturnParameters::LeReadLocalSupportedFeatures { le_features, .. } => {
-                    Some(le_features)
+                    (Some(le_features.to_vec()), None)
                 }
                 response => {
                     return Err(Error::Remote(format!(
@@ -1390,7 +1404,7 @@ impl ExternalHost {
                 }
             }
         } else {
-            None
+            (None, None)
         };
 
         let mut local_lmp_features = Vec::new();
@@ -1471,6 +1485,7 @@ impl ExternalHost {
             supported_commands,
             local_version,
             local_le_features,
+            local_le_features_max_page,
             local_lmp_features,
             acl_data_packet_length: 0,
             total_num_acl_data_packets: 0,
@@ -2039,8 +2054,9 @@ mod tests {
         );
         assert_eq!(
             info.local_le_features,
-            Some([0x00, 0x10, 0x00, 0xF0, 0, 0, 0, 0])
+            Some(vec![0x00, 0x10, 0x00, 0xF0, 0, 0, 0, 0])
         );
+        assert_eq!(info.local_le_features_max_page, None);
         assert_eq!(info.local_lmp_features.len(), 4);
         assert_eq!(info.local_lmp_features[0][7], 0x80);
         assert_eq!(info.local_lmp_features[3][0], 3);
@@ -2103,6 +2119,64 @@ mod tests {
                 "LE subevent 0x{subevent:02X} is masked out"
             );
         }
+    }
+
+    #[test]
+    fn initialization_prefers_all_local_le_features() {
+        let mut supported_commands = [0; 64];
+        supported_commands[47] = 0x04;
+        let mut le_features = [0; 248];
+        le_features[..10].copy_from_slice(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+        let responses = vec![
+            command_complete(Command::Reset, ReturnParameters::Status { status: 0 }),
+            command_complete(
+                Command::ReadLocalSupportedCommands,
+                ReturnParameters::ReadLocalSupportedCommands {
+                    status: 0,
+                    supported_commands,
+                },
+            ),
+            command_complete(
+                Command::LeReadAllLocalSupportedFeatures,
+                ReturnParameters::LeReadAllLocalSupportedFeatures {
+                    status: 0,
+                    max_page: 2,
+                    le_features: Box::new(le_features),
+                },
+            ),
+            command_complete(
+                Command::SetEventMask { event_mask: [0; 8] },
+                ReturnParameters::Status { status: 0 },
+            ),
+        ];
+        let sink = RecordingSink::default();
+        let recorded = sink.clone();
+        let mut host = ExternalHost::new(split(responses, sink));
+        let mut device = Device::new(0);
+
+        let info = host
+            .initialize_device(&mut device, Duration::from_secs(1))
+            .unwrap();
+        assert_eq!(info.local_le_features, Some(le_features.to_vec()));
+        assert_eq!(info.local_le_features_max_page, Some(2));
+        assert_eq!(
+            recorded
+                .0
+                .lock()
+                .unwrap()
+                .iter()
+                .filter_map(|packet| match packet {
+                    HciPacket::Command(command) => Some(command.op_code()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>(),
+            vec![
+                Command::Reset.op_code(),
+                Command::ReadLocalSupportedCommands.op_code(),
+                Command::LeReadAllLocalSupportedFeatures.op_code(),
+                Command::SetEventMask { event_mask: [0; 8] }.op_code(),
+            ]
+        );
     }
 
     #[test]

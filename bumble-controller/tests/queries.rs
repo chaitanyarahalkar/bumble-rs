@@ -89,6 +89,33 @@ fn le_read_local_supported_features_returns_bitmap() {
 }
 
 #[test]
+fn le_read_all_local_supported_features_returns_padded_catalog() {
+    let mut controller = Controller::new("C", addr("00:11:22:33:44:55"));
+    controller.handle_command(Command::ReadLocalSupportedCommands);
+    match only_complete(&controller.drain_host_events()) {
+        ReturnParameters::ReadLocalSupportedCommands {
+            supported_commands, ..
+        } => assert_ne!(supported_commands[47] & 0x04, 0),
+        other => panic!("expected supported commands, got {other:?}"),
+    }
+
+    controller.handle_command(Command::LeReadAllLocalSupportedFeatures);
+    match only_complete(&controller.drain_host_events()) {
+        ReturnParameters::LeReadAllLocalSupportedFeatures {
+            status,
+            max_page,
+            le_features,
+        } => {
+            assert_eq!(*status, 0);
+            assert_eq!(*max_page, 0);
+            assert_eq!(&le_features[..8], &[0x00, 0x10, 0x00, 0xF0, 0, 0, 0, 0]);
+            assert!(le_features[8..].iter().all(|feature| *feature == 0));
+        }
+        other => panic!("expected all LE feature params, got {other:?}"),
+    }
+}
+
+#[test]
 fn read_local_extended_features_returns_all_pages_and_rejects_overflow() {
     let mut controller = Controller::new("C", addr("00:11:22:33:44:55"));
     for page_number in 0..=3 {
@@ -130,6 +157,7 @@ fn controller_information_queries_have_typed_serializable_payloads() {
         Command::ReadBufferSize,
         Command::LeReadBufferSizeV2,
         Command::LeReadLocalSupportedFeatures,
+        Command::LeReadAllLocalSupportedFeatures,
         Command::LeReadSuggestedDefaultDataLength,
         Command::LeReadMaximumDataLength,
         Command::LeReadMaximumAdvertisingDataLength,

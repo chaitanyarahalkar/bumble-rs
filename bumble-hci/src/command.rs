@@ -794,6 +794,7 @@ pub enum Command {
         continuation_number: u16,
         supervision_timeout: u16,
     },
+    LeReadAllLocalSupportedFeatures,
     LeCsReadLocalSupportedCapabilities,
     LeCsReadRemoteSupportedCapabilities {
         connection_handle: u16,
@@ -1278,6 +1279,9 @@ impl Command {
             Command::LeSetHostFeature { .. } => HCI_LE_SET_HOST_FEATURE_COMMAND,
             Command::LeSetDefaultSubrate { .. } => HCI_LE_SET_DEFAULT_SUBRATE_COMMAND,
             Command::LeSubrateRequest { .. } => HCI_LE_SUBRATE_REQUEST_COMMAND,
+            Command::LeReadAllLocalSupportedFeatures => {
+                HCI_LE_READ_ALL_LOCAL_SUPPORTED_FEATURES_COMMAND
+            }
             Command::LeCsReadLocalSupportedCapabilities => {
                 HCI_LE_CS_READ_LOCAL_SUPPORTED_CAPABILITIES_COMMAND
             }
@@ -1369,6 +1373,7 @@ impl Command {
             | Command::LePeriodicAdvertisingCreateSyncCancel
             | Command::LeReadTransmitPower
             | Command::LeReadBufferSizeV2
+            | Command::LeReadAllLocalSupportedFeatures
             | Command::LeCsReadLocalSupportedCapabilities
             | Command::LeCsTestEnd
             | Command::LeReadMinimumSupportedConnectionInterval => {}
@@ -4238,6 +4243,9 @@ impl Command {
                     continuation_number,
                     supervision_timeout,
                 }
+            }
+            HCI_LE_READ_ALL_LOCAL_SUPPORTED_FEATURES_COMMAND => {
+                Command::LeReadAllLocalSupportedFeatures
             }
             HCI_LE_CS_READ_LOCAL_SUPPORTED_CAPABILITIES_COMMAND => {
                 Command::LeCsReadLocalSupportedCapabilities

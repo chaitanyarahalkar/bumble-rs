@@ -65,6 +65,11 @@ pub enum ReturnParameters {
         status: u8,
         le_features: [u8; 8],
     },
+    LeReadAllLocalSupportedFeatures {
+        status: u8,
+        max_page: u8,
+        le_features: Box<[u8; 248]>,
+    },
     ReadBufferSize {
         status: u8,
         hc_acl_data_packet_length: u16,
@@ -146,6 +151,7 @@ impl ReturnParameters {
             | ReturnParameters::ReadLocalSupportedFeatures { status, .. }
             | ReturnParameters::ReadLocalExtendedFeatures { status, .. }
             | ReturnParameters::LeReadLocalSupportedFeatures { status, .. }
+            | ReturnParameters::LeReadAllLocalSupportedFeatures { status, .. }
             | ReturnParameters::ReadBufferSize { status, .. }
             | ReturnParameters::ReadVoiceSetting { status, .. }
             | ReturnParameters::ReadLoopbackMode { status, .. }
@@ -235,6 +241,15 @@ impl ReturnParameters {
             } => {
                 p.push(*status);
                 p.extend_from_slice(le_features);
+            }
+            ReturnParameters::LeReadAllLocalSupportedFeatures {
+                status,
+                max_page,
+                le_features,
+            } => {
+                p.push(*status);
+                p.push(*max_page);
+                p.extend_from_slice(le_features.as_ref());
             }
             ReturnParameters::ReadBufferSize {
                 status,
@@ -386,6 +401,7 @@ impl ReturnParameters {
                 | HCI_READ_LOCAL_SUPPORTED_FEATURES_COMMAND
                 | HCI_READ_LOCAL_EXTENDED_FEATURES_COMMAND
                 | HCI_LE_READ_LOCAL_SUPPORTED_FEATURES_COMMAND
+                | HCI_LE_READ_ALL_LOCAL_SUPPORTED_FEATURES_COMMAND
                 | HCI_READ_BUFFER_SIZE_COMMAND
                 | HCI_READ_VOICE_SETTING_COMMAND
                 | HCI_READ_LOOPBACK_MODE_COMMAND
@@ -460,6 +476,13 @@ impl ReturnParameters {
                 ReturnParameters::LeReadLocalSupportedFeatures {
                     status,
                     le_features: r.array::<8>()?,
+                }
+            }
+            HCI_LE_READ_ALL_LOCAL_SUPPORTED_FEATURES_COMMAND => {
+                ReturnParameters::LeReadAllLocalSupportedFeatures {
+                    status,
+                    max_page: r.u8()?,
+                    le_features: Box::new(r.array::<248>()?),
                 }
             }
             HCI_READ_BUFFER_SIZE_COMMAND => ReturnParameters::ReadBufferSize {
