@@ -493,6 +493,9 @@ pub struct LeConnectionInfo {
     pub data_length: Option<LeDataLength>,
     pub phy: LePhy,
     pub rssi: Option<i8>,
+    pub encryption_enabled: u8,
+    pub encryption_key_size: u8,
+    pub qos_service_type: Option<u8>,
     pub classic_mode: u8,
     pub classic_interval: u16,
     pub peer_le_features: Option<[u8; 8]>,
@@ -515,10 +518,14 @@ pub struct ClassicConnectionInfo {
     pub connection_handle: u16,
     pub role: u8,
     pub peer_address: Address,
+    pub encryption_enabled: u8,
+    pub encryption_key_size: u8,
+    pub qos_service_type: Option<u8>,
     pub classic_mode: u8,
     pub classic_interval: u16,
     pub peer_lmp_features: BTreeMap<u8, [u8; 8]>,
     pub peer_lmp_max_page_number: Option<u8>,
+    pub peer_host_supported_features: Option<[u8; 8]>,
 }
 
 /// One Classic inquiry report, retaining the discovery metadata applications
@@ -733,6 +740,26 @@ pub enum DeviceEvent {
         status: u8,
         connection_handle: u16,
         encryption_enabled: u8,
+        encryption_key_size: u8,
+    },
+    EncryptionKeyRefresh {
+        connection_handle: u16,
+    },
+    EncryptionKeyRefreshFailed {
+        connection_handle: u16,
+        status: u8,
+    },
+    QosSetup {
+        connection_handle: u16,
+        service_type: u8,
+    },
+    QosSetupFailed {
+        connection_handle: u16,
+        status: u8,
+    },
+    RemoteHostSupportedFeatures {
+        peer_address: Address,
+        host_supported_features: [u8; 8],
     },
 }
 
@@ -4233,6 +4260,7 @@ impl Device {
         peripheral_latency: u16,
         supervision_timeout: u16,
     ) {
+        self.encrypted_handles.remove(&connection_handle);
         self.le_connections.insert(
             connection_handle,
             LeConnectionInfo {
@@ -4252,6 +4280,9 @@ impl Device {
                     rx_phy: 1,
                 },
                 rssi: None,
+                encryption_enabled: 0,
+                encryption_key_size: 0,
+                qos_service_type: None,
                 classic_mode: 0,
                 classic_interval: 0,
                 peer_le_features: None,
@@ -4274,6 +4305,36 @@ impl Device {
             .expect("connection was just inserted")
             .clone();
         self.emit_device_event(DeviceEvent::LeConnectionEstablished(connection));
+    }
+
+    fn update_connection_encryption(
+        &mut self,
+        connection_handle: u16,
+        encryption_enabled: u8,
+        encryption_key_size: u8,
+    ) {
+        if let Some(connection) = self.le_connections.get_mut(&connection_handle) {
+            connection.encryption_enabled = encryption_enabled;
+            connection.encryption_key_size = encryption_key_size;
+        }
+        if let Some(connection) = self.classic_connections.get_mut(&connection_handle) {
+            connection.encryption_enabled = encryption_enabled;
+            connection.encryption_key_size = encryption_key_size;
+        }
+        if encryption_enabled != 0 {
+            self.encrypted_handles.insert(connection_handle);
+        } else {
+            self.encrypted_handles.remove(&connection_handle);
+        }
+    }
+
+    fn update_connection_qos(&mut self, connection_handle: u16, service_type: u8) {
+        if let Some(connection) = self.le_connections.get_mut(&connection_handle) {
+            connection.qos_service_type = Some(service_type);
+        }
+        if let Some(connection) = self.classic_connections.get_mut(&connection_handle) {
+            connection.qos_service_type = Some(service_type);
+        }
     }
 
     /// Drain and process this device's controller events. Returns `true` if any
@@ -5565,7 +5626,7 @@ impl Device {
                     connection_handle,
                     bd_addr,
                     link_type: 1,
-                    ..
+                    encryption_enabled,
                 }) => {
                     if status == 0 {
                         let role = self
@@ -5580,12 +5641,21 @@ impl Device {
                                 connection_handle,
                                 role,
                                 peer_address: bd_addr,
+                                encryption_enabled,
+                                encryption_key_size: 0,
+                                qos_service_type: None,
                                 classic_mode: 0,
                                 classic_interval: 0,
                                 peer_lmp_features: BTreeMap::new(),
                                 peer_lmp_max_page_number: None,
+                                peer_host_supported_features: None,
                             },
                         );
+                        if encryption_enabled != 0 {
+                            self.encrypted_handles.insert(connection_handle);
+                        } else {
+                            self.encrypted_handles.remove(&connection_handle);
+                        }
                         let mut manager = ClassicChannelManager::new();
                         for (psm, spec) in &self.classic_channel_server_specs {
                             manager
@@ -5788,15 +5858,83 @@ impl Device {
                     connection_handle,
                     encryption_enabled,
                 }) => {
-                    if status == 0 && encryption_enabled != 0 {
-                        self.encrypted_handles.insert(connection_handle);
-                    } else {
-                        self.encrypted_handles.remove(&connection_handle);
+                    if status == 0 {
+                        self.update_connection_encryption(connection_handle, encryption_enabled, 0);
                     }
                     self.emit_device_event(DeviceEvent::EncryptionChange {
                         status,
                         connection_handle,
                         encryption_enabled,
+                        encryption_key_size: 0,
+                    });
+                }
+                HciPacket::Event(Event::EncryptionChangeV2 {
+                    status,
+                    connection_handle,
+                    encryption_enabled,
+                    encryption_key_size,
+                }) => {
+                    if status == 0 {
+                        self.update_connection_encryption(
+                            connection_handle,
+                            encryption_enabled,
+                            encryption_key_size,
+                        );
+                    }
+                    self.emit_device_event(DeviceEvent::EncryptionChange {
+                        status,
+                        connection_handle,
+                        encryption_enabled,
+                        encryption_key_size,
+                    });
+                }
+                HciPacket::Event(Event::EncryptionKeyRefreshComplete {
+                    status: 0,
+                    connection_handle,
+                }) => {
+                    self.emit_device_event(DeviceEvent::EncryptionKeyRefresh { connection_handle })
+                }
+                HciPacket::Event(Event::EncryptionKeyRefreshComplete {
+                    status,
+                    connection_handle,
+                }) => self.emit_device_event(DeviceEvent::EncryptionKeyRefreshFailed {
+                    connection_handle,
+                    status,
+                }),
+                HciPacket::Event(Event::QosSetupComplete {
+                    status: 0,
+                    connection_handle,
+                    service_type,
+                    ..
+                }) => {
+                    self.update_connection_qos(connection_handle, service_type);
+                    self.emit_device_event(DeviceEvent::QosSetup {
+                        connection_handle,
+                        service_type,
+                    });
+                }
+                HciPacket::Event(Event::QosSetupComplete {
+                    status,
+                    connection_handle,
+                    ..
+                }) => self.emit_device_event(DeviceEvent::QosSetupFailed {
+                    connection_handle,
+                    status,
+                }),
+                HciPacket::Event(Event::RemoteHostSupportedFeaturesNotification {
+                    bd_addr,
+                    host_supported_features,
+                }) => {
+                    if let Some(connection) = self
+                        .classic_connections
+                        .values_mut()
+                        .find(|connection| connection.peer_address == bd_addr)
+                    {
+                        connection.peer_host_supported_features = Some(host_supported_features);
+                    }
+                    self.emit_device_event(DeviceEvent::RemoteHostSupportedFeatures {
+                        peer_address: bd_addr,
+                        host_supported_features,
                     });
                 }
                 HciPacket::AclData(acl) => self.on_acl(link, acl),

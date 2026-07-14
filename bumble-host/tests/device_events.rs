@@ -125,6 +125,7 @@ fn listeners_observe_post_state_events_and_failed_disconnects_preserve_state() {
             status: 0,
             connection_handle: handle,
             encryption_enabled: 1,
+            encryption_key_size: 0,
         }
     );
     assert_eq!(
@@ -341,6 +342,134 @@ fn classic_and_synchronous_success_events_include_retained_connection_state() {
         vec![
             DeviceEvent::ClassicConnectionEstablished(classic),
             DeviceEvent::SynchronousConnectionEstablished(synchronous),
+        ]
+    );
+}
+
+#[test]
+fn encryption_qos_and_remote_host_features_match_upstream_routing() {
+    let handle = 0x0060;
+    let peer = random_address("C0:00:00:00:00:60");
+    let mut transport = ScriptedTransport {
+        events: vec![HciPacket::Event(Event::ConnectionComplete {
+            status: 0,
+            connection_handle: handle,
+            bd_addr: peer.clone(),
+            link_type: 1,
+            encryption_enabled: 1,
+        })],
+    };
+    let mut device = Device::new(0);
+
+    assert!(device.poll(&mut transport));
+    let connection = device.classic_connection(handle).unwrap();
+    assert_eq!(connection.encryption_enabled, 1);
+    assert_eq!(connection.encryption_key_size, 0);
+    assert!(device.is_classic_encrypted());
+    assert!(matches!(
+        device.take_device_events().as_slice(),
+        [DeviceEvent::ClassicConnectionEstablished(connection)]
+            if connection.encryption_enabled == 1
+    ));
+
+    let host_supported_features = [1, 2, 3, 4, 5, 6, 7, 8];
+    transport.events.extend([
+        HciPacket::Event(Event::EncryptionChangeV2 {
+            status: 0,
+            connection_handle: handle,
+            encryption_enabled: 2,
+            encryption_key_size: 16,
+        }),
+        HciPacket::Event(Event::QosSetupComplete {
+            status: 0,
+            connection_handle: handle,
+            unused: 0,
+            service_type: 2,
+        }),
+        HciPacket::Event(Event::RemoteHostSupportedFeaturesNotification {
+            bd_addr: peer.clone(),
+            host_supported_features,
+        }),
+        HciPacket::Event(Event::EncryptionKeyRefreshComplete {
+            status: 0,
+            connection_handle: handle,
+        }),
+    ]);
+    assert!(device.poll(&mut transport));
+
+    let connection = device.classic_connection(handle).unwrap();
+    assert_eq!(connection.encryption_enabled, 2);
+    assert_eq!(connection.encryption_key_size, 16);
+    assert_eq!(connection.qos_service_type, Some(2));
+    assert_eq!(
+        connection.peer_host_supported_features,
+        Some(host_supported_features)
+    );
+    assert_eq!(
+        device.take_device_events(),
+        vec![
+            DeviceEvent::EncryptionChange {
+                status: 0,
+                connection_handle: handle,
+                encryption_enabled: 2,
+                encryption_key_size: 16,
+            },
+            DeviceEvent::QosSetup {
+                connection_handle: handle,
+                service_type: 2,
+            },
+            DeviceEvent::RemoteHostSupportedFeatures {
+                peer_address: peer,
+                host_supported_features,
+            },
+            DeviceEvent::EncryptionKeyRefresh {
+                connection_handle: handle,
+            },
+        ]
+    );
+
+    transport.events.extend([
+        HciPacket::Event(Event::EncryptionChange {
+            status: 0x0C,
+            connection_handle: handle,
+            encryption_enabled: 0,
+        }),
+        HciPacket::Event(Event::QosSetupComplete {
+            status: 0x0D,
+            connection_handle: handle,
+            unused: 0,
+            service_type: 0,
+        }),
+        HciPacket::Event(Event::EncryptionKeyRefreshComplete {
+            status: 0x06,
+            connection_handle: handle,
+        }),
+    ]);
+    assert!(device.poll(&mut transport));
+
+    // Upstream only mutates encryption/QoS state on success.
+    let connection = device.classic_connection(handle).unwrap();
+    assert_eq!(connection.encryption_enabled, 2);
+    assert_eq!(connection.encryption_key_size, 16);
+    assert_eq!(connection.qos_service_type, Some(2));
+    assert!(device.is_classic_encrypted());
+    assert_eq!(
+        device.take_device_events(),
+        vec![
+            DeviceEvent::EncryptionChange {
+                status: 0x0C,
+                connection_handle: handle,
+                encryption_enabled: 0,
+                encryption_key_size: 0,
+            },
+            DeviceEvent::QosSetupFailed {
+                connection_handle: handle,
+                status: 0x0D,
+            },
+            DeviceEvent::EncryptionKeyRefreshFailed {
+                connection_handle: handle,
+                status: 0x06,
+            },
         ]
     );
 }
