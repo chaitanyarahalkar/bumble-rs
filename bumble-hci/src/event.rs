@@ -1149,7 +1149,7 @@ impl Event {
         let addr = |r: &mut Reader| -> Result<Address> {
             Ok(Address::from_bytes(
                 r.array::<6>()?,
-                AddressType::RANDOM_DEVICE,
+                AddressType::PUBLIC_DEVICE,
             ))
         };
         let mut r = Reader::new(parameters, 0);

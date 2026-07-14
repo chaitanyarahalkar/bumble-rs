@@ -240,13 +240,14 @@ size, to convey remaining surface.
 | `apps/speaker/speaker.py` | `bumble-speaker` (`bumble-transport`) | ✅ | Runnable Classic A2DP sink with the complete upstream codec, sampling-frequency, bitrate, VBR, discovery, output, UI, peer, device-config, and transport surface. It accepts incoming Classic connections or initiates authenticated/encrypted ones, publishes the sink SDP record, negotiates SBC/AAC/vendor Opus through AVDTP, extracts received RTP audio to files or `ffplay`, and serves the live browser UI over HTTP/WebSocket. |
 | `apps/console.py` | `bumble-console` (`bumble-transport`) | ✅ | Runnable scriptable interactive LE console over external controllers. It preserves the upstream scan/filter/RSSI, advertising, connect/disconnect, parameter, encryption, MTU, PHY, GATT discovery/read/write/subscription, local-write, status-view, and exit command grammar. The Python fullscreen widgets become terminal views while live controller events remain continuously pumped. |
 | `apps/auracast.py` | `bumble-auracast` (`bumble-transport`) | ✅ | Runnable Auracast scanner, BASS broadcast assistant, pairing client, LC3 receiver, and multi-broadcast transmitter over external controllers. It preserves the upstream five-command CLI, TOML broadcast lists, Broadcast Code encoding, BAP/PBP announcements, periodic synchronization, PAST, BIG/BIS setup, and portable PCM input/output paths. The optional platform sound-device backend remains tracked under `bumble-audio`; file, stdio, and `ffplay` paths are live. |
+| `apps/bench.py` | `bumble-bench` (`bumble-transport`) | ✅ | Runnable external-controller benchmark with the complete central/peripheral, send/receive/ping/pong, and GATT/LE-CoC/RFCOMM/CIS mode matrix. It preserves the exact benchmark packet and stream framing, SDP channel discovery, RFCOMM credit tuning, ATT MTU, LE connection/scan/advertising/data-length/PHY controls, Classic role switch/authentication/encryption, directional CIG parameters, pacing, repeats, throughput, RTT, windowed-rate, and jitter statistics. |
 | `apps/lea_unicast/app.py` | `bumble-lea-unicast` (`bumble-transport`) | ✅ | Runnable LE Audio unicast sink/source over external controllers with the upstream UI-port, device-config, transport, and WAVE-input CLI. It publishes GAP, PACS, and ASCS, advertises the unicast-server announcement, negotiates sink/source ASEs, accepts and binds CIS links, decodes received LC3 to the browser UI, and resamples/encodes looping WAVE PCM into source ISO SDUs. |
 | `apps/pair.py` | `bumble-pair` (`bumble-transport`) | ✅ | Runnable LE, Classic, and simultaneous dual-mode listener paths over external controllers with the complete upstream option surface. LE supports direct address/name connection or configurable advertising, Legacy/SC pairing, and OOB data. Classic supports inquiry/name resolution, incoming/outgoing ACL setup, PIN and Secure Simple Pairing delegates, stored link-key reuse, controller encryption, and best-effort SMP-over-BR/EDR CTKD for P-256 link keys. Both paths provide bond policy, JSON key persistence/printing, and linger behavior. |
 | `apps/scan.py` | `bumble-scan` (`bumble-transport`) | ✅ | Runnable external HCI scanner with upstream RSSI/passive/interval/window/PHY/duplicate/raw/IRK/key-store/device-config options, extended scanning with legacy fallback, typed legacy + extended report decoding, exact active/passive scan-response accumulation, labeled AD rendering, RSSI bars, and real RPA identity resolution. |
 | `apps/usb_probe.py` | `bumble-usb-probe` (`bumble-transport`) | ✅ | Runnable libusb device inventory with upstream `--verbose`, `--hci-only`, manufacturer, and product filters; device/interface-level Bluetooth HCI classification; stable index, VID/PID, duplicate, and serial transport names; string-descriptor error tolerance; and verbose configuration/interface/endpoint details including isochronous packet sizes. |
 | `apps/ble_rpa_tool.py` | `bumble-rpa-tool` (`bumble-smp`) | ✅ | Runnable `gen-irk`, `gen-rpa`, and `verify-rpa` commands backed by the OS RNG and the real SMP `ah` primitive. Flexible Python-style hex input, address validation, colored verification results, and malformed/extra argument errors are covered. |
 | `apps/unbond.py` | `bumble-unbond` (`bumble-transport`) | ✅ | File-backed and external-controller list/delete modes are runnable with upstream-style colored key rendering and `!!! pairing not found` behavior. Controller mode resets HCI, discovers the public BD_ADDR, falls back to the configured random address, reproduces `JsonKeyStore[:filename]` namespace/path selection, and uses an in-memory store for absent or unknown keystore types. |
-| `apps/bench.py`, `apps/pandora_server.py` + `pandora/` | — | ⬜ | The two remaining application/conformance entry points; still unported. |
+| `apps/pandora_server.py` + `pandora/` | — | ⬜ | The remaining Pandora gRPC conformance entry point; still unported. |
 
 ### Roughly where that leaves things
 
@@ -2946,6 +2947,38 @@ The upstream Auracast application is now runnable over external controllers:
   external-host initialization test now also pins the BIG/BIS LE event-mask
   bits required on real controllers.
 
+## Slice 137 — what's here
+
+The upstream multi-transport Bluetooth benchmark is now runnable over external
+controllers:
+
+- `bumble-bench` implements both roles and all four scenarios over GATT client
+  or server, LE credit-based L2CAP client or server, RFCOMM client or server,
+  and CIS client or server modes. RESET, SEQUENCE, and ACK packets retain the
+  upstream little-endian wire format; stream modes retain their two-byte
+  big-endian packet framing across fragmentation and coalescing.
+- The full tuning surface is live: ATT MTU, LE scan/advertising and connection
+  intervals, data length, PHY, Classic scans and role switching, authentication
+  and encryption, RFCOMM L2CAP/frame/credit limits, LE CoC PSM/MTU/MPS/credits,
+  and every directional CIG SDU interval, max SDU, transport latency, and RTN.
+  RFCOMM channel zero performs real SDP discovery and the server advertises the
+  matching service record.
+- Send and ping preserve startup/repeat/pacing controls and report throughput or
+  RTT sample statistics. Receive and pong validate ordering, report instant,
+  64-sample windowed, and average rates, compute signed and absolute jitter, and
+  acknowledge the correct terminal packet. GATT server-originated runs wait for
+  a real CCCD subscription before sending.
+- Nine focused application tests pin the packet codec, stream reassembly,
+  GATT notification retention, statistics, role defaults, all eight modes, the
+  complete option surface, and invalid combinations. An RFCOMM session
+  regression additionally proves that runtime receive-credit limits replenish
+  at the configured threshold. Production-binary two-controller runs cover
+  GATT, LE CoC, RFCOMM with SDP discovery, and CIS end to end. They also closed
+  the shared external-host status fallback for byte-preserved HCI Command
+  Complete return parameters, give software-radio controllers distinct F0/F1
+  public addresses, and pin generated Classic HCI BD_ADDR decoders to public
+  address semantics so LMP traffic routes to the intended peer.
+
 ## Acceptance
 
 The port's contract is the upstream Python test suite, ported 1:1:
@@ -3108,6 +3141,7 @@ bumble-rs/
 │   ├── build.rs               # vendored-protoc Android gRPC generation
 │   ├── proto/{android_emulator,netsim_common,netsim_startup,netsim_packet_streamer}.proto
 │   ├── src/{android_emulator,android_netsim,bridge,lib,common,dispatch,file,hci_socket,serial,pty,tcp,udp,usb,unix,websocket,vhci}.rs
+│   ├── src/bin/bumble-bench.rs # slice-137 multi-mode external benchmark
 │   ├── tests/android_emulator.rs # packet mapping + real host/controller gRPC loopback
 │   ├── tests/android_netsim.rs # startup, INI, wire tags, live lease/packet stream
 │   ├── tests/bridge.rs        # replacement, response, trace, and EOF paths

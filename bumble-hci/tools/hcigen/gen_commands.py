@@ -35,7 +35,7 @@ class Ctr:
     def __init__(s): s.c=0
     def nb(s,n):
         o=bytes(((s.c+i)&0xFF) for i in range(1,n+1)); s.c=(s.c+n)&0xFF; return o
-def val(c, ctr, adv=False):
+def val(c, ctr, adv=False, public_address=False):
     if c=="u8": b=ctr.nb(1); return str(b[0]), bytes(b)
     if c=="i8": return "5", bytes([5])
     if c in ("u16","u16be"):
@@ -47,7 +47,8 @@ def val(c, ctr, adv=False):
     if c.startswith("bytes:"):
         n=int(c.split(':')[1]); b=ctr.nb(n); return "["+", ".join(map(str,b))+"]", bytes(b)
     if c=="addr":
-        b=ctr.nb(6); return "Address::from_bytes(["+", ".join(map(str,b))+"], AddressType::RANDOM_DEVICE)", bytes(b)
+        b=ctr.nb(6); address_type="PUBLIC_DEVICE" if public_address else "RANDOM_DEVICE"
+        return "Address::from_bytes(["+", ".join(map(str,b))+f"], AddressType::{address_type})", bytes(b)
     if c=="codingformat":
         return "CodingFormat { coding_format: 2, company_id: 0, vendor_specific_codec_id: 0 }", bytes([2,0,0,0,0])
     if c=="rest": b=ctr.nb(4); return "vec!["+", ".join(map(str,b))+"]", bytes(b)
@@ -87,7 +88,7 @@ def ser_elem(c, e):
     if c=="codingformat": return f"p.extend_from_slice(&{e}.to_bytes());"
     raise SystemExit("ser_elem? "+c)
 # ---- parse scalar ----
-def parse_scalar(c):
+def parse_scalar(c, name=None):
     if c=="u8": return "r.u8()?"
     if c=="i8": return "r.u8()? as i8"
     if c=="u16": return "r.u16_le()?"
@@ -97,7 +98,7 @@ def parse_scalar(c):
     if c=="u32": return "r.u32_le()?"
     if c=="u32be": return "u32::from_be_bytes(r.array::<4>()?)"
     if c.startswith("bytes:"): return f"r.array::<{c.split(':')[1]}>()?"
-    if c=="addr": return "addr(&mut r)?"
+    if c=="addr": return ("addr" if name=="bd_addr" else "random_addr")+"(&mut r)?"
     if c=="codingformat": return "CodingFormat::read(&mut r)?"
     if c=="rest": return "r.rest().to_vec()"
     if c=="varbytes": return "{ let n = r.u8()? as usize; r.take(n)?.to_vec() }"
@@ -118,12 +119,12 @@ def build(cls, e):
             ser_lines.append(f"                p.push({first}.len() as u8);\n"
                              f"                for i in 0..{first}.len() {{\n{body}\n                }}")
             inits="\n".join(f"                let mut {nm} = Vec::with_capacity({cnt});" for nm in names)
-            pushes="\n".join(f"                    {nm}.push({parse_scalar(s['codec'])});" for s,nm in zip(subs,names))
+            pushes="\n".join(f"                    {nm}.push({parse_scalar(s['codec'], s['name'])});" for s,nm in zip(subs,names))
             parse_lines.append(f"                let {cnt} = r.u8()? as usize;\n{inits}\n"
                                f"                for _ in 0..{cnt} {{\n{pushes}\n                }}")
             expect+=bytes([1])
             for s in subs:
-                lit,wb=val(s["codec"], ctr); expect+=wb
+                lit,wb=val(s["codec"], ctr, public_address=s["name"]=="bd_addr"); expect+=wb
                 tvals.append(f"            {fname(s['name'])}: vec![{lit}],")
         else:
             nm=fname(fd["name"]); c=fd["codec"]
@@ -131,8 +132,8 @@ def build(cls, e):
             decls.append(f"        {nm}: {rust_type(c)},")
             binds.append(nm)
             ser_lines.append("                "+ser_top(c, nm))
-            parse_lines.append(f"                let {nm} = {parse_scalar(c)};")
-            lit,wb=val(c, ctr, adv=is_adv); expect+=wb
+            parse_lines.append(f"                let {nm} = {parse_scalar(c, fd['name'])};")
+            lit,wb=val(c, ctr, adv=is_adv, public_address=fd["name"]=="bd_addr"); expect+=wb
             tvals.append(f"            {nm}: {lit},")
     return dict(cls=cls, vn=vn, cn=const(cls), code=e["code"], decls=decls, binds=binds,
                 ser="\n".join(ser_lines), parse="\n".join(parse_lines), tvals=tvals,
@@ -495,9 +496,16 @@ out.append('''            Command::Generic { parameters, .. } => p.extend_from_s
     /// Build a typed command from its op code and raw parameters.
     #[allow(clippy::redundant_closure_call)]
     pub fn from_parameters(op_code: u16, parameters: &[u8]) -> Result<Command> {
-        // HCI address fields do not carry the address type on the wire; the type
-        // is reconstructed as a random device address (does not affect bytes).
+        // Classic HCI BD_ADDR fields do not carry an address type and therefore
+        // denote public device addresses. LE fields that are paired with a
+        // separate type byte retain random-device reconstruction.
         let addr = |r: &mut Reader| -> Result<Address> {
+            Ok(Address::from_bytes(
+                r.array::<6>()?,
+                AddressType::PUBLIC_DEVICE,
+            ))
+        };
+        let random_addr = |r: &mut Reader| -> Result<Address> {
             Ok(Address::from_bytes(
                 r.array::<6>()?,
                 AddressType::RANDOM_DEVICE,

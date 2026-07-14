@@ -91,14 +91,13 @@ enum HostInput {
 
 fn run_transports(transports: Vec<SplitOpenedTransport>) -> Result<(), String> {
     let mut link = LocalLink::new();
-    let zero_address = Address::from_bytes([0; 6], AddressType::PUBLIC_DEVICE);
     let mut sinks = Vec::with_capacity(transports.len());
     let (input_sender, input_receiver) = mpsc::channel();
 
     for (controller_id, transport) in transports.into_iter().enumerate() {
         link.add_controller(Controller::new(
             &format!("C{controller_id}"),
-            zero_address.clone(),
+            controller_address(controller_id)?,
         ));
         sinks.push(transport.sink);
         let mut source = transport.source;
@@ -138,6 +137,14 @@ fn run_transports(transports: Vec<SplitOpenedTransport>) -> Result<(), String> {
             HostInput::Error(error) => return Err(error),
         }
     }
+}
+
+fn controller_address(controller_id: usize) -> Result<Address, String> {
+    let suffix = u8::try_from(controller_id)
+        .ok()
+        .and_then(|id| 0xF0u8.checked_add(id))
+        .ok_or_else(|| format!("controller index {controller_id} exceeds the address range"))?;
+    Ok(Address::from_bytes([suffix; 6], AddressType::PUBLIC_DEVICE))
 }
 
 fn run(args: Args) -> Result<(), String> {
@@ -204,6 +211,19 @@ mod tests {
         );
         assert!(parse_args(["controllers", "one"].map(str::to_string)).is_err());
         assert!(parse_args(["controllers", "one", "two", "three"].map(str::to_string)).is_err());
+    }
+
+    #[test]
+    fn software_controllers_have_distinct_bench_compatible_public_addresses() {
+        assert_eq!(
+            controller_address(0).unwrap().to_string(false),
+            "F0:F0:F0:F0:F0:F0"
+        );
+        assert_eq!(
+            controller_address(1).unwrap().to_string(false),
+            "F1:F1:F1:F1:F1:F1"
+        );
+        assert!(controller_address(16).is_err());
     }
 
     #[test]

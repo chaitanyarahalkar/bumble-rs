@@ -2863,9 +2863,17 @@ impl Command {
     /// Build a typed command from its op code and raw parameters.
     #[allow(clippy::redundant_closure_call)]
     pub fn from_parameters(op_code: u16, parameters: &[u8]) -> Result<Command> {
-        // HCI address fields do not carry the address type on the wire; the type
-        // is reconstructed as a random device address (does not affect bytes).
+        // Classic HCI BD_ADDR fields do not carry an address type and therefore
+        // denote public device addresses. LE fields that are paired with a
+        // separate type byte retain the historical random-device reconstruction
+        // below until the enclosing command applies that type.
         let addr = |r: &mut Reader| -> Result<Address> {
+            Ok(Address::from_bytes(
+                r.array::<6>()?,
+                AddressType::PUBLIC_DEVICE,
+            ))
+        };
+        let random_addr = |r: &mut Reader| -> Result<Address> {
             Ok(Address::from_bytes(
                 r.array::<6>()?,
                 AddressType::RANDOM_DEVICE,
@@ -3529,7 +3537,7 @@ impl Command {
             HCI_LE_READ_BUFFER_SIZE_COMMAND => Command::LeReadBufferSize,
             HCI_LE_READ_LOCAL_SUPPORTED_FEATURES_COMMAND => Command::LeReadLocalSupportedFeatures,
             HCI_LE_SET_RANDOM_ADDRESS_COMMAND => {
-                let random_address = addr(&mut r)?;
+                let random_address = random_addr(&mut r)?;
                 Command::LeSetRandomAddress { random_address }
             }
             HCI_LE_SET_ADVERTISING_PARAMETERS_COMMAND => {
@@ -3538,7 +3546,7 @@ impl Command {
                 let advertising_type = r.u8()?;
                 let own_address_type = r.u8()?;
                 let peer_address_type = r.u8()?;
-                let peer_address = addr(&mut r)?;
+                let peer_address = random_addr(&mut r)?;
                 let advertising_channel_map = r.u8()?;
                 let advertising_filter_policy = r.u8()?;
                 Command::LeSetAdvertisingParameters {
@@ -3602,7 +3610,7 @@ impl Command {
                 let le_scan_window = r.u16_le()?;
                 let initiator_filter_policy = r.u8()?;
                 let peer_address_type = r.u8()?;
-                let peer_address = addr(&mut r)?;
+                let peer_address = random_addr(&mut r)?;
                 let own_address_type = r.u8()?;
                 let connection_interval_min = r.u16_le()?;
                 let connection_interval_max = r.u16_le()?;
@@ -3630,7 +3638,7 @@ impl Command {
             HCI_LE_CLEAR_FILTER_ACCEPT_LIST_COMMAND => Command::LeClearFilterAcceptList,
             HCI_LE_ADD_DEVICE_TO_FILTER_ACCEPT_LIST_COMMAND => {
                 let address_type = r.u8()?;
-                let address = addr(&mut r)?;
+                let address = random_addr(&mut r)?;
                 Command::LeAddDeviceToFilterAcceptList {
                     address_type,
                     address,
@@ -3638,7 +3646,7 @@ impl Command {
             }
             HCI_LE_REMOVE_DEVICE_FROM_FILTER_ACCEPT_LIST_COMMAND => {
                 let address_type = r.u8()?;
-                let address = addr(&mut r)?;
+                let address = random_addr(&mut r)?;
                 Command::LeRemoveDeviceFromFilterAcceptList {
                     address_type,
                     address,
@@ -3742,7 +3750,7 @@ impl Command {
             HCI_LE_READ_LOCAL_P_256_PUBLIC_KEY_COMMAND => Command::LeReadLocalP256PublicKey,
             HCI_LE_ADD_DEVICE_TO_RESOLVING_LIST_COMMAND => {
                 let peer_identity_address_type = r.u8()?;
-                let peer_identity_address = addr(&mut r)?;
+                let peer_identity_address = random_addr(&mut r)?;
                 let peer_irk = r.array::<16>()?;
                 let local_irk = r.array::<16>()?;
                 Command::LeAddDeviceToResolvingList {
@@ -3795,7 +3803,7 @@ impl Command {
             }
             HCI_LE_SET_ADVERTISING_SET_RANDOM_ADDRESS_COMMAND => {
                 let advertising_handle = r.u8()?;
-                let random_address = addr(&mut r)?;
+                let random_address = random_addr(&mut r)?;
                 Command::LeSetAdvertisingSetRandomAddress {
                     advertising_handle,
                     random_address,
@@ -3809,7 +3817,7 @@ impl Command {
                 let primary_advertising_channel_map = r.u8()?;
                 let own_address_type = r.u8()?;
                 let peer_address_type = r.u8()?;
-                let peer_address = addr(&mut r)?;
+                let peer_address = random_addr(&mut r)?;
                 let advertising_filter_policy = r.u8()?;
                 let advertising_tx_power = r.u8()?;
                 let primary_advertising_phy = r.u8()?;
@@ -3943,7 +3951,7 @@ impl Command {
                 let options = r.u8()?;
                 let advertising_sid = r.u8()?;
                 let advertiser_address_type = r.u8()?;
-                let advertiser_address = addr(&mut r)?;
+                let advertiser_address = random_addr(&mut r)?;
                 let skip = r.u16_le()?;
                 let sync_timeout = r.u16_le()?;
                 let sync_cte_type = r.u8()?;
@@ -3967,7 +3975,7 @@ impl Command {
             HCI_LE_READ_TRANSMIT_POWER_COMMAND => Command::LeReadTransmitPower,
             HCI_LE_SET_PRIVACY_MODE_COMMAND => {
                 let peer_identity_address_type = r.u8()?;
-                let peer_identity_address = addr(&mut r)?;
+                let peer_identity_address = random_addr(&mut r)?;
                 let privacy_mode = r.u8()?;
                 Command::LeSetPrivacyMode {
                     peer_identity_address_type,
@@ -4555,7 +4563,7 @@ impl Command {
                 let initiator_filter_policy = r.u8()?;
                 let own_address_type = r.u8()?;
                 let peer_address_type = r.u8()?;
-                let peer_address = addr(&mut r)?;
+                let peer_address = random_addr(&mut r)?;
                 let initiating_phys = r.u8()?;
                 let n = initiating_phys.count_ones() as usize;
                 let mut scan_intervals = Vec::with_capacity(n);

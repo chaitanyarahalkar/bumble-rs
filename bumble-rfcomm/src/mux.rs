@@ -504,6 +504,31 @@ impl Multiplexer {
         self.dlcs.get(&dlci).map(|d| d.rx_credits)
     }
 
+    /// Override receive-credit replenishment limits for an open DLC.
+    ///
+    /// Benchmark and bridge applications expose the same tuning knobs as
+    /// upstream Bumble. Existing credits remain valid; the new values govern
+    /// subsequent grants.
+    pub fn set_dlc_receive_credits(
+        &mut self,
+        dlci: u8,
+        max_credits: u16,
+        threshold: u16,
+    ) -> Result<()> {
+        if max_credits == 0 || threshold > max_credits {
+            return Err(Error::InvalidArgument(
+                "RFCOMM receive credits require 0 <= threshold <= max and max > 0".into(),
+            ));
+        }
+        let dlc = self
+            .dlcs
+            .get_mut(&dlci)
+            .ok_or_else(|| Error::InvalidArgument(format!("no DLC for DLCI {dlci}")))?;
+        dlc.rx_max_credits = max_credits;
+        dlc.rx_credits_threshold = threshold;
+        Ok(())
+    }
+
     /// How many bytes are queued for transmit but not yet sent (blocked on
     /// credits).
     pub fn dlc_pending_tx(&self, dlci: u8) -> Option<usize> {

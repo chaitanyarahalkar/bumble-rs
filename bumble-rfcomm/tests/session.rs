@@ -263,6 +263,32 @@ fn paused_reading_withholds_rfcomm_credits_until_the_sink_resumes() {
 }
 
 #[test]
+fn receive_credit_limits_can_be_tuned_for_an_open_dlc() {
+    let mut a = Multiplexer::new(Role::Initiator, PEER_MTU);
+    let mut b = Multiplexer::new(Role::Responder, PEER_MTU);
+    b.listen(1, 8, 5);
+    open_dlc(&mut a, &mut b, 1, 8, 7);
+    let dlci = 2;
+
+    assert!(b.set_dlc_receive_credits(30, 8, 4).is_err());
+    assert!(b.set_dlc_receive_credits(dlci, 0, 0).is_err());
+    assert!(b.set_dlc_receive_credits(dlci, 4, 5).is_err());
+
+    b.set_dlc_receive_credits(dlci, 6, 4).unwrap();
+    a.write(dlci, b"x").unwrap();
+    for frame in a.drain_outgoing() {
+        b.on_pdu(&frame);
+    }
+
+    assert_eq!(b.dlc_rx_credits(dlci), Some(6));
+    assert_eq!(b.take_rx(dlci), vec![b"x".to_vec()]);
+    assert!(
+        !b.drain_outgoing().is_empty(),
+        "crossing the configured threshold grants credits up to the configured maximum"
+    );
+}
+
+#[test]
 fn disconnecting_one_dlc_keeps_the_session_reusable() {
     let mut a = Multiplexer::new(Role::Initiator, PEER_MTU);
     let mut b = Multiplexer::new(Role::Responder, PEER_MTU);

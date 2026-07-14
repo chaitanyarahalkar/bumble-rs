@@ -19,7 +19,16 @@ impl CommandResponse {
         match self {
             Self::Complete {
                 return_parameters, ..
-            } => return_parameters.status(),
+            } => return_parameters
+                .status()
+                .or_else(|| match return_parameters {
+                    // Unknown command-complete layouts remain byte-preserving Raw
+                    // values. HCI status return parameters always lead with their
+                    // status byte, so callers can still apply the normal success
+                    // check after an H4 encode/decode round trip.
+                    ReturnParameters::Raw { data } => data.first().copied(),
+                    _ => None,
+                }),
             Self::Status { status, .. } => Some(*status),
         }
     }

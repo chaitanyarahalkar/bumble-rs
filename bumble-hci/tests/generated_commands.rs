@@ -39,7 +39,7 @@ fn cmd_inquirycancel() {
 fn cmd_createconnection() {
     check(
         Command::CreateConnection {
-            bd_addr: Address::from_bytes([1, 2, 3, 4, 5, 6], AddressType::RANDOM_DEVICE),
+            bd_addr: Address::from_bytes([1, 2, 3, 4, 5, 6], AddressType::PUBLIC_DEVICE),
             packet_type: 2055,
             page_scan_repetition_mode: 9,
             reserved: 10,
@@ -65,7 +65,7 @@ fn cmd_disconnect() {
 fn cmd_createconnectioncancel() {
     check(
         Command::CreateConnectionCancel {
-            bd_addr: Address::from_bytes([1, 2, 3, 4, 5, 6], AddressType::RANDOM_DEVICE),
+            bd_addr: Address::from_bytes([1, 2, 3, 4, 5, 6], AddressType::PUBLIC_DEVICE),
         },
         "01080406010203040506",
     );
@@ -75,7 +75,7 @@ fn cmd_createconnectioncancel() {
 fn cmd_acceptconnectionrequest() {
     check(
         Command::AcceptConnectionRequest {
-            bd_addr: Address::from_bytes([1, 2, 3, 4, 5, 6], AddressType::RANDOM_DEVICE),
+            bd_addr: Address::from_bytes([1, 2, 3, 4, 5, 6], AddressType::PUBLIC_DEVICE),
             role: 7,
         },
         "0109040701020304050607",
@@ -86,7 +86,7 @@ fn cmd_acceptconnectionrequest() {
 fn cmd_rejectconnectionrequest() {
     check(
         Command::RejectConnectionRequest {
-            bd_addr: Address::from_bytes([1, 2, 3, 4, 5, 6], AddressType::RANDOM_DEVICE),
+            bd_addr: Address::from_bytes([1, 2, 3, 4, 5, 6], AddressType::PUBLIC_DEVICE),
             reason: 7,
         },
         "010a040701020304050607",
@@ -97,7 +97,7 @@ fn cmd_rejectconnectionrequest() {
 fn cmd_linkkeyrequestreply() {
     check(
         Command::LinkKeyRequestReply {
-            bd_addr: Address::from_bytes([1, 2, 3, 4, 5, 6], AddressType::RANDOM_DEVICE),
+            bd_addr: Address::from_bytes([1, 2, 3, 4, 5, 6], AddressType::PUBLIC_DEVICE),
             link_key: [7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22],
         },
         "010b04160102030405060708090a0b0c0d0e0f10111213141516",
@@ -108,7 +108,7 @@ fn cmd_linkkeyrequestreply() {
 fn cmd_linkkeyrequestnegativereply() {
     check(
         Command::LinkKeyRequestNegativeReply {
-            bd_addr: Address::from_bytes([1, 2, 3, 4, 5, 6], AddressType::RANDOM_DEVICE),
+            bd_addr: Address::from_bytes([1, 2, 3, 4, 5, 6], AddressType::PUBLIC_DEVICE),
         },
         "010c0406010203040506",
     );
@@ -118,7 +118,7 @@ fn cmd_linkkeyrequestnegativereply() {
 fn cmd_pincoderequestreply() {
     check(
         Command::PinCodeRequestReply {
-            bd_addr: Address::from_bytes([1, 2, 3, 4, 5, 6], AddressType::RANDOM_DEVICE),
+            bd_addr: Address::from_bytes([1, 2, 3, 4, 5, 6], AddressType::PUBLIC_DEVICE),
             pin_code_length: 7,
             pin_code: [8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
         },
@@ -130,7 +130,7 @@ fn cmd_pincoderequestreply() {
 fn cmd_pincoderequestnegativereply() {
     check(
         Command::PinCodeRequestNegativeReply {
-            bd_addr: Address::from_bytes([1, 2, 3, 4, 5, 6], AddressType::RANDOM_DEVICE),
+            bd_addr: Address::from_bytes([1, 2, 3, 4, 5, 6], AddressType::PUBLIC_DEVICE),
         },
         "010e0406010203040506",
     );
@@ -172,7 +172,7 @@ fn cmd_setconnectionencryption() {
 fn cmd_remotenamerequest() {
     check(
         Command::RemoteNameRequest {
-            bd_addr: Address::from_bytes([1, 2, 3, 4, 5, 6], AddressType::RANDOM_DEVICE),
+            bd_addr: Address::from_bytes([1, 2, 3, 4, 5, 6], AddressType::PUBLIC_DEVICE),
             page_scan_repetition_mode: 7,
             reserved: 8,
             clock_offset: 2569,
@@ -226,7 +226,7 @@ fn cmd_readclockoffset() {
 fn cmd_acceptsynchronousconnectionrequest() {
     check(
         Command::AcceptSynchronousConnectionRequest {
-            bd_addr: Address::from_bytes([1, 2, 3, 4, 5, 6], AddressType::RANDOM_DEVICE),
+            bd_addr: Address::from_bytes([1, 2, 3, 4, 5, 6], AddressType::PUBLIC_DEVICE),
             transmit_bandwidth: 168364039,
             receive_bandwidth: 235736075,
             max_latency: 4111,
@@ -242,7 +242,7 @@ fn cmd_acceptsynchronousconnectionrequest() {
 fn cmd_rejectsynchronousconnectionrequest() {
     check(
         Command::RejectSynchronousConnectionRequest {
-            bd_addr: Address::from_bytes([1, 2, 3, 4, 5, 6], AddressType::RANDOM_DEVICE),
+            bd_addr: Address::from_bytes([1, 2, 3, 4, 5, 6], AddressType::PUBLIC_DEVICE),
             reason: 7,
         },
         "012a040701020304050607",
@@ -253,7 +253,7 @@ fn cmd_rejectsynchronousconnectionrequest() {
 fn cmd_iocapabilityrequestreply() {
     check(
         Command::IoCapabilityRequestReply {
-            bd_addr: Address::from_bytes([1, 2, 3, 4, 5, 6], AddressType::RANDOM_DEVICE),
+            bd_addr: Address::from_bytes([1, 2, 3, 4, 5, 6], AddressType::PUBLIC_DEVICE),
             io_capability: 7,
             oob_data_present: 8,
             authentication_requirements: 9,
@@ -266,7 +266,7 @@ fn cmd_iocapabilityrequestreply() {
 fn cmd_userconfirmationrequestreply() {
     check(
         Command::UserConfirmationRequestReply {
-            bd_addr: Address::from_bytes([1, 2, 3, 4, 5, 6], AddressType::RANDOM_DEVICE),
+            bd_addr: Address::from_bytes([1, 2, 3, 4, 5, 6], AddressType::PUBLIC_DEVICE),
         },
         "012c0406010203040506",
     );
@@ -276,7 +276,7 @@ fn cmd_userconfirmationrequestreply() {
 fn cmd_userconfirmationrequestnegativereply() {
     check(
         Command::UserConfirmationRequestNegativeReply {
-            bd_addr: Address::from_bytes([1, 2, 3, 4, 5, 6], AddressType::RANDOM_DEVICE),
+            bd_addr: Address::from_bytes([1, 2, 3, 4, 5, 6], AddressType::PUBLIC_DEVICE),
         },
         "012d0406010203040506",
     );
@@ -286,7 +286,7 @@ fn cmd_userconfirmationrequestnegativereply() {
 fn cmd_userpasskeyrequestreply() {
     check(
         Command::UserPasskeyRequestReply {
-            bd_addr: Address::from_bytes([1, 2, 3, 4, 5, 6], AddressType::RANDOM_DEVICE),
+            bd_addr: Address::from_bytes([1, 2, 3, 4, 5, 6], AddressType::PUBLIC_DEVICE),
             numeric_value: 168364039,
         },
         "012e040a0102030405060708090a",
@@ -297,7 +297,7 @@ fn cmd_userpasskeyrequestreply() {
 fn cmd_userpasskeyrequestnegativereply() {
     check(
         Command::UserPasskeyRequestNegativeReply {
-            bd_addr: Address::from_bytes([1, 2, 3, 4, 5, 6], AddressType::RANDOM_DEVICE),
+            bd_addr: Address::from_bytes([1, 2, 3, 4, 5, 6], AddressType::PUBLIC_DEVICE),
         },
         "012f0406010203040506",
     );
@@ -307,7 +307,7 @@ fn cmd_userpasskeyrequestnegativereply() {
 fn cmd_remoteoobdatarequestreply() {
     check(
         Command::RemoteOobDataRequestReply {
-            bd_addr: Address::from_bytes([1, 2, 3, 4, 5, 6], AddressType::RANDOM_DEVICE),
+            bd_addr: Address::from_bytes([1, 2, 3, 4, 5, 6], AddressType::PUBLIC_DEVICE),
             c: [7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22],
             r: [
                 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38,
@@ -321,7 +321,7 @@ fn cmd_remoteoobdatarequestreply() {
 fn cmd_remoteoobdatarequestnegativereply() {
     check(
         Command::RemoteOobDataRequestNegativeReply {
-            bd_addr: Address::from_bytes([1, 2, 3, 4, 5, 6], AddressType::RANDOM_DEVICE),
+            bd_addr: Address::from_bytes([1, 2, 3, 4, 5, 6], AddressType::PUBLIC_DEVICE),
         },
         "01330406010203040506",
     );
@@ -331,7 +331,7 @@ fn cmd_remoteoobdatarequestnegativereply() {
 fn cmd_iocapabilityrequestnegativereply() {
     check(
         Command::IoCapabilityRequestNegativeReply {
-            bd_addr: Address::from_bytes([1, 2, 3, 4, 5, 6], AddressType::RANDOM_DEVICE),
+            bd_addr: Address::from_bytes([1, 2, 3, 4, 5, 6], AddressType::PUBLIC_DEVICE),
             reason: 7,
         },
         "0134040701020304050607",
@@ -371,7 +371,7 @@ fn cmd_enhancedsetupsynchronousconnection() {
 #[test]
 fn cmd_enhancedacceptsynchronousconnectionrequest() {
     check(Command::EnhancedAcceptSynchronousConnectionRequest {
-            bd_addr: Address::from_bytes([1, 2, 3, 4, 5, 6], AddressType::RANDOM_DEVICE),
+            bd_addr: Address::from_bytes([1, 2, 3, 4, 5, 6], AddressType::PUBLIC_DEVICE),
             transmit_bandwidth: 168364039,
             receive_bandwidth: 235736075,
             transmit_coding_format: CodingFormat { coding_format: 2, company_id: 0, vendor_specific_codec_id: 0 },
@@ -402,7 +402,7 @@ fn cmd_enhancedacceptsynchronousconnectionrequest() {
 fn cmd_truncatedpage() {
     check(
         Command::TruncatedPage {
-            bd_addr: Address::from_bytes([1, 2, 3, 4, 5, 6], AddressType::RANDOM_DEVICE),
+            bd_addr: Address::from_bytes([1, 2, 3, 4, 5, 6], AddressType::PUBLIC_DEVICE),
             page_scan_repetition_mode: 7,
             clock_offset: 2312,
         },
@@ -414,7 +414,7 @@ fn cmd_truncatedpage() {
 fn cmd_truncatedpagecancel() {
     check(
         Command::TruncatedPageCancel {
-            bd_addr: Address::from_bytes([1, 2, 3, 4, 5, 6], AddressType::RANDOM_DEVICE),
+            bd_addr: Address::from_bytes([1, 2, 3, 4, 5, 6], AddressType::PUBLIC_DEVICE),
         },
         "01400406010203040506",
     );
@@ -441,7 +441,7 @@ fn cmd_setconnectionlessperipheralbroadcastreceive() {
     check(
         Command::SetConnectionlessPeripheralBroadcastReceive {
             enable: 1,
-            bd_addr: Address::from_bytes([2, 3, 4, 5, 6, 7], AddressType::RANDOM_DEVICE),
+            bd_addr: Address::from_bytes([2, 3, 4, 5, 6, 7], AddressType::PUBLIC_DEVICE),
             lt_addr: 8,
             interval: 2569,
             clock_offset: 235736075,
@@ -465,7 +465,7 @@ fn cmd_startsynchronizationtrain() {
 fn cmd_receivesynchronizationtrain() {
     check(
         Command::ReceiveSynchronizationTrain {
-            bd_addr: Address::from_bytes([1, 2, 3, 4, 5, 6], AddressType::RANDOM_DEVICE),
+            bd_addr: Address::from_bytes([1, 2, 3, 4, 5, 6], AddressType::PUBLIC_DEVICE),
             sync_scan_timeout: 2055,
             sync_scan_window: 2569,
             sync_scan_interval: 3083,
@@ -477,7 +477,7 @@ fn cmd_receivesynchronizationtrain() {
 #[test]
 fn cmd_remoteoobextendeddatarequestreply() {
     check(Command::RemoteOobExtendedDataRequestReply {
-            bd_addr: Address::from_bytes([1, 2, 3, 4, 5, 6], AddressType::RANDOM_DEVICE),
+            bd_addr: Address::from_bytes([1, 2, 3, 4, 5, 6], AddressType::PUBLIC_DEVICE),
             c_192: [7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22],
             r_192: [23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38],
             c_256: [39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54],
@@ -513,7 +513,7 @@ fn cmd_exitsniffmode() {
 fn cmd_switchrole() {
     check(
         Command::SwitchRole {
-            bd_addr: Address::from_bytes([1, 2, 3, 4, 5, 6], AddressType::RANDOM_DEVICE),
+            bd_addr: Address::from_bytes([1, 2, 3, 4, 5, 6], AddressType::PUBLIC_DEVICE),
             role: 7,
         },
         "010b080701020304050607",
@@ -584,7 +584,7 @@ fn cmd_seteventfilter() {
 fn cmd_readstoredlinkkey() {
     check(
         Command::ReadStoredLinkKey {
-            bd_addr: Address::from_bytes([1, 2, 3, 4, 5, 6], AddressType::RANDOM_DEVICE),
+            bd_addr: Address::from_bytes([1, 2, 3, 4, 5, 6], AddressType::PUBLIC_DEVICE),
             read_all_flag: 7,
         },
         "010d0c0701020304050607",
@@ -595,7 +595,7 @@ fn cmd_readstoredlinkkey() {
 fn cmd_deletestoredlinkkey() {
     check(
         Command::DeleteStoredLinkKey {
-            bd_addr: Address::from_bytes([1, 2, 3, 4, 5, 6], AddressType::RANDOM_DEVICE),
+            bd_addr: Address::from_bytes([1, 2, 3, 4, 5, 6], AddressType::PUBLIC_DEVICE),
             delete_all_flag: 7,
         },
         "01120c0701020304050607",

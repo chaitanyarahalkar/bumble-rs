@@ -39,7 +39,7 @@ class Ctr:
     def __init__(s): s.c=0
     def nb(s,n):
         o=bytes(((s.c+i)&0xFF) for i in range(1,n+1)); s.c=(s.c+n)&0xFF; return o
-def val(c, ctr):
+def val(c, ctr, public_address=False):
     if c=="u8": b=ctr.nb(1); return str(b[0]), bytes(b)
     if c=="i8": return "5", bytes([5])
     if c in ("u16","u16be"):
@@ -51,7 +51,8 @@ def val(c, ctr):
     if c.startswith("bytes:"):
         n=int(c.split(':')[1]); b=ctr.nb(n); return "["+", ".join(map(str,b))+"]", bytes(b)
     if c=="addr":
-        b=ctr.nb(6); return "Address::from_bytes(["+", ".join(map(str,b))+"], AddressType::RANDOM_DEVICE)", bytes(b)
+        b=ctr.nb(6); address_type="PUBLIC_DEVICE" if public_address else "RANDOM_DEVICE"
+        return "Address::from_bytes(["+", ".join(map(str,b))+f"], AddressType::{address_type})", bytes(b)
     if c=="codingformat":
         return "CodingFormat { coding_format: 2, company_id: 0, vendor_specific_codec_id: 0 }", bytes([2,0,0,0,0])
     if c=="rest": b=ctr.nb(4); return "vec!["+", ".join(map(str,b))+"]", bytes(b)
@@ -84,7 +85,7 @@ def ser_elem(c, e):
     if c=="addr": return f"p.extend_from_slice({e}.address_bytes());"
     if c=="varbytes": return f"p.push({e}.len() as u8);\n                    p.extend_from_slice(&{e});"
     raise SystemExit("ser_elem? "+c)
-def parse_scalar(c):
+def parse_scalar(c, name=None):
     if c=="u8": return "r.u8()?"
     if c=="i8": return "r.u8()? as i8"
     if c=="u16": return "r.u16_le()?"
@@ -111,16 +112,16 @@ def build(cls, e, meta):
             body="\n".join("                    "+ser_elem(s["codec"], f"{fname(s['name'])}[i]") for s in subs)
             ser.append(f"                p.push({first}.len() as u8);\n                for i in 0..{first}.len() {{\n{body}\n                }}")
             inits="\n".join(f"                let mut {nm} = Vec::with_capacity({cnt});" for nm in names)
-            pushes="\n".join(f"                    {nm}.push({parse_scalar(s['codec'])});" for s,nm in zip(subs,names))
+            pushes="\n".join(f"                    {nm}.push({parse_scalar(s['codec'], s['name'])});" for s,nm in zip(subs,names))
             parse.append(f"                let {cnt} = r.u8()? as usize;\n{inits}\n                for _ in 0..{cnt} {{\n{pushes}\n                }}")
             expect+=bytes([1])
             for s in subs:
-                lit,wb=val(s["codec"],ctr); expect+=wb; tvals.append(f"            {fname(s['name'])}: vec![{lit}],")
+                lit,wb=val(s["codec"],ctr,public_address=s["name"]=="bd_addr"); expect+=wb; tvals.append(f"            {fname(s['name'])}: vec![{lit}],")
         else:
             nm=fname(fd["name"]); c=fd["codec"]
             decls.append(f"        {nm}: {rust_type(c)},"); binds.append(nm)
-            ser.append("                "+ser_top(c,nm)); parse.append(f"                let {nm} = {parse_scalar(c)};")
-            lit,wb=val(c,ctr); expect+=wb; tvals.append(f"            {nm}: {lit},")
+            ser.append("                "+ser_top(c,nm)); parse.append(f"                let {nm} = {parse_scalar(c, fd['name'])};")
+            lit,wb=val(c,ctr,public_address=fd["name"]=="bd_addr"); expect+=wb; tvals.append(f"            {nm}: {lit},")
     return dict(cls=cls,vn=vn,cn=const(cls),code=e["code"],sub=e.get("subevent_code"),
                 decls=decls,binds=binds,ser="\n".join(ser),parse="\n".join(parse),tvals=tvals,
                 expect=bytes(expect),body=bytes.fromhex(e["body_hex"]),noparam=(len(e["fields"])==0),meta=meta)

@@ -71,6 +71,28 @@ fn correlates_command_complete_and_preserves_unrelated_packets() {
 }
 
 #[test]
+fn raw_command_complete_exposes_its_leading_hci_status() {
+    let success = CommandResponse::Complete {
+        num_hci_command_packets: 1,
+        return_parameters: ReturnParameters::Raw {
+            data: vec![0, 0xAA],
+        },
+    };
+    let failure = CommandResponse::Complete {
+        num_hci_command_packets: 1,
+        return_parameters: ReturnParameters::Raw { data: vec![0x12] },
+    };
+    let empty = CommandResponse::Complete {
+        num_hci_command_packets: 1,
+        return_parameters: ReturnParameters::Raw { data: Vec::new() },
+    };
+
+    assert_eq!(success.status(), Some(0));
+    assert_eq!(failure.status(), Some(0x12));
+    assert_eq!(empty.status(), None);
+}
+
+#[test]
 fn returns_matching_command_status() {
     let mut transport = MockTransport::default();
     transport
