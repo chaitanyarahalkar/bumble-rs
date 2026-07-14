@@ -1,7 +1,11 @@
-use bumble::{Address, AddressType};
+use bumble::{Address, AddressType, AdvertisingData};
 use bumble_att::AttPdu;
 use bumble_controller::{Controller, LocalLink};
-use bumble_host::{pump, Device, ExtendedAdvertisingConfig, LeSubrateRequestParameters};
+use bumble_hci::{AdvertisingReport, ExtendedAdvertisingReport};
+use bumble_host::{
+    pump, Advertisement, AdvertisementDataAccumulator, Device, ExtendedAdvertisingConfig,
+    LeSubrateRequestParameters,
+};
 
 fn address(value: &str) -> Address {
     Address::parse(value, AddressType::RANDOM_DEVICE).unwrap()
@@ -9,6 +13,83 @@ fn address(value: &str) -> Address {
 
 fn public_address(value: &str) -> Address {
     Address::parse(value, AddressType::PUBLIC_DEVICE).unwrap()
+}
+
+#[test]
+fn advertisement_models_and_accumulator_match_upstream() {
+    let peer = address("C4:F2:17:1A:1D:BB");
+    let advertising_data = vec![2, 0x01, 0x06];
+    let scan_response_data = vec![3, 0x09, b'R', b'S'];
+    let advertising_report = AdvertisingReport {
+        event_type: 0x00,
+        address_type: 1,
+        address: peer.clone(),
+        data: advertising_data.clone(),
+        rssi: -42,
+    };
+    let scan_response_report = AdvertisingReport {
+        event_type: 0x04,
+        address_type: 1,
+        address: peer.clone(),
+        data: scan_response_data.clone(),
+        rssi: -41,
+    };
+
+    let mut active = AdvertisementDataAccumulator::new(false);
+    assert!(active.update_legacy(&advertising_report).is_none());
+    let combined = active.update_legacy(&scan_response_report).unwrap();
+    assert!(combined.is_legacy);
+    assert!(combined.is_connectable);
+    assert!(combined.is_scannable);
+    assert!(combined.is_scan_response);
+    assert!(combined.is_complete);
+    assert!(!combined.is_truncated);
+    assert_eq!(combined.rssi, -41);
+    // Upstream intentionally retains the response bytes while parsing the
+    // high-level AdvertisingData from advertisement + response.
+    assert_eq!(combined.data_bytes, scan_response_data);
+    assert_eq!(
+        combined.data.to_bytes(),
+        [advertising_data.clone(), scan_response_data.clone()].concat()
+    );
+
+    let mut passive = AdvertisementDataAccumulator::new(true);
+    assert_eq!(
+        passive
+            .update_legacy(&advertising_report)
+            .unwrap()
+            .data_bytes,
+        advertising_data
+    );
+
+    let extended = Advertisement::from_extended_report(&ExtendedAdvertisingReport {
+        event_type: 0x005F,
+        address_type: 0xFF,
+        address: peer,
+        primary_phy: 1,
+        secondary_phy: 3,
+        advertising_sid: 7,
+        tx_power: -8,
+        rssi: -55,
+        periodic_advertising_interval: 0,
+        direct_address_type: 0,
+        direct_address: address("00:00:00:00:00:00"),
+        data: vec![2, 0x01, 0x04],
+    });
+    assert!(extended.is_legacy);
+    assert!(extended.is_anonymous);
+    assert!(extended.is_connectable);
+    assert!(extended.is_directed);
+    assert!(extended.is_scannable);
+    assert!(extended.is_scan_response);
+    assert!(!extended.is_complete);
+    assert!(extended.is_truncated);
+    assert_eq!(extended.primary_phy, 1);
+    assert_eq!(extended.secondary_phy, 3);
+    assert_eq!(extended.tx_power, -8);
+    assert_eq!(extended.rssi, -55);
+    assert_eq!(extended.sid, 7);
+    assert_eq!(extended.data, AdvertisingData::from_bytes(&[2, 0x01, 0x04]));
 }
 
 #[test]
@@ -132,6 +213,13 @@ fn device_api_fragments_extended_advertising_scans_and_connects() {
     assert_eq!(reports[0].data, data);
     assert_eq!(reports[1].event_type, 0x0008);
     assert_eq!(reports[1].data, scan_response);
+    let advertisements = devices[0].take_advertisements();
+    assert_eq!(advertisements.len(), 1);
+    assert_eq!(advertisements[0].address, peripheral_address);
+    assert!(advertisements[0].is_connectable);
+    assert!(advertisements[0].is_scannable);
+    assert!(advertisements[0].is_scan_response);
+    assert_eq!(advertisements[0].data_bytes, scan_response);
     devices[0].stop_extended_scanning(&mut link);
 
     devices[0].connect_le_extended(&mut link, peripheral_address.clone());

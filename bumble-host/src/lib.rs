@@ -29,7 +29,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
-use bumble::Address;
+use bumble::{Address, AdvertisingData};
 use bumble_att::AttPdu;
 use bumble_controller::LocalLink as ControllerLocalLink;
 use bumble_gatt::{AccessContext, AttRequestHandler, ATT_DEFAULT_MTU};
@@ -531,6 +531,153 @@ pub struct ClassicInquiryResultInfo {
     pub extended_inquiry_response: Vec<u8>,
 }
 
+/// High-level legacy or extended advertising result.
+///
+/// The flag interpretation and default radio values match upstream Bumble's
+/// `Advertisement`, `LegacyAdvertisement`, and `ExtendedAdvertisement` models.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Advertisement {
+    pub address: Address,
+    pub rssi: i8,
+    pub is_legacy: bool,
+    pub is_anonymous: bool,
+    pub is_connectable: bool,
+    pub is_directed: bool,
+    pub is_scannable: bool,
+    pub is_scan_response: bool,
+    pub is_complete: bool,
+    pub is_truncated: bool,
+    pub primary_phy: u8,
+    pub secondary_phy: u8,
+    pub tx_power: i8,
+    pub sid: u8,
+    pub data_bytes: Vec<u8>,
+    pub data: AdvertisingData,
+}
+
+impl Advertisement {
+    pub const TX_POWER_NOT_AVAILABLE: i8 = 0x7F;
+    pub const RSSI_NOT_AVAILABLE: i8 = 0x7F;
+
+    pub fn from_legacy_report(report: &AdvertisingReport) -> Self {
+        const ADV_IND: u8 = 0x00;
+        const ADV_DIRECT_IND: u8 = 0x01;
+        const ADV_SCAN_IND: u8 = 0x02;
+        const SCAN_RSP: u8 = 0x04;
+
+        let data_bytes = report.data.clone();
+        Self {
+            address: report.address.clone(),
+            rssi: report.rssi,
+            is_legacy: true,
+            is_anonymous: false,
+            is_connectable: matches!(report.event_type, ADV_IND | ADV_DIRECT_IND),
+            is_directed: report.event_type == ADV_DIRECT_IND,
+            is_scannable: matches!(report.event_type, ADV_IND | ADV_SCAN_IND),
+            is_scan_response: report.event_type == SCAN_RSP,
+            is_complete: true,
+            is_truncated: false,
+            primary_phy: 0,
+            secondary_phy: 0,
+            tx_power: Self::TX_POWER_NOT_AVAILABLE,
+            sid: 0,
+            data: AdvertisingData::from_bytes(&data_bytes),
+            data_bytes,
+        }
+    }
+
+    pub fn from_extended_report(report: &ExtendedAdvertisingReport) -> Self {
+        const CONNECTABLE: u16 = 1 << 0;
+        const SCANNABLE: u16 = 1 << 1;
+        const DIRECTED: u16 = 1 << 2;
+        const SCAN_RESPONSE: u16 = 1 << 3;
+        const LEGACY_PDU: u16 = 1 << 4;
+        const DATA_COMPLETE: u16 = 0;
+        const DATA_TRUNCATED: u16 = 2;
+        const ANONYMOUS_ADDRESS_TYPE: u8 = 0xFF;
+
+        let data_bytes = report.data.clone();
+        let data_status = (report.event_type >> 5) & 0x03;
+        Self {
+            address: report.address.clone(),
+            rssi: report.rssi,
+            is_legacy: report.event_type & LEGACY_PDU != 0,
+            is_anonymous: report.address_type == ANONYMOUS_ADDRESS_TYPE,
+            is_connectable: report.event_type & CONNECTABLE != 0,
+            is_directed: report.event_type & DIRECTED != 0,
+            is_scannable: report.event_type & SCANNABLE != 0,
+            is_scan_response: report.event_type & SCAN_RESPONSE != 0,
+            is_complete: data_status == DATA_COMPLETE,
+            is_truncated: data_status == DATA_TRUNCATED,
+            primary_phy: report.primary_phy,
+            secondary_phy: report.secondary_phy,
+            tx_power: report.tx_power,
+            sid: report.advertising_sid,
+            data: AdvertisingData::from_bytes(&data_bytes),
+            data_bytes,
+        }
+    }
+}
+
+/// Per-advertiser active/passive scan accumulator.
+#[derive(Clone, Debug)]
+pub struct AdvertisementDataAccumulator {
+    pub last_advertisement: Option<Advertisement>,
+    pub last_data: Vec<u8>,
+    pub passive: bool,
+}
+
+impl AdvertisementDataAccumulator {
+    pub fn new(passive: bool) -> Self {
+        Self {
+            last_advertisement: None,
+            last_data: Vec::new(),
+            passive,
+        }
+    }
+
+    pub fn update_legacy(&mut self, report: &AdvertisingReport) -> Option<Advertisement> {
+        self.update(Advertisement::from_legacy_report(report))
+    }
+
+    pub fn update_extended(&mut self, report: &ExtendedAdvertisingReport) -> Option<Advertisement> {
+        self.update(Advertisement::from_extended_report(report))
+    }
+
+    fn update(&mut self, advertisement: Advertisement) -> Option<Advertisement> {
+        let mut result = None;
+        if advertisement.is_scan_response {
+            if let Some(previous) = self
+                .last_advertisement
+                .as_ref()
+                .filter(|previous| !previous.is_scan_response)
+            {
+                let mut combined = advertisement.clone();
+                combined.is_connectable = previous.is_connectable;
+                combined.is_scannable = true;
+                let mut data = self.last_data.clone();
+                data.extend_from_slice(&advertisement.data_bytes);
+                combined.data = AdvertisingData::from_bytes(&data);
+                result = Some(combined);
+            }
+            self.last_data.clear();
+        } else {
+            if self.passive
+                || !advertisement.is_scannable
+                || self
+                    .last_advertisement
+                    .as_ref()
+                    .is_some_and(|previous| !previous.is_scan_response)
+            {
+                result = Some(advertisement.clone());
+            }
+            self.last_data.clone_from(&advertisement.data_bytes);
+        }
+        self.last_advertisement = Some(advertisement);
+        result
+    }
+}
+
 /// Physical link family associated with a connection lifecycle event.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DeviceConnectionTransport {
@@ -568,6 +715,7 @@ pub enum DeviceEvent {
         class_of_device: u32,
         link_type: u8,
     },
+    Advertisement(Advertisement),
     AdvertisingReport(AdvertisingReport),
     ExtendedAdvertisingReport(ExtendedAdvertisingReport),
     InquiryResult(ClassicInquiryResultInfo),
@@ -1177,6 +1325,9 @@ pub struct Device {
     channel_sounding_security_results: Vec<(u16, u8)>,
     advertising_reports: Vec<AdvertisingReport>,
     extended_advertising_reports: Vec<ExtendedAdvertisingReport>,
+    advertisement_accumulators: BTreeMap<(u8, [u8; 6]), AdvertisementDataAccumulator>,
+    advertisements: Vec<Advertisement>,
+    scanning_is_passive: bool,
     periodic_syncs: BTreeMap<u16, PeriodicAdvertisingSyncInfo>,
     periodic_report_accumulators: BTreeMap<u16, Vec<u8>>,
     periodic_advertisements: Vec<PeriodicAdvertisement>,
@@ -1254,6 +1405,9 @@ impl Device {
             channel_sounding_security_results: Vec::new(),
             advertising_reports: Vec::new(),
             extended_advertising_reports: Vec::new(),
+            advertisement_accumulators: BTreeMap::new(),
+            advertisements: Vec::new(),
+            scanning_is_passive: false,
             periodic_syncs: BTreeMap::new(),
             periodic_report_accumulators: BTreeMap::new(),
             periodic_advertisements: Vec::new(),
@@ -1332,6 +1486,9 @@ impl Device {
             channel_sounding_security_results: Vec::new(),
             advertising_reports: Vec::new(),
             extended_advertising_reports: Vec::new(),
+            advertisement_accumulators: BTreeMap::new(),
+            advertisements: Vec::new(),
+            scanning_is_passive: false,
             periodic_syncs: BTreeMap::new(),
             periodic_report_accumulators: BTreeMap::new(),
             periodic_advertisements: Vec::new(),
@@ -2295,6 +2452,8 @@ impl Device {
     }
 
     pub fn start_scanning(&mut self, link: &mut LocalLink, active: bool, filter_duplicates: bool) {
+        self.advertisement_accumulators.clear();
+        self.scanning_is_passive = !active;
         self.send_hci_command(
             link,
             Command::LeSetScanParameters {
@@ -2330,6 +2489,8 @@ impl Device {
         active: bool,
         filter_duplicates: bool,
     ) {
+        self.advertisement_accumulators.clear();
+        self.scanning_is_passive = !active;
         self.send_hci_command(
             link,
             Command::LeSetExtendedScanParameters {
@@ -2370,6 +2531,13 @@ impl Device {
 
     pub fn take_extended_advertising_reports(&mut self) -> Vec<ExtendedAdvertisingReport> {
         std::mem::take(&mut self.extended_advertising_reports)
+    }
+
+    /// Drain high-level advertisements emitted by the per-address scan
+    /// accumulators. Active scans combine an advertisement with its scan
+    /// response; passive scans deliver scannable advertisements immediately.
+    pub fn take_advertisements(&mut self) -> Vec<Advertisement> {
+        std::mem::take(&mut self.advertisements)
     }
 
     pub fn periodic_syncs(&self) -> &BTreeMap<u16, PeriodicAdvertisingSyncInfo> {
@@ -4553,7 +4721,20 @@ impl Device {
                 HciPacket::Event(Event::LeMeta(LeMetaEvent::AdvertisingReport { reports })) => {
                     for report in reports {
                         self.advertising_reports.push(report.clone());
-                        self.emit_device_event(DeviceEvent::AdvertisingReport(report));
+                        self.emit_device_event(DeviceEvent::AdvertisingReport(report.clone()));
+                        let passive = self.scanning_is_passive;
+                        let advertisement = self
+                            .advertisement_accumulators
+                            .entry((
+                                report.address.address_type().0,
+                                *report.address.address_bytes(),
+                            ))
+                            .or_insert_with(|| AdvertisementDataAccumulator::new(passive))
+                            .update_legacy(&report);
+                        if let Some(advertisement) = advertisement {
+                            self.advertisements.push(advertisement.clone());
+                            self.emit_device_event(DeviceEvent::Advertisement(advertisement));
+                        }
                     }
                 }
                 HciPacket::Event(Event::LeMeta(LeMetaEvent::ExtendedAdvertisingReport {
@@ -4561,7 +4742,22 @@ impl Device {
                 })) => {
                     for report in reports {
                         self.extended_advertising_reports.push(report.clone());
-                        self.emit_device_event(DeviceEvent::ExtendedAdvertisingReport(report));
+                        self.emit_device_event(DeviceEvent::ExtendedAdvertisingReport(
+                            report.clone(),
+                        ));
+                        let passive = self.scanning_is_passive;
+                        let advertisement = self
+                            .advertisement_accumulators
+                            .entry((
+                                report.address.address_type().0,
+                                *report.address.address_bytes(),
+                            ))
+                            .or_insert_with(|| AdvertisementDataAccumulator::new(passive))
+                            .update_extended(&report);
+                        if let Some(advertisement) = advertisement {
+                            self.advertisements.push(advertisement.clone());
+                            self.emit_device_event(DeviceEvent::Advertisement(advertisement));
+                        }
                     }
                 }
                 HciPacket::Event(Event::LeMeta(LeMetaEvent::LongTermKeyRequest {
