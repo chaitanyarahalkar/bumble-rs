@@ -126,6 +126,7 @@ crate whose behavior is verified against the upstream Python.
 | 150. Complete common LE connection-control conveniences | `bumble-hci` / `bumble-host` | ✅ update/rate/subrate, data length, PHY, RSSI, defaults, state, and correlated completion journal green |
 | 151. Typed Device lifecycle listeners | `bumble-host` | ✅ ordered journal/listeners + connection failures + non-destructive disconnection failures green |
 | 152. Multi-listener GATT subscriptions | `bumble-gatt` | ✅ ordered notify/indicate callbacks + last-subscriber/forced CCCD cleanup green |
+| 153. USB SCO/eSCO isochronous transport | `bumble-transport` | ✅ alternate selection + fragmented input + multi-packet output green |
 | 103+. Repository completion audit and remaining gaps | workspace | in progress |
 
 The LE lifecycle is now complete end-to-end through library APIs: **connect →
@@ -209,7 +210,7 @@ size, to convey remaining surface.
 ### Transports & drivers
 | Upstream | Rust crate | Status | Notes |
 |---|---|---|---|
-| `transport/*` — USB, UART/serial, TCP, WebSocket, UDP, PTY, android-netsim, vhci, … | `bumble-transport` | 🟡 | Incremental H4 framing accepts fragmented/coalesced streams and vendor packet layouts. Bumble transport-name/metadata dispatch opens file, serial/UART with RTS/CTS, raw PTY, TCP, UDP, Unix, WebSocket, Linux VHCI/raw HCI user-channel sockets, libusb Bluetooth-controller endpoints, Android emulator gRPC, and Android netsim host/controller packet streams. The typed HCI bridge pumps both directions with packet replacement, sender short-circuit responses, and trace hooks; `HciCommandChannel` correlates synchronous command responses while preserving unrelated traffic. `ExternalHost` resets controllers, discovers version plus the all-page LE feature catalog (with legacy eight-byte fallback) and base-or-multi-page LMP features, installs both event-mask pages, and configures ACL/ISO flow control. BTSnoop/PCAP writers can wrap any bidirectional transport, and the bounded BTSnoop reader handles H1/H4 captures, timestamps, drops, and truncation. USB covers discovery, class/forced interface selection, commands, events, ACL, and outgoing ISO-over-bulk compatibility. Deferred: USB SCO/isochronous input, DSR/DTR flow control (not exposed by the current `serialport` backend), and narrower platform-specific endpoints. |
+| `transport/*` — USB, UART/serial, TCP, WebSocket, UDP, PTY, android-netsim, vhci, … | `bumble-transport` | 🟡 | Incremental H4 framing accepts fragmented/coalesced streams and vendor packet layouts. Bumble transport-name/metadata dispatch opens file, serial/UART with RTS/CTS, raw PTY, TCP, UDP, Unix, WebSocket, Linux VHCI/raw HCI user-channel sockets, libusb Bluetooth-controller endpoints, Android emulator gRPC, and Android netsim host/controller packet streams. The typed HCI bridge pumps both directions with packet replacement, sender short-circuit responses, and trace hooks; `HciCommandChannel` correlates synchronous command responses while preserving unrelated traffic. `ExternalHost` resets controllers, discovers version plus the all-page LE feature catalog (with legacy eight-byte fallback) and base-or-multi-page LMP features, installs both event-mask pages, and configures ACL/ISO flow control. BTSnoop/PCAP writers can wrap any bidirectional transport, and the bounded BTSnoop reader handles H1/H4 captures, timestamps, drops, and truncation. USB covers discovery, class/forced interface selection, commands, events, ACL, outgoing ISO-over-bulk compatibility, and `+sco=` SCO/eSCO isochronous input/output through the locked libusb ABI. Deferred: DSR/DTR flow control (not exposed by the current `serialport` backend) and narrower platform-specific endpoints. |
 | `drivers/*` — Intel, Realtek | `bumble-drivers` | ✅ | Both upstream driver modules and the RTK-before-Intel selector are ported behind a transport-neutral host contract. Intel covers open version TLVs, RSA/ECDSA SFI secure send, boot/reset vendor events, and DDC priority. Realtek covers all upstream USB IDs and 13 controller descriptors, epatch extension/table parsing, ROM patch choice, config append, download-index wrap/end markers, reset retry, and firmware lookup. The legacy 8723A download remains the same explicit no-op as upstream Bumble. |
 
 ### Classic Bluetooth (BR/EDR)
@@ -3299,6 +3300,34 @@ ports the missing listener semantics without introducing an async runtime:
   `GattClient::new()` instead of deriving an invalid zero MTU. End-to-end tests
   drive all listener, removal, implicit, indication, unsolicited-cache, and
   forced-cleanup paths against a real `GattServer`.
+
+## Slice 153 — what's here
+
+The transport audit returned to a real upstream behavior gap: `usb:<selector>`
+accepted `+sco=<alternate>`, but the Rust backend rejected it because `rusb`'s
+safe synchronous API does not expose isochronous transfers. This slice uses the
+version-locked libusb ABI beneath `rusb` while keeping the public transport
+synchronous and mockable:
+
+- `select_sco_layout` mirrors upstream endpoint discovery. A nonzero alternate
+  selects that complete Bluetooth HCI setting; alternate zero automatically
+  selects the setting with the largest isochronous IN/OUT packet-size pair.
+- `UsbIo` now has isochronous read/write operations and `UsbScoLayout` carries
+  the claimed interface, alternate, endpoint addresses, and maximum packet
+  sizes. Existing backends remain source-compatible through explicit default
+  unsupported methods.
+- `SystemUsbTransport` claims and activates the selected SCO interface. Its
+  isolated libusb context and shared event lock serialize callbacks across
+  split source/sink halves. Transfers own their callback buffers and retain the
+  device handle until completion; timeout and event-loop errors cancel and
+  drain before any allocation is reclaimed.
+- Incoming USB fragments are reassembled with the HCI SCO one-byte length
+  field, including headers and payloads split across transfers. Outgoing HCI
+  SCO packets are divided into endpoint-sized isochronous packets while HCI ISO
+  data keeps its upstream bulk-endpoint compatibility route.
+- Focused tests cover automatic/explicit/forced endpoint selection, fragmented
+  SCO input, output routing, disabled-SCO behavior, and disconnect propagation;
+  the complete transport crate remains green.
 
 ## Acceptance
 
