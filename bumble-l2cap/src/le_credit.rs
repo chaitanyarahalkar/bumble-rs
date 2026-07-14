@@ -265,6 +265,20 @@ impl LeCreditBasedChannel {
         Ok(())
     }
 
+    /// Close the local endpoint immediately while connected or disconnecting.
+    ///
+    /// This mirrors upstream's abort path: no additional signaling is emitted,
+    /// queued data is discarded, and a later peer response may be ignored by
+    /// the owning manager.
+    pub fn abort(&mut self) {
+        if matches!(
+            self.state,
+            LeCreditBasedChannelState::Connected | LeCreditBasedChannelState::Disconnecting
+        ) {
+            self.complete_disconnect();
+        }
+    }
+
     fn begin_disconnect(&mut self) {
         self.state = LeCreditBasedChannelState::Disconnecting;
         self.flush();
@@ -615,6 +629,27 @@ impl LeCreditChannelManager {
             source_cid,
         });
         Ok(())
+    }
+
+    /// Abort a connected or disconnecting channel locally.
+    ///
+    /// Any already-queued disconnection request remains on the wire. Its peer
+    /// response is harmless because responses for locally closed channels are
+    /// ignored, matching upstream's channel-manager behavior.
+    pub fn abort(&mut self, source_cid: u16) -> bool {
+        let Some(mut channel) = self.channels.remove(&source_cid) else {
+            return false;
+        };
+        let abortable = matches!(
+            channel.state,
+            LeCreditBasedChannelState::Connected | LeCreditBasedChannelState::Disconnecting
+        );
+        if abortable {
+            channel.abort();
+        } else {
+            self.channels.insert(source_cid, channel);
+        }
+        abortable
     }
 
     fn process_control(&mut self, frame: ControlFrame) -> Result<()> {
@@ -1106,9 +1141,12 @@ impl LeCreditChannelManager {
     }
 
     fn on_disconnection_response(&mut self, destination_cid: u16, source_cid: u16) -> Result<()> {
-        let mut channel = self.channels.remove(&source_cid).ok_or_else(|| {
-            Error::InvalidPacket(format!("unknown disconnect response CID {source_cid:#06x}"))
-        })?;
+        let Some(mut channel) = self.channels.remove(&source_cid) else {
+            // A simultaneous peer request or a local abort may already have
+            // closed and removed this channel. Upstream deliberately ignores
+            // the late response in both cases.
+            return Ok(());
+        };
         if channel.destination_cid != destination_cid
             || channel.state != LeCreditBasedChannelState::Disconnecting
         {

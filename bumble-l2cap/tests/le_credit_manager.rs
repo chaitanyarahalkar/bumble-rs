@@ -88,6 +88,57 @@ fn connects_transfers_bidirectionally_replenishes_and_disconnects() {
 }
 
 #[test]
+fn abort_while_disconnecting_closes_both_endpoints_without_response_errors() {
+    let mut client = LeCreditChannelManager::new();
+    let mut server = LeCreditChannelManager::new();
+    let psm = server
+        .register_server(LeCreditBasedChannelSpec::default())
+        .unwrap();
+    let client_cid = client
+        .connect(psm, LeCreditBasedChannelSpec::default())
+        .unwrap();
+    pump(&mut client, &mut server);
+    let server_cid = server.poll_accepted_channel().unwrap();
+
+    client.disconnect(client_cid).unwrap();
+    assert_eq!(
+        client.channel(client_cid).unwrap().state,
+        bumble_l2cap::LeCreditBasedChannelState::Disconnecting
+    );
+    assert!(client.abort(client_cid));
+    assert!(client.channel(client_cid).is_none());
+
+    // The request was already queued. The peer closes and responds, while the
+    // locally aborted endpoint ignores that late response.
+    pump(&mut client, &mut server);
+    assert!(client.channel(client_cid).is_none());
+    assert!(server.channel(server_cid).is_none());
+    assert!(!client.abort(client_cid));
+}
+
+#[test]
+fn simultaneous_disconnection_requests_complete_on_both_sides() {
+    let mut client = LeCreditChannelManager::new();
+    let mut server = LeCreditChannelManager::new();
+    let psm = server
+        .register_server(LeCreditBasedChannelSpec::default())
+        .unwrap();
+    let client_cid = client
+        .connect(psm, LeCreditBasedChannelSpec::default())
+        .unwrap();
+    pump(&mut client, &mut server);
+    let server_cid = server.poll_accepted_channel().unwrap();
+
+    // Queue both requests before either manager sees the peer's request.
+    client.disconnect(client_cid).unwrap();
+    server.disconnect(server_cid).unwrap();
+    pump(&mut client, &mut server);
+
+    assert!(client.channel(client_cid).is_none());
+    assert!(server.channel(server_cid).is_none());
+}
+
+#[test]
 fn refuses_unknown_psm_and_invalid_negotiation() {
     let mut client = LeCreditChannelManager::new();
     let mut server = LeCreditChannelManager::new();

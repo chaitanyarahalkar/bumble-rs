@@ -134,6 +134,7 @@ crate whose behavior is verified against the upstream Python.
 | 158. SDP completion audit | `bumble-sdp` | ✅ 128-bit integers + depth guard + UUID helper + complete client/server/L2CAP surface green |
 | 159. Complete CIG/CIS control surface | `bumble-host` / `bumble-controller` | ✅ full QoS + batching + accept/reject + result/link journals green |
 | 160. Complete ISO link controls | `bumble-hci` / `bumble-controller` / `bumble-host` | ✅ custom data paths + typed completions + TX-sync state/journal green |
+| 161. LE credit-channel disconnect edge cases | `bumble-l2cap` | ✅ abort-during-disconnect + simultaneous-request collision green |
 | 103+. Repository completion audit and remaining gaps | workspace | in progress |
 
 The LE lifecycle is now complete end-to-end through library APIs: **connect →
@@ -198,7 +199,7 @@ size, to convey remaining surface.
 ### L2CAP
 | Upstream (LOC) | Rust crate | Status | Notes |
 |---|---|---|---|
-| `l2cap.py` (3.1k) | `bumble-l2cap` | 🟡 | PDU + complete typed upstream signaling-frame catalog + FCS, synchronous Classic connection-oriented channels, and paired LE CoC runtimes. Classic covers dynamic PSM/CID allocation, Connection/Configure/Disconnection, MTU negotiation/refusal, bidirectional basic mode, and live ERTM negotiation/segmentation/windows/busy state/acknowledgments/loss recovery/logical timers/FCS. LE covers single and enhanced one-to-five-channel setup, refusal correlation, MTU/MPS segmentation/reassembly, credit stalls/replenishment, atomic reconfiguration, accepted channels, bidirectional transfer, and disconnect cleanup. Each host LE handle now owns a manager whose signaling and dynamic-channel PDUs cross real HCI ACL fragmentation/reassembly; device-wide server registrations apply to existing and future links. Deferred: async/event conveniences. |
+| `l2cap.py` (3.1k) | `bumble-l2cap` | 🟡 | PDU + complete typed upstream signaling-frame catalog + FCS, synchronous Classic connection-oriented channels, and paired LE CoC runtimes. Classic covers dynamic PSM/CID allocation, Connection/Configure/Disconnection, MTU negotiation/refusal, bidirectional basic mode, and live ERTM negotiation/segmentation/windows/busy state/acknowledgments/loss recovery/logical timers/FCS. LE covers single and enhanced one-to-five-channel setup, refusal correlation, MTU/MPS segmentation/reassembly, credit stalls/replenishment, atomic reconfiguration, accepted channels, bidirectional transfer, disconnect cleanup, local abort while disconnecting, and simultaneous disconnection-request collision. Late peer responses for channels already closed by abort/collision are ignored exactly as upstream does. Each host LE handle now owns a manager whose signaling and dynamic-channel PDUs cross real HCI ACL fragmentation/reassembly; device-wide server registrations apply to existing and future links. Deferred: async/event conveniences. |
 
 ### ATT / GATT
 | Upstream (LOC) | Rust crate | Status | Notes |
@@ -3496,6 +3497,26 @@ runtime.
   return shape instead of an opaque payload. Exact wire vectors cover all three
   typed returns, while scripted and live two-controller tests cover custom
   command fields, validation, failures, TX-sync state, and removal.
+
+## Slice 161 — what's here
+
+The L2CAP completion audit compared the two newest upstream
+`l2cap_test.py` disconnection cases against the synchronous Rust channel
+manager and found both were absent. A simultaneous LE credit-channel
+disconnect previously removed each endpoint when the peer request arrived,
+then rejected the peer's already-in-flight response as an unknown CID.
+
+- `LeCreditBasedChannel::abort` and `LeCreditChannelManager::abort` now close a
+  connected or disconnecting local endpoint immediately and discard queued
+  channel data without sending additional signaling.
+- An already-queued disconnection request remains on the wire. Its response is
+  ignored after local abort, matching upstream's channel-manager lookup miss.
+- Simultaneous disconnection requests now close both endpoints and allow both
+  late responses without turning a valid collision into a protocol error.
+  CID-pair and state mismatches for a still-live channel remain strict errors.
+- Focused manager tests mirror upstream's abort-during-disconnect and concurrent
+  disconnect cases, including the pre-pump `Disconnecting` state and final
+  removal of both endpoints.
 
 ## Acceptance
 
