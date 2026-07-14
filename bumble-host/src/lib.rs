@@ -518,6 +518,68 @@ pub struct ClassicInquiryResultInfo {
     pub extended_inquiry_response: Vec<u8>,
 }
 
+/// Physical link family associated with a connection lifecycle event.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeviceConnectionTransport {
+    Le,
+    Classic,
+    Synchronous { link_type: u8 },
+}
+
+/// Typed high-level events emitted by [`Device`].
+///
+/// This is the synchronous Rust counterpart to upstream Bumble's device and
+/// connection event emitters. Events are retained in a drainable journal and
+/// delivered immediately to registered listeners after the corresponding
+/// host state has been updated.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DeviceEvent {
+    LeConnectionEstablished(LeConnectionInfo),
+    ClassicConnectionEstablished(ClassicConnectionInfo),
+    SynchronousConnectionEstablished(SynchronousConnectionInfo),
+    ConnectionFailed {
+        transport: DeviceConnectionTransport,
+        peer_address: Address,
+        status: u8,
+    },
+    Disconnected {
+        connection_handle: u16,
+        reason: u8,
+    },
+    DisconnectionFailed {
+        connection_handle: u16,
+        status: u8,
+    },
+    ConnectionRequest {
+        peer_address: Address,
+        class_of_device: u32,
+        link_type: u8,
+    },
+    AdvertisingReport(AdvertisingReport),
+    ExtendedAdvertisingReport(ExtendedAdvertisingReport),
+    InquiryResult(ClassicInquiryResultInfo),
+    InquiryComplete {
+        status: u8,
+    },
+    RemoteName {
+        status: u8,
+        peer_address: Address,
+        name: String,
+    },
+    LeConnectionControl(LeConnectionControlEvent),
+    ClassicPairing(ClassicPairingEvent),
+    EncryptionChange {
+        status: u8,
+        connection_handle: u16,
+        encryption_enabled: u8,
+    },
+}
+
+/// Stable identifier returned when registering a [`DeviceEvent`] listener.
+pub type DeviceEventListenerId = u64;
+
+type DeviceEventListener = Box<dyn FnMut(&DeviceEvent) + Send + 'static>;
+
 /// Host-facing events that participate in Classic PIN or Secure Simple
 /// Pairing authentication.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -905,6 +967,9 @@ pub struct Device {
     connection_feature_errors: Vec<ConnectionFeatureError>,
     connection_control_events: Vec<LeConnectionControlEvent>,
     pending_connection_controls: BTreeMap<u16, VecDeque<u16>>,
+    device_events: Vec<DeviceEvent>,
+    event_listeners: BTreeMap<DeviceEventListenerId, DeviceEventListener>,
+    next_event_listener_id: DeviceEventListenerId,
     pending_channel_sounding_configs: BTreeSet<(u16, u8)>,
     channel_sounding_errors: Vec<ChannelSoundingError>,
     channel_sounding_security_results: Vec<(u16, u8)>,
@@ -970,6 +1035,9 @@ impl Device {
             connection_feature_errors: Vec::new(),
             connection_control_events: Vec::new(),
             pending_connection_controls: BTreeMap::new(),
+            device_events: Vec::new(),
+            event_listeners: BTreeMap::new(),
+            next_event_listener_id: 1,
             pending_channel_sounding_configs: BTreeSet::new(),
             channel_sounding_errors: Vec::new(),
             channel_sounding_security_results: Vec::new(),
@@ -1036,6 +1104,9 @@ impl Device {
             connection_feature_errors: Vec::new(),
             connection_control_events: Vec::new(),
             pending_connection_controls: BTreeMap::new(),
+            device_events: Vec::new(),
+            event_listeners: BTreeMap::new(),
+            next_event_listener_id: 1,
             pending_channel_sounding_configs: BTreeSet::new(),
             channel_sounding_errors: Vec::new(),
             channel_sounding_security_results: Vec::new(),
@@ -1141,6 +1212,49 @@ impl Device {
     /// Drain completed LE connection-control requests and asynchronous changes.
     pub fn take_connection_control_events(&mut self) -> Vec<LeConnectionControlEvent> {
         std::mem::take(&mut self.connection_control_events)
+    }
+
+    /// Register a listener invoked synchronously for every high-level device
+    /// event. The returned identifier can be passed to
+    /// [`Self::remove_event_listener`].
+    pub fn add_event_listener(
+        &mut self,
+        listener: impl FnMut(&DeviceEvent) + Send + 'static,
+    ) -> DeviceEventListenerId {
+        let mut listener_id = self.next_event_listener_id;
+        while self.event_listeners.contains_key(&listener_id) {
+            listener_id = listener_id.wrapping_add(1).max(1);
+        }
+        self.next_event_listener_id = listener_id.wrapping_add(1).max(1);
+        self.event_listeners.insert(listener_id, Box::new(listener));
+        listener_id
+    }
+
+    /// Remove a previously registered event listener.
+    pub fn remove_event_listener(&mut self, listener_id: DeviceEventListenerId) -> bool {
+        self.event_listeners.remove(&listener_id).is_some()
+    }
+
+    /// Drain the high-level event journal in emission order.
+    pub fn take_device_events(&mut self) -> Vec<DeviceEvent> {
+        std::mem::take(&mut self.device_events)
+    }
+
+    fn emit_device_event(&mut self, event: DeviceEvent) {
+        self.device_events.push(event.clone());
+        for listener in self.event_listeners.values_mut() {
+            listener(&event);
+        }
+    }
+
+    fn record_connection_control_event(&mut self, event: LeConnectionControlEvent) {
+        self.connection_control_events.push(event.clone());
+        self.emit_device_event(DeviceEvent::LeConnectionControl(event));
+    }
+
+    fn record_classic_pairing_event(&mut self, event: ClassicPairingEvent) {
+        self.classic_pairing_events.push(event.clone());
+        self.emit_device_event(DeviceEvent::ClassicPairing(event));
     }
 
     /// Request legacy LE connection parameters on one established ACL.
@@ -3395,6 +3509,12 @@ impl Device {
         }
         self.le_credit_managers.insert(connection_handle, manager);
         self.select_connection(connection_handle);
+        let connection = self
+            .le_connections
+            .get(&connection_handle)
+            .expect("connection was just inserted")
+            .clone();
+        self.emit_device_event(DeviceEvent::LeConnectionEstablished(connection));
     }
 
     /// Drain and process this device's controller events. Returns `true` if any
@@ -3453,6 +3573,27 @@ impl Device {
                     peripheral_latency,
                     supervision_timeout,
                 ),
+                HciPacket::Event(Event::LeMeta(
+                    LeMetaEvent::ConnectionComplete {
+                        status,
+                        peer_address,
+                        ..
+                    }
+                    | LeMetaEvent::EnhancedConnectionComplete {
+                        status,
+                        peer_address,
+                        ..
+                    }
+                    | LeMetaEvent::EnhancedConnectionCompleteV2 {
+                        status,
+                        peer_address,
+                        ..
+                    },
+                )) => self.emit_device_event(DeviceEvent::ConnectionFailed {
+                    transport: DeviceConnectionTransport::Le,
+                    peer_address,
+                    status,
+                }),
                 HciPacket::Event(Event::LeMeta(LeMetaEvent::ConnectionUpdateComplete {
                     status,
                     connection_handle,
@@ -3485,7 +3626,7 @@ impl Device {
                         bumble_hci::HCI_LE_CONNECTION_UPDATE_COMMAND,
                         connection_handle,
                     );
-                    self.connection_control_events.push(
+                    self.record_connection_control_event(
                         LeConnectionControlEvent::ConnectionParametersUpdate {
                             status,
                             connection_handle,
@@ -3527,7 +3668,7 @@ impl Device {
                         bumble_hci::HCI_LE_SUBRATE_REQUEST_COMMAND,
                         connection_handle,
                     );
-                    self.connection_control_events.push(
+                    self.record_connection_control_event(
                         LeConnectionControlEvent::ConnectionParametersUpdate {
                             status,
                             connection_handle,
@@ -3560,7 +3701,7 @@ impl Device {
                         bumble_hci::HCI_LE_CONNECTION_RATE_REQUEST_COMMAND,
                         connection_handle,
                     );
-                    self.connection_control_events.push(
+                    self.record_connection_control_event(
                         LeConnectionControlEvent::ConnectionParametersUpdate {
                             status,
                             connection_handle,
@@ -3584,7 +3725,7 @@ impl Device {
                     if let Some(connection) = self.le_connections.get_mut(&connection_handle) {
                         connection.data_length = Some(data_length);
                     }
-                    self.connection_control_events.push(
+                    self.record_connection_control_event(
                         LeConnectionControlEvent::DataLengthChange {
                             connection_handle,
                             data_length,
@@ -3607,12 +3748,11 @@ impl Device {
                         bumble_hci::HCI_LE_SET_PHY_COMMAND,
                         connection_handle,
                     );
-                    self.connection_control_events
-                        .push(LeConnectionControlEvent::PhyUpdate {
-                            status,
-                            connection_handle,
-                            phy,
-                        });
+                    self.record_connection_control_event(LeConnectionControlEvent::PhyUpdate {
+                        status,
+                        connection_handle,
+                        phy,
+                    });
                 }
                 HciPacket::Event(Event::LeMeta(LeMetaEvent::ReadRemoteFeaturesComplete {
                     status,
@@ -3820,12 +3960,18 @@ impl Device {
                     }
                 }
                 HciPacket::Event(Event::LeMeta(LeMetaEvent::AdvertisingReport { reports })) => {
-                    self.advertising_reports.extend(reports);
+                    for report in reports {
+                        self.advertising_reports.push(report.clone());
+                        self.emit_device_event(DeviceEvent::AdvertisingReport(report));
+                    }
                 }
                 HciPacket::Event(Event::LeMeta(LeMetaEvent::ExtendedAdvertisingReport {
                     reports,
                 })) => {
-                    self.extended_advertising_reports.extend(reports);
+                    for report in reports {
+                        self.extended_advertising_reports.push(report.clone());
+                        self.emit_device_event(DeviceEvent::ExtendedAdvertisingReport(report));
+                    }
                 }
                 HciPacket::Event(Event::LeMeta(LeMetaEvent::LongTermKeyRequest {
                     connection_handle,
@@ -4059,12 +4205,11 @@ impl Device {
                         }
                     }
                     self.complete_connection_control(command_opcode, connection_handle);
-                    self.connection_control_events
-                        .push(LeConnectionControlEvent::PhyRead {
-                            status,
-                            connection_handle,
-                            phy,
-                        });
+                    self.record_connection_control_event(LeConnectionControlEvent::PhyRead {
+                        status,
+                        connection_handle,
+                        phy,
+                    });
                 }
                 HciPacket::Event(Event::CommandComplete {
                     command_opcode,
@@ -4081,12 +4226,11 @@ impl Device {
                     ) =>
                 {
                     let connection_handle = self.fail_next_connection_control(command_opcode);
-                    self.connection_control_events
-                        .push(LeConnectionControlEvent::CommandStatus {
-                            command_opcode,
-                            status,
-                            connection_handle,
-                        });
+                    self.record_connection_control_event(LeConnectionControlEvent::CommandStatus {
+                        command_opcode,
+                        status,
+                        connection_handle,
+                    });
                 }
                 HciPacket::Event(Event::CommandComplete {
                     command_opcode,
@@ -4098,7 +4242,7 @@ impl Device {
                     let status = data[0];
                     let connection_handle = u16::from_le_bytes([data[1], data[2]]);
                     self.complete_connection_control(command_opcode, connection_handle);
-                    self.connection_control_events.push(
+                    self.record_connection_control_event(
                         LeConnectionControlEvent::DataLengthRequestComplete {
                             status,
                             connection_handle,
@@ -4121,12 +4265,11 @@ impl Device {
                         }
                     }
                     self.complete_connection_control(command_opcode, connection_handle);
-                    self.connection_control_events
-                        .push(LeConnectionControlEvent::RssiRead {
-                            status,
-                            connection_handle,
-                            rssi,
-                        });
+                    self.record_connection_control_event(LeConnectionControlEvent::RssiRead {
+                        status,
+                        connection_handle,
+                        rssi,
+                    });
                 }
                 HciPacket::Event(Event::CommandStatus {
                     status,
@@ -4142,12 +4285,11 @@ impl Device {
                     ) =>
                 {
                     let connection_handle = self.fail_next_connection_control(command_opcode);
-                    self.connection_control_events
-                        .push(LeConnectionControlEvent::CommandStatus {
-                            command_opcode,
-                            status,
-                            connection_handle,
-                        });
+                    self.record_connection_control_event(LeConnectionControlEvent::CommandStatus {
+                        command_opcode,
+                        status,
+                        connection_handle,
+                    });
                 }
                 HciPacket::Event(Event::CommandComplete {
                     command_opcode,
@@ -4165,8 +4307,26 @@ impl Device {
                     }
                 }
                 HciPacket::Event(Event::DisconnectionComplete {
-                    connection_handle, ..
+                    status,
+                    connection_handle,
+                    reason,
                 }) => {
+                    let known_connection = self.le_connections.contains_key(&connection_handle)
+                        || self.classic_connections.contains_key(&connection_handle)
+                        || self.established_cis_handles.contains(&connection_handle)
+                        || self
+                            .synchronous_connections
+                            .iter()
+                            .any(|connection| connection.connection_handle == connection_handle);
+                    if status != 0 {
+                        if known_connection {
+                            self.emit_device_event(DeviceEvent::DisconnectionFailed {
+                                connection_handle,
+                                status,
+                            });
+                        }
+                        continue;
+                    }
                     let disconnected_classic_peer = self
                         .classic_connections
                         .get(&connection_handle)
@@ -4232,9 +4392,16 @@ impl Device {
                     }
                     self.synchronous_connections
                         .retain(|connection| connection.connection_handle != connection_handle);
+                    if known_connection {
+                        self.emit_device_event(DeviceEvent::Disconnected {
+                            connection_handle,
+                            reason,
+                        });
+                    }
                 }
                 HciPacket::Event(Event::InquiryComplete { status }) => {
                     self.classic_inquiry_complete.push(status);
+                    self.emit_device_event(DeviceEvent::InquiryComplete { status });
                 }
                 HciPacket::Event(Event::InquiryResult {
                     bd_addr,
@@ -4243,16 +4410,17 @@ impl Device {
                 }) => {
                     for (index, peer_address) in bd_addr.into_iter().enumerate() {
                         self.classic_inquiry_results.push(peer_address.clone());
-                        self.classic_inquiry_result_details
-                            .push(ClassicInquiryResultInfo {
-                                peer_address,
-                                class_of_device: class_of_device
-                                    .get(index)
-                                    .copied()
-                                    .unwrap_or_default(),
-                                rssi: None,
-                                extended_inquiry_response: Vec::new(),
-                            });
+                        let result = ClassicInquiryResultInfo {
+                            peer_address,
+                            class_of_device: class_of_device
+                                .get(index)
+                                .copied()
+                                .unwrap_or_default(),
+                            rssi: None,
+                            extended_inquiry_response: Vec::new(),
+                        };
+                        self.classic_inquiry_result_details.push(result.clone());
+                        self.emit_device_event(DeviceEvent::InquiryResult(result));
                     }
                 }
                 HciPacket::Event(Event::InquiryResultWithRssi {
@@ -4263,16 +4431,17 @@ impl Device {
                 }) => {
                     for (index, peer_address) in bd_addr.into_iter().enumerate() {
                         self.classic_inquiry_results.push(peer_address.clone());
-                        self.classic_inquiry_result_details
-                            .push(ClassicInquiryResultInfo {
-                                peer_address,
-                                class_of_device: class_of_device
-                                    .get(index)
-                                    .copied()
-                                    .unwrap_or_default(),
-                                rssi: rssi.get(index).copied(),
-                                extended_inquiry_response: Vec::new(),
-                            });
+                        let result = ClassicInquiryResultInfo {
+                            peer_address,
+                            class_of_device: class_of_device
+                                .get(index)
+                                .copied()
+                                .unwrap_or_default(),
+                            rssi: rssi.get(index).copied(),
+                            extended_inquiry_response: Vec::new(),
+                        };
+                        self.classic_inquiry_result_details.push(result.clone());
+                        self.emit_device_event(DeviceEvent::InquiryResult(result));
                     }
                 }
                 HciPacket::Event(Event::ExtendedInquiryResult {
@@ -4283,13 +4452,14 @@ impl Device {
                     ..
                 }) => {
                     self.classic_inquiry_results.push(bd_addr.clone());
-                    self.classic_inquiry_result_details
-                        .push(ClassicInquiryResultInfo {
-                            peer_address: bd_addr,
-                            class_of_device,
-                            rssi: Some(rssi),
-                            extended_inquiry_response: extended_inquiry_response.to_vec(),
-                        });
+                    let result = ClassicInquiryResultInfo {
+                        peer_address: bd_addr,
+                        class_of_device,
+                        rssi: Some(rssi),
+                        extended_inquiry_response: extended_inquiry_response.to_vec(),
+                    };
+                    self.classic_inquiry_result_details.push(result.clone());
+                    self.emit_device_event(DeviceEvent::InquiryResult(result));
                 }
                 HciPacket::Event(Event::RemoteNameRequestComplete {
                     status,
@@ -4300,11 +4470,14 @@ impl Device {
                         .iter()
                         .position(|byte| *byte == 0)
                         .unwrap_or(remote_name.len());
-                    self.classic_remote_names.push((
+                    let name = String::from_utf8_lossy(&remote_name[..length]).into_owned();
+                    self.classic_remote_names
+                        .push((status, bd_addr.clone(), name.clone()));
+                    self.emit_device_event(DeviceEvent::RemoteName {
                         status,
-                        bd_addr,
-                        String::from_utf8_lossy(&remote_name[..length]).into_owned(),
-                    ));
+                        peer_address: bd_addr,
+                        name,
+                    });
                 }
                 HciPacket::Event(Event::ReadRemoteSupportedFeaturesComplete {
                     status,
@@ -4408,9 +4581,22 @@ impl Device {
                         self.classic_channel_managers
                             .insert(connection_handle, manager);
                         self.select_classic_connection(connection_handle);
+                        let connection = self
+                            .classic_connections
+                            .get(&connection_handle)
+                            .expect("connection was just inserted")
+                            .clone();
+                        self.emit_device_event(DeviceEvent::ClassicConnectionEstablished(
+                            connection,
+                        ));
                     } else {
                         self.pending_classic_roles
                             .retain(|(address, _)| *address != bd_addr);
+                        self.emit_device_event(DeviceEvent::ConnectionFailed {
+                            transport: DeviceConnectionTransport::Classic,
+                            peer_address: bd_addr,
+                            status,
+                        });
                     }
                 }
                 HciPacket::Event(Event::RoleChange {
@@ -4442,12 +4628,20 @@ impl Device {
                 }
                 HciPacket::Event(Event::ConnectionRequest {
                     bd_addr,
-                    link_type: 1,
-                    ..
-                }) => self.classic_connection_requests.push(bd_addr),
-                HciPacket::Event(Event::ConnectionRequest {
-                    bd_addr, link_type, ..
-                }) => self.synchronous_requests.push((bd_addr, link_type)),
+                    class_of_device,
+                    link_type,
+                }) => {
+                    if link_type == 1 {
+                        self.classic_connection_requests.push(bd_addr.clone());
+                    } else {
+                        self.synchronous_requests.push((bd_addr.clone(), link_type));
+                    }
+                    self.emit_device_event(DeviceEvent::ConnectionRequest {
+                        peer_address: bd_addr,
+                        class_of_device,
+                        link_type,
+                    });
+                }
                 HciPacket::Event(Event::SynchronousConnectionComplete {
                     status: 0,
                     connection_handle,
@@ -4455,23 +4649,36 @@ impl Device {
                     link_type,
                     air_mode,
                     ..
-                }) => self
-                    .synchronous_connections
-                    .push(SynchronousConnectionInfo {
+                }) => {
+                    let connection = SynchronousConnectionInfo {
                         connection_handle,
                         peer_address: bd_addr,
                         link_type,
                         air_mode,
-                    }),
+                    };
+                    self.synchronous_connections.push(connection.clone());
+                    self.emit_device_event(DeviceEvent::SynchronousConnectionEstablished(
+                        connection,
+                    ));
+                }
+                HciPacket::Event(Event::SynchronousConnectionComplete {
+                    status,
+                    bd_addr,
+                    link_type,
+                    ..
+                }) => self.emit_device_event(DeviceEvent::ConnectionFailed {
+                    transport: DeviceConnectionTransport::Synchronous { link_type },
+                    peer_address: bd_addr,
+                    status,
+                }),
                 HciPacket::Event(Event::AuthenticationComplete {
                     status,
                     connection_handle,
                 }) => {
-                    self.classic_pairing_events
-                        .push(ClassicPairingEvent::AuthenticationComplete {
-                            status,
-                            connection_handle,
-                        })
+                    self.record_classic_pairing_event(ClassicPairingEvent::AuthenticationComplete {
+                        status,
+                        connection_handle,
+                    })
                 }
                 HciPacket::Event(Event::ModeChange {
                     status: 0,
@@ -4489,29 +4696,24 @@ impl Device {
                     }
                 }
                 HciPacket::Event(Event::PinCodeRequest { bd_addr }) => self
-                    .classic_pairing_events
-                    .push(ClassicPairingEvent::PinCodeRequest {
+                    .record_classic_pairing_event(ClassicPairingEvent::PinCodeRequest {
                         peer_address: bd_addr,
                     }),
                 HciPacket::Event(Event::LinkKeyRequest { bd_addr }) => self
-                    .classic_pairing_events
-                    .push(ClassicPairingEvent::LinkKeyRequest {
+                    .record_classic_pairing_event(ClassicPairingEvent::LinkKeyRequest {
                         peer_address: bd_addr,
                     }),
                 HciPacket::Event(Event::LinkKeyNotification {
                     bd_addr,
                     link_key,
                     key_type,
-                }) => self
-                    .classic_pairing_events
-                    .push(ClassicPairingEvent::LinkKeyNotification {
-                        peer_address: bd_addr,
-                        link_key,
-                        key_type,
-                    }),
+                }) => self.record_classic_pairing_event(ClassicPairingEvent::LinkKeyNotification {
+                    peer_address: bd_addr,
+                    link_key,
+                    key_type,
+                }),
                 HciPacket::Event(Event::IoCapabilityRequest { bd_addr }) => self
-                    .classic_pairing_events
-                    .push(ClassicPairingEvent::IoCapabilityRequest {
+                    .record_classic_pairing_event(ClassicPairingEvent::IoCapabilityRequest {
                         peer_address: bd_addr,
                     }),
                 HciPacket::Event(Event::IoCapabilityResponse {
@@ -4519,42 +4721,37 @@ impl Device {
                     io_capability,
                     authentication_requirements,
                     ..
-                }) => self
-                    .classic_pairing_events
-                    .push(ClassicPairingEvent::IoCapabilityResponse {
+                }) => {
+                    self.record_classic_pairing_event(ClassicPairingEvent::IoCapabilityResponse {
                         peer_address: bd_addr,
                         io_capability,
                         authentication_requirements,
-                    }),
+                    })
+                }
                 HciPacket::Event(Event::UserConfirmationRequest {
                     bd_addr,
                     numeric_value,
-                }) => {
-                    self.classic_pairing_events
-                        .push(ClassicPairingEvent::UserConfirmationRequest {
-                            peer_address: bd_addr,
-                            numeric_value,
-                        })
-                }
+                }) => self.record_classic_pairing_event(
+                    ClassicPairingEvent::UserConfirmationRequest {
+                        peer_address: bd_addr,
+                        numeric_value,
+                    },
+                ),
                 HciPacket::Event(Event::UserPasskeyRequest { bd_addr }) => self
-                    .classic_pairing_events
-                    .push(ClassicPairingEvent::UserPasskeyRequest {
+                    .record_classic_pairing_event(ClassicPairingEvent::UserPasskeyRequest {
                         peer_address: bd_addr,
                     }),
                 HciPacket::Event(Event::RemoteOobDataRequest { bd_addr }) => self
-                    .classic_pairing_events
-                    .push(ClassicPairingEvent::RemoteOobDataRequest {
+                    .record_classic_pairing_event(ClassicPairingEvent::RemoteOobDataRequest {
                         peer_address: bd_addr,
                     }),
                 HciPacket::Event(Event::SimplePairingComplete { status, bd_addr }) => self
-                    .classic_pairing_events
-                    .push(ClassicPairingEvent::SimplePairingComplete {
+                    .record_classic_pairing_event(ClassicPairingEvent::SimplePairingComplete {
                         status,
                         peer_address: bd_addr,
                     }),
                 HciPacket::Event(Event::UserPasskeyNotification { bd_addr, passkey }) => self
-                    .classic_pairing_events
-                    .push(ClassicPairingEvent::UserPasskeyNotification {
+                    .record_classic_pairing_event(ClassicPairingEvent::UserPasskeyNotification {
                         peer_address: bd_addr,
                         passkey,
                     }),
@@ -4582,6 +4779,11 @@ impl Device {
                     } else {
                         self.encrypted_handles.remove(&connection_handle);
                     }
+                    self.emit_device_event(DeviceEvent::EncryptionChange {
+                        status,
+                        connection_handle,
+                        encryption_enabled,
+                    });
                 }
                 HciPacket::AclData(acl) => self.on_acl(link, acl),
                 HciPacket::SyncData(packet) => self.synchronous_inbox.push(packet),
