@@ -76,17 +76,6 @@ fn attribute_id_list(ids: &[AttributeId]) -> DataElement {
     DataElement::sequence(ids.iter().map(|id| id.to_data_element()))
 }
 
-/// Does `value` contain `uuid`, directly or by recursing into sequences?
-/// Mirrors upstream `ServiceAttribute.is_uuid_in_value` (which recurses into
-/// sequences but not alternatives).
-fn is_uuid_in_value(uuid: &Uuid, value: &DataElement) -> bool {
-    match value {
-        DataElement::Uuid(u) => u == uuid,
-        DataElement::Sequence(elements) => elements.iter().any(|e| is_uuid_in_value(uuid, e)),
-        _ => false,
-    }
-}
-
 // -----------------------------------------------------------------------------
 // Transport plumbing (mirrors bumble-gatt's AttTransport)
 // -----------------------------------------------------------------------------
@@ -206,7 +195,7 @@ impl SdpServer {
                 if record
                     .attributes
                     .iter()
-                    .any(|a| is_uuid_in_value(uuid, &a.value))
+                    .any(|a| ServiceAttribute::is_uuid_in_value(uuid, &a.value))
                 {
                     matching.push((record.handle, &record.attributes));
                     break;

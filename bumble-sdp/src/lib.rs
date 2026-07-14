@@ -13,7 +13,7 @@
 //! Implemented, byte-for-byte against upstream:
 //!
 //! - [`DataElement`] — the recursive type-length-value element format
-//!   (Vol 3, Part B - 3.3): nil, unsigned/signed integers (1/2/4/8 bytes),
+//!   (Vol 3, Part B - 3.3): nil, unsigned/signed integers (1/2/4/8/16 bytes),
 //!   UUIDs (16/32/128-bit), text strings, booleans, sequences, alternatives
 //!   and URLs, including all eight size-index encodings.
 //! - [`ServiceAttribute`] — the `(attribute-id, value)` pair a service record
@@ -133,10 +133,10 @@ mod type_code {
 pub enum DataElement {
     /// The nil element (no value).
     Nil,
-    /// An unsigned integer of `size` bytes (`size` ∈ {1, 2, 4, 8}).
-    UnsignedInteger { value: u64, size: u8 },
-    /// A signed integer of `size` bytes (`size` ∈ {1, 2, 4, 8}).
-    SignedInteger { value: i64, size: u8 },
+    /// An unsigned integer of `size` bytes (`size` ∈ {1, 2, 4, 8, 16}).
+    UnsignedInteger { value: u128, size: u8 },
+    /// A signed integer of `size` bytes (`size` ∈ {1, 2, 4, 8, 16}).
+    SignedInteger { value: i128, size: u8 },
     /// A 16-, 32- or 128-bit UUID.
     Uuid(Uuid),
     /// A text string (raw bytes; not required to be valid UTF-8).
@@ -157,15 +157,15 @@ impl DataElement {
         DataElement::Nil
     }
 
-    /// An unsigned integer with an explicit byte size (1, 2, 4 or 8).
-    pub fn unsigned_integer(value: u64, size: u8) -> Self {
+    /// An unsigned integer with an explicit byte size (1, 2, 4, 8 or 16).
+    pub fn unsigned_integer(value: u128, size: u8) -> Self {
         DataElement::UnsignedInteger { value, size }
     }
 
     /// An 8-bit unsigned integer.
     pub fn unsigned_integer_8(value: u8) -> Self {
         DataElement::UnsignedInteger {
-            value: value as u64,
+            value: value as u128,
             size: 1,
         }
     }
@@ -173,7 +173,7 @@ impl DataElement {
     /// A 16-bit unsigned integer.
     pub fn unsigned_integer_16(value: u16) -> Self {
         DataElement::UnsignedInteger {
-            value: value as u64,
+            value: value as u128,
             size: 2,
         }
     }
@@ -181,20 +181,20 @@ impl DataElement {
     /// A 32-bit unsigned integer.
     pub fn unsigned_integer_32(value: u32) -> Self {
         DataElement::UnsignedInteger {
-            value: value as u64,
+            value: value as u128,
             size: 4,
         }
     }
 
-    /// A signed integer with an explicit byte size (1, 2, 4 or 8).
-    pub fn signed_integer(value: i64, size: u8) -> Self {
+    /// A signed integer with an explicit byte size (1, 2, 4, 8 or 16).
+    pub fn signed_integer(value: i128, size: u8) -> Self {
         DataElement::SignedInteger { value, size }
     }
 
     /// An 8-bit signed integer.
     pub fn signed_integer_8(value: i8) -> Self {
         DataElement::SignedInteger {
-            value: value as i64,
+            value: value as i128,
             size: 1,
         }
     }
@@ -202,7 +202,7 @@ impl DataElement {
     /// A 16-bit signed integer.
     pub fn signed_integer_16(value: i16) -> Self {
         DataElement::SignedInteger {
-            value: value as i64,
+            value: value as i128,
             size: 2,
         }
     }
@@ -210,7 +210,7 @@ impl DataElement {
     /// A 32-bit signed integer.
     pub fn signed_integer_32(value: i32) -> Self {
         DataElement::SignedInteger {
-            value: value as i64,
+            value: value as i128,
             size: 4,
         }
     }
@@ -357,18 +357,18 @@ fn variable_size_header(size: usize) -> Result<(u8, Vec<u8>)> {
 }
 
 /// Encode an unsigned integer big-endian in exactly `size` bytes, erroring if
-/// the value does not fit or `size` is not 1/2/4/8.
-fn unsigned_to_bytes(value: u64, size: u8) -> Result<Vec<u8>> {
+/// the value does not fit or `size` is not 1/2/4/8/16.
+fn unsigned_to_bytes(value: u128, size: u8) -> Result<Vec<u8>> {
     match size {
-        1 | 2 | 4 | 8 => {}
+        1 | 2 | 4 | 8 | 16 => {}
         other => {
             return Err(Error::InvalidArgument(format!(
                 "invalid value_size {other}"
             )))
         }
     }
-    let all = value.to_be_bytes(); // 8 bytes, big-endian
-    let start = 8 - size as usize;
+    let all = value.to_be_bytes(); // 16 bytes, big-endian
+    let start = 16 - size as usize;
     if all[..start].iter().any(|&b| b != 0) {
         return Err(Error::InvalidArgument(format!(
             "value {value} does not fit in {size} bytes"
@@ -378,27 +378,27 @@ fn unsigned_to_bytes(value: u64, size: u8) -> Result<Vec<u8>> {
 }
 
 /// Encode a signed integer big-endian (two's complement) in exactly `size`
-/// bytes, erroring if the value is out of range or `size` is not 1/2/4/8.
-fn signed_to_bytes(value: i64, size: u8) -> Result<Vec<u8>> {
+/// bytes, erroring if the value is out of range or `size` is not 1/2/4/8/16.
+fn signed_to_bytes(value: i128, size: u8) -> Result<Vec<u8>> {
     let bits = match size {
-        1 | 2 | 4 | 8 => size as u32 * 8,
+        1 | 2 | 4 | 8 | 16 => size as u32 * 8,
         other => {
             return Err(Error::InvalidArgument(format!(
                 "invalid value_size {other}"
             )))
         }
     };
-    if bits < 64 {
-        let min = -(1i64 << (bits - 1));
-        let max = (1i64 << (bits - 1)) - 1;
+    if bits < 128 {
+        let min = -(1i128 << (bits - 1));
+        let max = (1i128 << (bits - 1)) - 1;
         if value < min || value > max {
             return Err(Error::InvalidArgument(format!(
                 "value {value} does not fit in {size} bytes"
             )));
         }
     }
-    let all = value.to_be_bytes(); // 8 bytes, big-endian two's complement
-    Ok(all[8 - size as usize..].to_vec())
+    let all = value.to_be_bytes(); // 16 bytes, big-endian two's complement
+    Ok(all[16 - size as usize..].to_vec())
 }
 
 /// Recursive-descent parser for data elements, tracking nesting depth.
@@ -472,11 +472,11 @@ impl<'a> Parser<'a> {
         let element = match element_type {
             type_code::NIL => DataElement::Nil,
             type_code::UNSIGNED_INTEGER => DataElement::UnsignedInteger {
-                value: be_to_u64(value),
+                value: be_to_u128(value),
                 size: value_size as u8,
             },
             type_code::SIGNED_INTEGER => DataElement::SignedInteger {
-                value: be_to_i64(value),
+                value: be_to_i128(value),
                 size: value_size as u8,
             },
             type_code::UUID => {
@@ -529,26 +529,26 @@ impl<'a> Parser<'a> {
     }
 }
 
-/// Decode a big-endian byte slice (0–8 bytes) as a `u64`.
-fn be_to_u64(bytes: &[u8]) -> u64 {
-    let mut acc = 0u64;
+/// Decode a big-endian byte slice (0–16 bytes) as a `u128`.
+fn be_to_u128(bytes: &[u8]) -> u128 {
+    let mut acc = 0u128;
     for &b in bytes {
-        acc = (acc << 8) | b as u64;
+        acc = (acc << 8) | b as u128;
     }
     acc
 }
 
-/// Decode a big-endian two's-complement byte slice (0–8 bytes) as an `i64`.
-fn be_to_i64(bytes: &[u8]) -> i64 {
+/// Decode a big-endian two's-complement byte slice (0–16 bytes) as an `i128`.
+fn be_to_i128(bytes: &[u8]) -> i128 {
     if bytes.is_empty() {
         return 0;
     }
     let negative = bytes[0] & 0x80 != 0;
-    let mut acc: u64 = if negative { u64::MAX } else { 0 };
+    let mut acc: u128 = if negative { u128::MAX } else { 0 };
     for &b in bytes {
-        acc = (acc << 8) | b as u64;
+        acc = (acc << 8) | b as u128;
     }
-    acc as i64
+    acc as i128
 }
 
 fn read_be_u16(data: &[u8], offset: usize) -> Result<u16> {
@@ -609,6 +609,20 @@ impl ServiceAttribute {
     /// Find the value of the attribute with `id` in a list, if present.
     pub fn find(attributes: &[ServiceAttribute], id: u16) -> Option<&DataElement> {
         attributes.iter().find(|a| a.id == id).map(|a| &a.value)
+    }
+
+    /// Return whether `value` is `uuid` or contains it inside a sequence.
+    ///
+    /// This matches upstream `ServiceAttribute.is_uuid_in_value`, including its
+    /// deliberate choice not to recurse into alternatives.
+    pub fn is_uuid_in_value(uuid: &Uuid, value: &DataElement) -> bool {
+        match value {
+            DataElement::Uuid(candidate) => candidate == uuid,
+            DataElement::Sequence(elements) => elements
+                .iter()
+                .any(|element| Self::is_uuid_in_value(uuid, element)),
+            _ => false,
+        }
     }
 }
 

@@ -3,13 +3,13 @@
 //! Every `assert_bytes` hex literal was captured from upstream Python Bumble
 //! (`bytes(x).hex()`) at commit `1d26b99865f96a3e7359009424c0ddf2934acd0b`,
 //! mirroring the cases in upstream `tests/sdp_test.py::test_data_elements`
-//! (all eight size-index encodings, every UUID width, signed negatives, and the
-//! explicit-`value_size` round-trip trap) plus one instance of each of the
+//! (all eight size-index encodings, 128-bit integers, every UUID width, signed
+//! negatives, and the explicit-`value_size` round-trip trap) plus one instance of each of the
 //! seven PDUs. Each element is checked in both directions: serialize equals the
 //! oracle, and parsing that oracle back yields the original value.
 
 use bumble::Uuid;
-use bumble_sdp::{DataElement, SdpPdu, ServiceAttribute};
+use bumble_sdp::{DataElement, Error, SdpPdu, ServiceAttribute};
 
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
@@ -51,6 +51,10 @@ fn data_element_unsigned_integers() {
         DataElement::unsigned_integer(0x1_2345_6789, 8),
         "0b0000000123456789",
     );
+    check(
+        DataElement::unsigned_integer(0x0123_4567_89AB_CDEF_0011_2233_4455_6677, 16),
+        "0c0123456789abcdef0011223344556677",
+    );
     // Explicit value_size 4 must survive even though the value fits in 2 bytes.
     check(DataElement::unsigned_integer(0x0000_FFFF, 4), "0a0000ffff");
 }
@@ -63,6 +67,10 @@ fn data_element_signed_integers() {
     check(
         DataElement::signed_integer(-0x1_2345_6789, 8),
         "13fffffffedcba9877",
+    );
+    check(
+        DataElement::signed_integer(-0x0123_4567_89AB_CDEF_0011_2233_4455_6677, 16),
+        "14fedcba9876543210ffeeddccbbaa9989",
     );
     check(DataElement::signed_integer(0x0000_FFFF, 4), "120000ffff");
 }
@@ -158,6 +166,28 @@ fn data_element_nested_sequence() {
             DataElement::unsigned_integer_16(0x0003),
         ]),
         "35083503190100090003",
+    );
+}
+
+#[test]
+fn deeply_nested_sequences_stop_at_the_upstream_limit() {
+    let mut too_deep = DataElement::unsigned_integer_8(1);
+    for _ in 0..=bumble_sdp::MAX_NESTING {
+        too_deep = DataElement::sequence([too_deep]);
+    }
+    let error = DataElement::from_bytes(&too_deep.to_bytes().unwrap()).unwrap_err();
+    assert!(matches!(
+        error,
+        Error::InvalidPacket(message) if message.contains("nesting exceeds max depth")
+    ));
+
+    let mut accepted = DataElement::unsigned_integer_16(1);
+    for _ in 0..16 {
+        accepted = DataElement::sequence([accepted]);
+    }
+    assert_eq!(
+        DataElement::from_bytes(&accepted.to_bytes().unwrap()).unwrap(),
+        accepted
     );
 }
 
@@ -359,4 +389,22 @@ fn service_attribute_record_roundtrip() {
     } else {
         panic!("expected a sequence");
     }
+}
+
+#[test]
+fn service_attribute_uuid_search_matches_upstream_sequence_boundary() {
+    let target = Uuid::from_16_bits(0x1101);
+    let nested = DataElement::sequence([
+        DataElement::unsigned_integer_8(1),
+        DataElement::sequence([DataElement::uuid(target.clone())]),
+    ]);
+    assert!(ServiceAttribute::is_uuid_in_value(&target, &nested));
+    assert!(!ServiceAttribute::is_uuid_in_value(
+        &target,
+        &DataElement::alternative([DataElement::uuid(target.clone())])
+    ));
+    assert!(!ServiceAttribute::is_uuid_in_value(
+        &Uuid::from_16_bits(0x1102),
+        &nested
+    ));
 }

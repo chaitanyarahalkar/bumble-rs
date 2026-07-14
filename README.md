@@ -131,6 +131,7 @@ crate whose behavior is verified against the upstream Python.
 | 155. RFCOMM receive-queue completion | `bumble-rfcomm` | ✅ upstream 32-packet bound + oldest eviction + retained order green |
 | 156. Platform audio devices | `bumble-audio` | ✅ optional CPAL enumeration + float32 output + int16/stereo input green |
 | 157. HFP completion audit | `bumble-hfp` | ✅ full upstream behavior families + all indicator factories + no invented media-codec gap |
+| 158. SDP completion audit | `bumble-sdp` | ✅ 128-bit integers + depth guard + UUID helper + complete client/server/L2CAP surface green |
 | 103+. Repository completion audit and remaining gaps | workspace | in progress |
 
 The LE lifecycle is now complete end-to-end through library APIs: **connect →
@@ -221,7 +222,7 @@ size, to convey remaining surface.
 | Upstream (LOC) | Rust crate | Status | Notes |
 |---|---|---|---|
 | `rfcomm.py` (1.2k) | `bumble-rfcomm` | ✅ | **Complete synchronous protocol surface**: `RfcommFrame` TS 07.10 framing (SABM/UA/DM/DISC/UIH, 1- and 2-byte length indicators, credit-bearing UIH), CRC-8, and upstream's PN/MSC MCC catalog are oracle-pinned. `mux::{Multiplexer, Dlc}` covers session/DLC open, refusal, disconnect, modem-status exchange, credit stalls/replenishment/tuning/backpressure, buffered data, and the upstream 32-packet receive bound with oldest eviction. `l2cap::L2capMultiplexer` derives its frame ceiling from negotiated peer MTU and runs the session over live Classic L2CAP/ACL. Upstream sets `max_retransmissions = 0` and does not implement FCON/FCOFF aggregate-flow MCC commands; Rust preserves those boundaries and uses explicit polling instead of socket/async wrappers. |
-| `sdp.py` (1.4k) | `bumble-sdp` | 🟡 | **Codec + client/server runtime + L2CAP binding**: all `DataElement` encodings, `ServiceAttribute`, and seven `SdpPdu` messages are oracle-pinned. Slice 20 adds `service::{SdpServer, SdpClient}` with matching, selection, and continuation; slice 22 adds `l2cap::{SdpL2capServer, L2capSdpTransport}`, including fallible transport propagation and continuation over negotiated Classic channels. Deferred: async/event convenience APIs. |
+| `sdp.py` (1.4k) | `bumble-sdp` | ✅ | **Complete synchronous protocol surface**: every `DataElement` encoding, including 1/2/4/8/16-byte signed and unsigned integers, all UUID/string/container widths, the upstream 32-level recursion guard, `ServiceAttribute` list/find/recursive-UUID helpers, and all seven `SdpPdu` messages are oracle-pinned. `service::{SdpServer, SdpClient}` implements matching, attribute selection, invalid-handle/error responses, continuation chunking/reassembly, and the watchdog; `l2cap::{SdpL2capServer, L2capSdpTransport}` carries fallible multi-round-trip queries over negotiated Classic channels. Rust construction/ownership replaces upstream async context-manager and event conveniences. |
 | `at.py` (0.1k) + HFP AT models | `bumble-at` | ✅ | Parameter tokenizer/parser ported 1:1, nested values, HFP `AtCommand`/`AtResponse` forms, and incremental command (`\r`) / response (`\r\n`) stream framing. |
 | `hfp.py` (2.1k) | `bumble-hfp` | ✅ | **Complete synchronous protocol surface**: normative HF/AG models and paired SLC state machines, serialized post-SLC command completion, call control/current-call listing, every default AG-indicator factory, HF indicators, ring/volume/typed caller-ID/typed voice events, codec request/selection, CMEE/CCWA/BIA/CLIP controls, HF/AG SDP record generation/discovery, and all eight upstream HFP 1.8 SCO/eSCO parameter presets. Control flows run end-to-end over RFCOMM/L2CAP and records through SDP client/server; negotiated CVSD/mSBC codecs establish and route audio through the host/controller link. Upstream `hfp.py` negotiates codec IDs and synchronous links but contains no CVSD/mSBC media encoder or decoder; Rust preserves that boundary and replaces asyncio/event-emitter scheduling with explicit queues and events. |
 | `hid.py` (0.6k) | `bumble-hid` | ✅ | Complete HIDP message codec (handshake/control/get+set report/get+set protocol/data), open protocol identifiers, exact little-endian GET_REPORT buffer sizing, host/device dispatch, callback-to-handshake mapping, suspend/unplug events, role-correct input/output reports, MTU enforcement, and paired control (`0x0011`) + interrupt (`0x0013`) transports over live Classic L2CAP. |
@@ -3424,6 +3425,30 @@ their payloads.
   explicit Rust command/result/event queues, no upstream HFP behavior remains
   deferred.
 
+## Slice 158 — what's here
+
+The SDP completion audit covered every public data type, the seven PDU classes,
+all eleven current `sdp_test.py` families, client/server request paths, and the
+Classic L2CAP binding. It found one protocol gap hidden by the old tracker:
+size-index 4 denotes a 16-byte integer as well as a 128-bit UUID, but Rust's
+integer variants previously stored only 64 bits.
+
+- `DataElement::{UnsignedInteger,SignedInteger}` now use `u128`/`i128` and
+  serialize/parse the complete 1/2/4/8/16-byte SDP integer domain. Exact
+  positive and negative 16-byte wire vectors pin the header, big-endian value,
+  sign extension, and round trip.
+- Existing profile record parsers retain their intentional `u64` boundary by
+  using checked conversion, so oversized values cannot silently truncate into
+  A2DP, AVRCP, or HFP fields.
+- `ServiceAttribute::is_uuid_in_value` exposes upstream's recursive sequence
+  search (and its deliberate alternative boundary), and focused tests now cover
+  that helper plus rejection beyond upstream's 32-level nesting limit and
+  successful parsing at a reasonable depth.
+- Service matching, attribute/range selection, every error response,
+  continuation/watchdog behavior, and multi-round-trip L2CAP queries were
+  already complete. Python-only async context management maps to Rust ownership,
+  leaving no protocol behavior deferred.
+
 ## Acceptance
 
 The port's contract is the upstream Python test suite, ported 1:1:
@@ -3502,7 +3527,7 @@ bumble-rs/
 │   └── tests/synchronous_audio.rs # HFP mSBC over host/controller (slice 27)
 ├── bumble-smp/                # slice-14 SMP codec + legacy pairing + slice-19 SC
 │   └── src/lib.rs             # wires bumble-crypto; sc:: JustWorks derivation
-├── bumble-sdp/                # codec + runtime + slice-22 L2CAP binding
+├── bumble-sdp/                # slices 16/20/22/158 complete SDP surface
 │   ├── src/{lib,pdu}.rs       # DataElement + ServiceAttribute + SdpPdu
 │   ├── src/service.rs         # SdpServer + SdpClient (continuation runtime, slice 20)
 │   ├── src/l2cap.rs           # live Classic channel server/client transport

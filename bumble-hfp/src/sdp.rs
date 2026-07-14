@@ -317,7 +317,7 @@ fn uuid16(element: &DataElement) -> Option<u16> {
 
 fn unsigned(element: &DataElement) -> Option<u64> {
     match element {
-        DataElement::UnsignedInteger { value, .. } => Some(*value),
+        DataElement::UnsignedInteger { value, .. } => u64::try_from(*value).ok(),
         _ => None,
     }
 }
