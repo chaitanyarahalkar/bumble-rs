@@ -39,11 +39,11 @@
 //! [`Multiplexer`]: https://github.com/google/bumble/blob/main/bumble/rfcomm.py
 //! [`DLC`]: https://github.com/google/bumble/blob/main/bumble/rfcomm.py
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 
 use crate::{
     make_mcc, parse_mcc, Error, FrameType, MccType, Result, RfcommFrame, RfcommMccMsc, RfcommMccPn,
-    RFCOMM_DEFAULT_MAX_CREDITS,
+    RFCOMM_DEFAULT_MAX_CREDITS, RFCOMM_DEFAULT_RX_QUEUE_SIZE,
 };
 
 /// The credit threshold at or below which a DLC replenishes the peer's credits
@@ -128,7 +128,7 @@ struct Dlc {
     mtu: usize,
     /// Application data delivered to this DLC, in arrival order (upstream's sink
     /// / receive queue).
-    rx_packets: Vec<Vec<u8>>,
+    rx_packets: VecDeque<Vec<u8>>,
     reading_paused: bool,
 }
 
@@ -152,7 +152,7 @@ impl Dlc {
             tx_credits: tx_initial_credits,
             tx_buffer: Vec::new(),
             mtu,
-            rx_packets: Vec::new(),
+            rx_packets: VecDeque::with_capacity(RFCOMM_DEFAULT_RX_QUEUE_SIZE),
             reading_paused: false,
         }
     }
@@ -260,7 +260,10 @@ impl Dlc {
         };
 
         if !data.is_empty() {
-            self.rx_packets.push(data.to_vec());
+            if self.rx_packets.len() == RFCOMM_DEFAULT_RX_QUEUE_SIZE {
+                self.rx_packets.pop_front();
+            }
+            self.rx_packets.push_back(data.to_vec());
             if self.rx_credits > 0 {
                 self.rx_credits -= 1;
             }
@@ -557,7 +560,7 @@ impl Multiplexer {
     pub fn take_rx(&mut self, dlci: u8) -> Vec<Vec<u8>> {
         self.dlcs
             .get_mut(&dlci)
-            .map(|d| std::mem::take(&mut d.rx_packets))
+            .map(|d| d.rx_packets.drain(..).collect())
             .unwrap_or_default()
     }
 

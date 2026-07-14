@@ -23,7 +23,7 @@
 //!    subtle path in the runtime.
 
 use bumble_rfcomm::mux::{DlcState, Multiplexer, MultiplexerState, Role};
-use bumble_rfcomm::RfcommFrame;
+use bumble_rfcomm::{RfcommFrame, RFCOMM_DEFAULT_RX_QUEUE_SIZE};
 
 /// The negotiated L2CAP MTU the oracle capture used.
 const PEER_MTU: u16 = 512;
@@ -234,6 +234,27 @@ fn credit_flow_blocks_then_resumes() {
         a.dlc_tx_credits(dlci).unwrap() > 0,
         "credits replenished by the peer's grant"
     );
+}
+
+#[test]
+fn receive_queue_keeps_the_latest_32_packets_in_order() {
+    let mut a = Multiplexer::new(Role::Initiator, PEER_MTU);
+    let mut b = Multiplexer::new(Role::Responder, PEER_MTU);
+    b.listen(1, 8, 7);
+    open_dlc(&mut a, &mut b, 1, 8, 7);
+    let dlci = 2;
+
+    for value in 0u8..40 {
+        b.on_pdu(&RfcommFrame::uih(true, dlci, vec![value], false));
+    }
+
+    let retained = b.take_rx(dlci);
+    assert_eq!(retained.len(), RFCOMM_DEFAULT_RX_QUEUE_SIZE);
+    assert_eq!(
+        retained,
+        (8u8..40).map(|value| vec![value]).collect::<Vec<_>>()
+    );
+    assert!(b.take_rx(dlci).is_empty());
 }
 
 #[test]

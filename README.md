@@ -128,6 +128,7 @@ crate whose behavior is verified against the upstream Python.
 | 152. Multi-listener GATT subscriptions | `bumble-gatt` | ✅ ordered notify/indicate callbacks + last-subscriber/forced CCCD cleanup green |
 | 153. USB SCO/eSCO isochronous transport | `bumble-transport` | ✅ alternate selection + fragmented input + multi-packet output green |
 | 154. Enhanced ATT bearers | `bumble-gatt` / `bumble-host` / `bumble-transport` | ✅ LE CoC read/write + bearer-scoped CCCDs/MTUs/queues + notify/indicate fan-out green |
+| 155. RFCOMM receive-queue completion | `bumble-rfcomm` | ✅ upstream 32-packet bound + oldest eviction + retained order green |
 | 103+. Repository completion audit and remaining gaps | workspace | in progress |
 
 The LE lifecycle is now complete end-to-end through library APIs: **connect →
@@ -217,7 +218,7 @@ size, to convey remaining surface.
 ### Classic Bluetooth (BR/EDR)
 | Upstream (LOC) | Rust crate | Status | Notes |
 |---|---|---|---|
-| `rfcomm.py` (1.2k) | `bumble-rfcomm` | 🟡 | **Frame codec + session runtime + L2CAP binding**: the `RfcommFrame` TS 07.10 framing (SABM/UA/DM/DISC/UIH, 1- and 2-byte length indicators, credit-based UIH flow control), CRC-8, and PN/MSC MCC messages are oracle-pinned. Slice 20 adds `mux::{Multiplexer, Dlc}` for session/DLC open and credit flow; slice 22 adds `l2cap::L2capMultiplexer`, which derives its frame ceiling from the negotiated peer MTU and runs the complete session, DLC, replenishment, data, and disconnect flows over a live Classic channel. Deferred: retransmission (upstream also uses `max_retransmissions = 0`), aggregate flow control, and socket/async convenience APIs. |
+| `rfcomm.py` (1.2k) | `bumble-rfcomm` | ✅ | **Complete synchronous protocol surface**: `RfcommFrame` TS 07.10 framing (SABM/UA/DM/DISC/UIH, 1- and 2-byte length indicators, credit-bearing UIH), CRC-8, and upstream's PN/MSC MCC catalog are oracle-pinned. `mux::{Multiplexer, Dlc}` covers session/DLC open, refusal, disconnect, modem-status exchange, credit stalls/replenishment/tuning/backpressure, buffered data, and the upstream 32-packet receive bound with oldest eviction. `l2cap::L2capMultiplexer` derives its frame ceiling from negotiated peer MTU and runs the session over live Classic L2CAP/ACL. Upstream sets `max_retransmissions = 0` and does not implement FCON/FCOFF aggregate-flow MCC commands; Rust preserves those boundaries and uses explicit polling instead of socket/async wrappers. |
 | `sdp.py` (1.4k) | `bumble-sdp` | 🟡 | **Codec + client/server runtime + L2CAP binding**: all `DataElement` encodings, `ServiceAttribute`, and seven `SdpPdu` messages are oracle-pinned. Slice 20 adds `service::{SdpServer, SdpClient}` with matching, selection, and continuation; slice 22 adds `l2cap::{SdpL2capServer, L2capSdpTransport}`, including fallible transport propagation and continuation over negotiated Classic channels. Deferred: async/event convenience APIs. |
 | `at.py` (0.1k) + HFP AT models | `bumble-at` | ✅ | Parameter tokenizer/parser ported 1:1, nested values, HFP `AtCommand`/`AtResponse` forms, and incremental command (`\r`) / response (`\r\n`) stream framing. |
 | `hfp.py` (2.1k) | `bumble-hfp` | 🟡 | Normative HF/AG models and paired SLC state machines, serialized post-SLC command completion, call control/current-call listing, HF/AG indicators, ring/volume/typed caller-ID/typed voice events, codec request/selection, CMEE/CCWA/BIA/CLIP controls, HF/AG SDP record generation/discovery, and all eight upstream HFP 1.8 SCO/eSCO parameter presets. Control flows run end-to-end over RFCOMM/L2CAP and records through SDP client/server; negotiated CVSD/mSBC codecs establish and route audio through the host/controller link. The core synchronous protocol surface covers the upstream behavior families; deferred: asyncio/event-emitter convenience and actual CVSD/mSBC media encoding. |
@@ -3357,6 +3358,24 @@ in-process request path:
   fan-out, confirmations, and unregistered-SPSM refusal. Direct GATT tests pin
   per-bearer MTU, queued-write, CCCD, and cleanup behavior; an external-host
   test drives a real `GattClient` request over framed EATT ACL traffic.
+
+## Slice 155 — what's here
+
+The RFCOMM completion audit compared every upstream multiplexer/DLC path and
+test against the Rust runtime. Upstream defines only PN and MSC multiplexer
+commands and deliberately negotiates `max_retransmissions = 0`, so the old
+tracker references to missing FCON/FCOFF aggregate flow control and
+retransmission were not upstream gaps. One observable difference was real:
+
+- Upstream retains at most 32 received DLC packets before a sink consumes them;
+  appending packet 33 evicts the oldest packet. Rust now uses the same bounded
+  FIFO rather than an unbounded `Vec`.
+- `RFCOMM_DEFAULT_RX_QUEUE_SIZE` exposes the upstream constant, and draining a
+  DLC preserves retained arrival order and resets the queue for reuse.
+- A focused overflow test injects 40 packets and proves that exactly packets
+  8–39 survive in order. Existing session, credit/backpressure, L2CAP binding,
+  refusal, and disconnect tests remain green, closing `rfcomm.py` for the
+  synchronous port's scope.
 
 ## Acceptance
 

@@ -28,8 +28,10 @@
 //! a synchronous, sans-I/O port of upstream's asyncio `Multiplexer` and `DLC`,
 //! including the open handshake (SABM/UA, PN, MSC) and credit-based flow
 //! control. [`l2cap`] (**slice 22**) binds that runtime to a live Classic L2CAP
-//! channel. Still deferred: retransmission (upstream sets `max_retransmissions
-//! = 0` too), aggregate flow control, and socket/async convenience APIs.
+//! channel. The DLC receive queue has upstream's 32-packet bound and
+//! oldest-packet eviction. Upstream also sets `max_retransmissions = 0` and
+//! implements only PN/MSC MCC commands; Rust keeps those exact protocol
+//! boundaries while replacing socket/async conveniences with explicit polling.
 //!
 //! ## Oracle
 //!
@@ -60,6 +62,8 @@ pub const RFCOMM_PSM: u16 = 0x0003;
 pub const RFCOMM_DEFAULT_INITIAL_CREDITS: u8 = 7;
 /// Default maximum outstanding credits.
 pub const RFCOMM_DEFAULT_MAX_CREDITS: u8 = 32;
+/// Default number of received packets retained before a DLC sink consumes them.
+pub const RFCOMM_DEFAULT_RX_QUEUE_SIZE: usize = 32;
 /// Default maximum RFCOMM information frame size.
 pub const RFCOMM_DEFAULT_MAX_FRAME_SIZE: u16 = 1000;
 /// First dynamically-assignable RFCOMM server channel.
