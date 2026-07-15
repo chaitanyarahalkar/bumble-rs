@@ -1479,6 +1479,9 @@ pub struct Device {
     classic_inquiry_results: Vec<Address>,
     classic_inquiry_result_details: Vec<ClassicInquiryResultInfo>,
     classic_inquiry_complete: Vec<u8>,
+    classic_inquiry_response: Option<[u8; 240]>,
+    classic_discovering: bool,
+    classic_auto_restart_inquiry: bool,
     classic_remote_names: Vec<(u8, Address, String)>,
     classic_pairing_events: Vec<ClassicPairingEvent>,
     pending_classic_roles: Vec<(Address, u8)>,
@@ -1581,6 +1584,9 @@ impl Device {
             classic_inquiry_results: Vec::new(),
             classic_inquiry_result_details: Vec::new(),
             classic_inquiry_complete: Vec::new(),
+            classic_inquiry_response: None,
+            classic_discovering: false,
+            classic_auto_restart_inquiry: true,
             classic_remote_names: Vec::new(),
             classic_pairing_events: Vec::new(),
             pending_classic_roles: Vec::new(),
@@ -1683,6 +1689,9 @@ impl Device {
             classic_inquiry_results: Vec::new(),
             classic_inquiry_result_details: Vec::new(),
             classic_inquiry_complete: Vec::new(),
+            classic_inquiry_response: None,
+            classic_discovering: false,
+            classic_auto_restart_inquiry: true,
             classic_remote_names: Vec::new(),
             classic_pairing_events: Vec::new(),
             pending_classic_roles: Vec::new(),
@@ -1865,9 +1874,13 @@ impl Device {
                     value: self.config.class_of_device,
                 });
             }
+            let inquiry_response = match self.classic_inquiry_response {
+                Some(response) => response,
+                None => default_inquiry_response(&self.config.name)?,
+            };
             (
                 Some(padded_local_name(&self.config.name)?),
-                Some(default_inquiry_response(&self.config.name)?),
+                Some(inquiry_response),
             )
         } else {
             (None, None)
@@ -1899,6 +1912,8 @@ impl Device {
         self.extended_advertising_handles.clear();
         self.le_connecting = false;
         self.rpa_timeout_elapsed_seconds = 0;
+        self.classic_discovering = false;
+        self.classic_auto_restart_inquiry = true;
         self.public_address = None;
         self.local_channel_sounding_capabilities = None;
         self.local_channel_sounding_capabilities_status = None;
@@ -1967,6 +1982,7 @@ impl Device {
         }
 
         if self.config.classic_enabled {
+            self.classic_inquiry_response = inquiry_response;
             self.send_hci_command(
                 link,
                 Command::WriteLocalName {
@@ -1999,7 +2015,8 @@ impl Device {
                 link,
                 Command::WriteExtendedInquiryResponse {
                     fec_required: 0,
-                    extended_inquiry_response: inquiry_response
+                    extended_inquiry_response: self
+                        .classic_inquiry_response
                         .expect("validated for Classic configuration"),
                 },
             );
@@ -2022,6 +2039,8 @@ impl Device {
         self.extended_advertising_handles.clear();
         self.le_connecting = false;
         self.rpa_timeout_elapsed_seconds = 0;
+        self.classic_discovering = false;
+        self.classic_auto_restart_inquiry = true;
     }
 
     /// Generate and program a fresh resolvable private address.
@@ -3579,6 +3598,108 @@ impl Device {
 
     pub fn take_classic_inquiry_complete(&mut self) -> Vec<u8> {
         std::mem::take(&mut self.classic_inquiry_complete)
+    }
+
+    /// Start BR/EDR inquiry using upstream Bumble's extended-result mode,
+    /// General Inquiry LAP, 10.24-second inquiry length, and unlimited results.
+    ///
+    /// When `auto_restart` is true, each Inquiry Complete event submits the
+    /// same two-command sequence again. This retains upstream's discovery loop
+    /// without binding the synchronous host to an async runtime.
+    pub fn start_discovery(&mut self, link: &mut LocalLink, auto_restart: bool) {
+        self.send_hci_command(link, Command::WriteInquiryMode { inquiry_mode: 2 });
+        self.classic_discovering = false;
+        self.send_hci_command(
+            link,
+            Command::Inquiry {
+                lap: 0x009E_8B33,
+                inquiry_length: 8,
+                num_responses: 0,
+            },
+        );
+        self.classic_auto_restart_inquiry = auto_restart;
+        self.classic_discovering = true;
+    }
+
+    /// Stop BR/EDR inquiry if one is active and restore the default automatic
+    /// restart policy for the next discovery run.
+    pub fn stop_discovery(&mut self, link: &mut LocalLink) {
+        if self.classic_discovering {
+            self.send_hci_command(link, Command::InquiryCancel);
+        }
+        self.classic_auto_restart_inquiry = true;
+        self.classic_discovering = false;
+    }
+
+    pub fn is_discovering(&self) -> bool {
+        self.classic_discovering
+    }
+
+    pub fn discovery_auto_restart_enabled(&self) -> bool {
+        self.classic_auto_restart_inquiry
+    }
+
+    /// The 240-byte Extended Inquiry Response used for Classic discovery.
+    pub fn classic_inquiry_response(&self) -> Option<&[u8; 240]> {
+        self.classic_inquiry_response.as_ref()
+    }
+
+    /// Override or clear the Extended Inquiry Response retained by this device.
+    /// Clearing it makes the next discoverability update synthesize a Complete
+    /// Local Name field from the configured device name.
+    pub fn set_classic_inquiry_response(&mut self, response: Option<[u8; 240]>) {
+        self.classic_inquiry_response = response;
+    }
+
+    /// Update the controller's Classic inquiry/page scan bits directly.
+    pub fn set_classic_scan_enable(
+        &mut self,
+        link: &mut LocalLink,
+        inquiry_scan_enabled: bool,
+        page_scan_enabled: bool,
+    ) {
+        let scan_enable = u8::from(inquiry_scan_enabled) | (u8::from(page_scan_enabled) << 1);
+        self.send_hci_command(link, Command::WriteScanEnable { scan_enable });
+    }
+
+    /// Update configured Classic discoverability and its Extended Inquiry
+    /// Response, then apply the combined inquiry/page scan state.
+    pub fn set_discoverable(
+        &mut self,
+        link: &mut LocalLink,
+        discoverable: bool,
+    ) -> Result<(), DevicePowerError> {
+        self.config.discoverable = discoverable;
+        if !self.config.classic_enabled {
+            return Ok(());
+        }
+
+        let response = match self.classic_inquiry_response {
+            Some(response) => response,
+            None => {
+                let response = default_inquiry_response(&self.config.name)?;
+                self.classic_inquiry_response = Some(response);
+                response
+            }
+        };
+        self.send_hci_command(
+            link,
+            Command::WriteExtendedInquiryResponse {
+                fec_required: 0,
+                extended_inquiry_response: response,
+            },
+        );
+        self.set_classic_scan_enable(link, self.config.discoverable, self.config.connectable);
+        Ok(())
+    }
+
+    /// Update configured Classic page-scan connectability and apply the
+    /// combined inquiry/page scan state.
+    pub fn set_connectable(&mut self, link: &mut LocalLink, connectable: bool) {
+        self.config.connectable = connectable;
+        if self.config.classic_enabled {
+            self.set_classic_scan_enable(link, self.config.discoverable, self.config.connectable);
+        }
     }
 
     pub fn take_classic_remote_names(&mut self) -> Vec<(u8, Address, String)> {
@@ -6921,6 +7042,12 @@ impl Device {
                 HciPacket::Event(Event::InquiryComplete { status }) => {
                     self.classic_inquiry_complete.push(status);
                     self.emit_device_event(DeviceEvent::InquiryComplete { status });
+                    if self.classic_auto_restart_inquiry {
+                        self.start_discovery(link, true);
+                    } else {
+                        self.classic_auto_restart_inquiry = true;
+                        self.classic_discovering = false;
+                    }
                 }
                 HciPacket::Event(Event::InquiryResult {
                     bd_addr,

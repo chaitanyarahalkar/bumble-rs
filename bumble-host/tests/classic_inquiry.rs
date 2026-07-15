@@ -5,10 +5,13 @@ use bumble_host::{Device, HostTransport};
 #[derive(Default)]
 struct EventTransport {
     events: Vec<HciPacket>,
+    commands: Vec<(usize, Command)>,
 }
 
 impl HostTransport for EventTransport {
-    fn handle_command(&mut self, _controller_id: usize, _command: Command) {}
+    fn handle_command(&mut self, controller_id: usize, command: Command) {
+        self.commands.push((controller_id, command));
+    }
 
     fn send_acl_packet(&mut self, _controller_id: usize, _packet: AclDataPacket) -> bool {
         false
@@ -73,6 +76,7 @@ fn device_preserves_all_classic_inquiry_metadata() {
                 extended_inquiry_response: eir,
             }),
         ],
+        ..EventTransport::default()
     };
     let mut device = Device::new(0);
 
@@ -93,4 +97,166 @@ fn device_preserves_all_classic_inquiry_metadata() {
     assert_eq!(details[2].class_of_device, 0x200418);
     assert_eq!(details[2].rssi, Some(-30));
     assert_eq!(details[2].extended_inquiry_response, eir);
+}
+
+#[test]
+fn classic_discovery_drives_commands_state_and_auto_restart() {
+    let mut transport = EventTransport::default();
+    let mut device = Device::new(7);
+
+    device.start_discovery(&mut transport, true);
+    assert!(device.is_discovering());
+    assert!(device.discovery_auto_restart_enabled());
+    assert_eq!(
+        transport.commands,
+        vec![
+            (7, Command::WriteInquiryMode { inquiry_mode: 2 }),
+            (
+                7,
+                Command::Inquiry {
+                    lap: 0x009E_8B33,
+                    inquiry_length: 8,
+                    num_responses: 0,
+                },
+            ),
+        ]
+    );
+
+    transport
+        .events
+        .push(HciPacket::Event(Event::InquiryComplete { status: 0 }));
+    assert!(device.poll(&mut transport));
+    assert!(device.is_discovering());
+    assert_eq!(device.take_classic_inquiry_complete(), vec![0]);
+    assert_eq!(transport.commands.len(), 4);
+    assert_eq!(
+        &transport.commands[2..],
+        &[
+            (7, Command::WriteInquiryMode { inquiry_mode: 2 }),
+            (
+                7,
+                Command::Inquiry {
+                    lap: 0x009E_8B33,
+                    inquiry_length: 8,
+                    num_responses: 0,
+                },
+            ),
+        ]
+    );
+
+    device.stop_discovery(&mut transport);
+    assert!(!device.is_discovering());
+    assert!(device.discovery_auto_restart_enabled());
+    assert_eq!(
+        transport.commands.last(),
+        Some(&(7, Command::InquiryCancel))
+    );
+}
+
+#[test]
+fn one_shot_classic_discovery_stops_after_inquiry_complete() {
+    let mut transport = EventTransport::default();
+    let mut device = Device::new(0);
+
+    device.start_discovery(&mut transport, false);
+    assert!(!device.discovery_auto_restart_enabled());
+    transport
+        .events
+        .push(HciPacket::Event(Event::InquiryComplete { status: 0x01 }));
+    assert!(device.poll(&mut transport));
+
+    assert!(!device.is_discovering());
+    assert!(device.discovery_auto_restart_enabled());
+    assert_eq!(device.take_classic_inquiry_complete(), vec![0x01]);
+    assert_eq!(transport.commands.len(), 2);
+    device.stop_discovery(&mut transport);
+    assert_eq!(transport.commands.len(), 2);
+}
+
+#[test]
+fn discoverable_and_connectable_update_eir_and_scan_bits() {
+    let mut transport = EventTransport::default();
+    let mut device = Device::new(3);
+    device.config.classic_enabled = true;
+    device.config.name = "Rust Inquiry".into();
+
+    device.set_discoverable(&mut transport, false).unwrap();
+    assert!(!device.config.discoverable);
+    assert!(matches!(
+        &transport.commands[0],
+        (
+            3,
+            Command::WriteExtendedInquiryResponse {
+                fec_required: 0,
+                extended_inquiry_response,
+            },
+        ) if &extended_inquiry_response[..14] == b"\x0D\x09Rust Inquiry"
+            && extended_inquiry_response[14..].iter().all(|byte| *byte == 0)
+    ));
+    assert_eq!(
+        transport.commands[1],
+        (3, Command::WriteScanEnable { scan_enable: 2 })
+    );
+    assert_eq!(
+        device.classic_inquiry_response(),
+        match &transport.commands[0].1 {
+            Command::WriteExtendedInquiryResponse {
+                extended_inquiry_response,
+                ..
+            } => Some(extended_inquiry_response),
+            _ => None,
+        }
+    );
+
+    device.set_connectable(&mut transport, false);
+    assert!(!device.config.connectable);
+    assert_eq!(
+        transport.commands[2],
+        (3, Command::WriteScanEnable { scan_enable: 0 })
+    );
+
+    device.set_classic_inquiry_response(Some([0xA5; 240]));
+    device.set_discoverable(&mut transport, true).unwrap();
+    assert!(device.config.discoverable);
+    assert_eq!(
+        transport.commands[3],
+        (
+            3,
+            Command::WriteExtendedInquiryResponse {
+                fec_required: 0,
+                extended_inquiry_response: [0xA5; 240],
+            },
+        )
+    );
+    assert_eq!(
+        transport.commands[4],
+        (3, Command::WriteScanEnable { scan_enable: 1 })
+    );
+}
+
+#[test]
+fn custom_inquiry_response_survives_power_cycles() {
+    let mut transport = EventTransport::default();
+    let mut device = Device::new(4);
+    device.config.classic_enabled = true;
+    device.config.le_enabled = false;
+    device.set_classic_inquiry_response(Some([0x5A; 240]));
+
+    device.power_on(&mut transport).unwrap();
+    device.power_off();
+    device.power_on(&mut transport).unwrap();
+
+    let responses = transport
+        .commands
+        .iter()
+        .filter_map(|(_, command)| match command {
+            Command::WriteExtendedInquiryResponse {
+                extended_inquiry_response,
+                ..
+            } => Some(extended_inquiry_response),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(responses, vec![&[0x5A; 240], &[0x5A; 240]]);
+    assert_eq!(device.classic_inquiry_response(), Some(&[0x5A; 240]));
 }

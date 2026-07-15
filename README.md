@@ -143,6 +143,10 @@ crate whose behavior is verified against the upstream Python.
 | 167. Configured GATT and EATT services | `bumble-host` + `bumble-gatt` + `bumble-profiles` | ✅ custom definitions + GAP/GATT defaults + EATT registration green |
 | 168. Configured live SMP manager | `bumble-host` + `bumble-smp` | ✅ configured capabilities + automatic routing/encryption + completion events + debug key green |
 | 169. Configured bond persistence and reuse | `bumble` + `bumble-host` + `bumble-smp` | ✅ memory/JSON ownership + automatic persistence + resolver refresh + reconnect encryption green |
+| 170. Configured Classic admission and L2CAP capabilities | `bumble-host` + `bumble-l2cap` | ✅ auto-accept policy + information/echo signaling + typed response journals green |
+| 171. Configured Classic SMP and CTKD | `bumble-host` + `bumble-smp` | ✅ Link Key reuse/persistence + BR/EDR SMP routing + two-party CTKD green |
+| 172. Configured periodic RPA rotation | `bumble-host` | ✅ runtime-neutral timer + advertising/scanning/connecting suppression green |
+| 173. Classic discovery and visibility controls | `bumble-host` | ✅ inquiry start/stop/auto-restart + retained EIR + live scan-bit updates green |
 | 103+. Repository completion audit and remaining gaps | workspace | in progress |
 
 The LE lifecycle is now complete end-to-end through library APIs: **connect →
@@ -3773,6 +3777,25 @@ of leaving `le_rpa_timeout` as parsed-only configuration.
 - Focused command-capture tests cover timeout boundaries, every busy condition,
   zero-timeout disabling, power-off cancellation, valid generated RPAs, and
   live connection-state transitions over `LocalLink`.
+
+## Slice 173 — what's here
+
+The high-level Device now drives upstream's Classic inquiry and visibility
+controls instead of only recording inquiry events submitted by raw HCI callers.
+
+- `start_discovery` submits Extended Inquiry mode followed by the General
+  Inquiry LAP, upstream's 10.24-second inquiry length, and unlimited responses.
+  One-shot and automatic-restart modes retain explicit synchronous state.
+- Inquiry Complete events preserve the typed event/journal surface and either
+  stop a one-shot discovery or resubmit the exact discovery command sequence.
+  `stop_discovery` sends Inquiry Cancel only when active.
+- `set_discoverable`, `set_connectable`, and `set_classic_scan_enable` apply the
+  combined inquiry/page scan bits while keeping the loaded configuration live.
+- The 240-byte Extended Inquiry Response is retained across power cycles,
+  supports an application override, and otherwise synthesizes upstream's
+  Complete Local Name field from the configured name.
+- Command-capture tests pin the full discovery sequence, restart and one-shot
+  state transitions, synthesized/custom EIR payloads, and all scan-bit values.
 
 ## Acceptance
 
