@@ -117,6 +117,19 @@ impl<T> DataPacketQueue<T> {
         queued + in_flight
     }
 
+    /// Drop every queued packet and implicitly complete all in-flight packets.
+    ///
+    /// This is the transport-wide counterpart to [`Self::flush`] used when the
+    /// HCI host is flushed or reset and no connection handle remains valid.
+    pub fn flush_all(&mut self) -> usize {
+        let pending = self.packets.len() + self.in_flight;
+        self.packets.clear();
+        self.per_connection_in_flight.clear();
+        self.in_flight = 0;
+        self.completed += pending;
+        pending
+    }
+
     pub fn queued(&self) -> usize {
         self.queued
     }

@@ -6,7 +6,7 @@ use bumble_hci::{
 };
 use bumble_host::{
     ClassicPairingEvent, Device, DeviceConnectionTransport, DeviceEvent, HostTransport,
-    LeConnectionControlEvent, LeDataLength,
+    LeConnectionControlEvent, LeDataLength, PeerLookupTransport,
 };
 
 fn random_address(value: &str) -> Address {
@@ -390,6 +390,108 @@ fn classic_and_synchronous_success_events_include_retained_connection_state() {
             DeviceEvent::SynchronousConnectionEstablished(synchronous),
         ]
     );
+}
+
+#[test]
+fn flush_invalidates_every_connection_after_the_flush_event() {
+    let le_peer = random_address("C0:00:00:00:00:40");
+    let classic_peer = random_address("C0:00:00:00:00:50");
+    let mut transport = ScriptedTransport {
+        events: vec![
+            HciPacket::Event(Event::LeMeta(LeMetaEvent::ConnectionComplete {
+                status: 0,
+                connection_handle: 0x0040,
+                role: 0,
+                peer_address_type: 1,
+                peer_address: le_peer,
+                connection_interval: 24,
+                peripheral_latency: 0,
+                supervision_timeout: 72,
+                central_clock_accuracy: 0,
+            })),
+            HciPacket::Event(Event::ConnectionComplete {
+                status: 0,
+                connection_handle: 0x0050,
+                bd_addr: classic_peer.clone(),
+                link_type: 1,
+                encryption_enabled: 0,
+            }),
+            HciPacket::Event(Event::SynchronousConnectionComplete {
+                status: 0,
+                connection_handle: 0x0051,
+                bd_addr: classic_peer,
+                link_type: 2,
+                transmission_interval: 12,
+                retransmission_window: 2,
+                rx_packet_length: 60,
+                tx_packet_length: 60,
+                air_mode: 2,
+            }),
+            HciPacket::Event(Event::LeMeta(LeMetaEvent::CisEstablished {
+                status: 0,
+                connection_handle: 0x0060,
+                cig_sync_delay: 1,
+                cis_sync_delay: 2,
+                transport_latency_c_to_p: 3,
+                transport_latency_p_to_c: 4,
+                phy_c_to_p: 1,
+                phy_p_to_c: 2,
+                nse: 3,
+                bn_c_to_p: 4,
+                bn_p_to_c: 5,
+                ft_c_to_p: 6,
+                ft_p_to_c: 7,
+                max_pdu_c_to_p: 120,
+                max_pdu_p_to_c: 121,
+                iso_interval: 8,
+            })),
+        ],
+    };
+    let observed = Arc::new(Mutex::new(Vec::new()));
+    let listener_events = Arc::clone(&observed);
+    let mut device = Device::new(0);
+    assert!(device.poll(&mut transport));
+    device.take_device_events();
+    device.add_event_listener(move |event| {
+        listener_events.lock().unwrap().push(event.clone());
+    });
+    let lookup = device.find_peer_by_name(&mut transport, "pending", PeerLookupTransport::Le);
+    assert!(device.is_peer_lookup_pending(lookup));
+
+    device.flush();
+
+    assert!(!device.is_connected());
+    assert!(device.le_connections().next().is_none());
+    assert!(device.classic_connections().next().is_none());
+    assert!(device.synchronous_connections().is_empty());
+    assert!(device.cis_link(0x0060).is_none());
+    assert_eq!(device.pending_peer_lookup_count(), 0);
+    assert_eq!(device.acl_packets_pending(), 0);
+    let expected = vec![
+        DeviceEvent::Flush,
+        DeviceEvent::Disconnected {
+            connection_handle: 0x0040,
+            reason: 0,
+        },
+        DeviceEvent::Disconnected {
+            connection_handle: 0x0050,
+            reason: 0,
+        },
+        DeviceEvent::Disconnected {
+            connection_handle: 0x0051,
+            reason: 0,
+        },
+        DeviceEvent::Disconnected {
+            connection_handle: 0x0060,
+            reason: 0,
+        },
+    ];
+    assert_eq!(device.take_device_events(), expected);
+    assert_eq!(*observed.lock().unwrap(), expected);
+
+    device.power_off();
+    assert!(!device.is_scanning());
+    assert!(device.take_device_events().is_empty());
 }
 
 #[test]

@@ -936,6 +936,7 @@ impl PeerLookupRequest {
 /// host state has been updated.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DeviceEvent {
+    Flush,
     LeConnectionEstablished(LeConnectionInfo),
     ClassicConnectionEstablished(ClassicConnectionInfo),
     SynchronousConnectionEstablished(SynchronousConnectionInfo),
@@ -2059,6 +2060,106 @@ impl Device {
         self.local_channel_sounding_capabilities_status
     }
 
+    /// Flush all host-side connection state.
+    ///
+    /// This is the synchronous counterpart to upstream `Host.flush` and
+    /// `Device.on_flush`: listeners observe [`DeviceEvent::Flush`] first, then
+    /// one zero-reason disconnection for every live LE, Classic, CIS, or
+    /// synchronous connection after its state has been removed.
+    pub fn flush(&mut self) {
+        let mut connection_handles = BTreeSet::new();
+        connection_handles.extend(self.le_connections.keys().copied());
+        connection_handles.extend(self.classic_connections.keys().copied());
+        connection_handles.extend(self.cis_links.keys().copied());
+        connection_handles.extend(
+            self.synchronous_connections
+                .iter()
+                .map(|connection| connection.connection_handle),
+        );
+
+        self.emit_device_event(DeviceEvent::Flush);
+
+        let eatt_bearers = self
+            .le_credit_managers
+            .iter()
+            .flat_map(|(connection_handle, manager)| {
+                manager
+                    .channels()
+                    .filter(|channel| channel.psm == EATT_PSM)
+                    .map(|channel| (*connection_handle, channel.source_cid))
+            })
+            .collect::<Vec<_>>();
+        for connection_handle in self.le_connections.keys().copied().collect::<Vec<_>>() {
+            self.remove_att_bearer_state(connection_handle, ATT_CID);
+        }
+        for (connection_handle, source_cid) in eatt_bearers {
+            self.remove_att_bearer_state(connection_handle, source_cid);
+        }
+        if let Some(manager) = self.pairing_manager.as_mut() {
+            for connection_handle in &connection_handles {
+                manager.disconnect(*connection_handle);
+            }
+        }
+        for connection_handle in &connection_handles {
+            self.clear_iso_control_state(*connection_handle);
+        }
+
+        self.connection_handle = None;
+        self.connection_role = None;
+        self.peer_address = None;
+        self.le_connections.clear();
+        self.le_credit_managers.clear();
+        self.eatt_inbox.clear();
+        self.pending_att_indications.clear();
+        self.classic_connection_handle = None;
+        self.classic_connection_role = None;
+        self.classic_connections.clear();
+        self.classic_link_keys.clear();
+        self.classic_channel_managers.clear();
+        self.pending_classic_roles.clear();
+        self.synchronous_connections.clear();
+        self.synchronous_requests.clear();
+        self.synchronous_inbox.clear();
+        self.cis_requests.clear();
+        self.cis_links.clear();
+        self.pending_iso_data_path_setups.clear();
+        self.pending_iso_data_path_removals.clear();
+        self.pending_iso_tx_syncs.clear();
+        self.iso_data_paths
+            .retain(|(handle, _), _| !connection_handles.contains(handle));
+        self.iso_tx_syncs
+            .retain(|handle, _| !connection_handles.contains(handle));
+        self.iso_sequence_numbers
+            .retain(|handle, _| !connection_handles.contains(handle));
+        self.iso_assemblers
+            .retain(|handle, _| !connection_handles.contains(handle));
+        self.iso_inbox
+            .retain(|sdu| !connection_handles.contains(&sdu.connection_handle));
+        self.inbox.clear();
+        self.l2cap_inbox.clear();
+        self.security_requests.clear();
+        self.pairing_encryption_started.clear();
+        self.pairing_terminal_handles.clear();
+        self.long_term_key_requests.clear();
+        self.pending_connection_controls.clear();
+        self.pending_disconnections.clear();
+        self.pending_peer_lookups.clear();
+        self.peer_lookup_started_scanning = None;
+        self.peer_lookup_started_discovery = false;
+        self.pending_channel_sounding_configs.clear();
+        self.acl_assemblers.clear();
+        self.acl_packet_queue.flush_all();
+        self.encrypted_handles.clear();
+        self.le_connecting = false;
+
+        for connection_handle in connection_handles {
+            self.emit_device_event(DeviceEvent::Disconnected {
+                connection_handle,
+                reason: 0,
+            });
+        }
+    }
+
     /// Reset and configure the controller from this device's loaded configuration.
     ///
     /// This is the command-oriented counterpart to upstream `Device.power_on`.
@@ -2083,7 +2184,7 @@ impl Device {
             (None, None)
         };
 
-        let irk = if self.config.le_privacy_enabled {
+        let irk: Option<[u8; 16]> = if self.config.le_privacy_enabled {
             Some(self.config.irk.as_slice().try_into().map_err(|_| {
                 DevicePowerError::InvalidIrkLength {
                     actual: self.config.irk.len(),
@@ -2093,12 +2194,21 @@ impl Device {
             None
         };
 
+        if self.powered_on
+            || !self.le_connections.is_empty()
+            || !self.classic_connections.is_empty()
+            || !self.cis_links.is_empty()
+            || !self.synchronous_connections.is_empty()
+        {
+            self.flush();
+        }
+
         let any_random = Address::from_bytes([0; 6], bumble::AddressType::RANDOM_DEVICE);
         if self.static_address == any_random {
             self.static_address = random_static_address();
         }
         self.random_address = if let Some(irk) = irk {
-            bumble_smp::generate_resolvable_private_address(irk)
+            bumble_smp::generate_resolvable_private_address(&irk)
         } else {
             self.static_address.clone()
         };
@@ -2252,6 +2362,17 @@ impl Device {
 
     /// Mark the host side powered off after any transport-specific flush.
     pub fn power_off(&mut self) {
+        if self.powered_on
+            || !self.le_connections.is_empty()
+            || !self.classic_connections.is_empty()
+            || !self.cis_links.is_empty()
+            || !self.synchronous_connections.is_empty()
+            || !self.pending_peer_lookups.is_empty()
+            || self.le_connecting
+            || !self.pending_disconnections.is_empty()
+        {
+            self.flush();
+        }
         self.powered_on = false;
         self.scanning = false;
         self.legacy_advertising = false;

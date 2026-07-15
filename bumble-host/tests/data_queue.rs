@@ -59,3 +59,24 @@ fn completion_errors_are_bounded_and_flush_accounts_for_all_packets() {
         DataPacketQueueError::UnknownConnection(99)
     );
 }
+
+#[test]
+fn transport_flush_drops_every_handle_and_preserves_accounting() {
+    let mut queue = DataPacketQueue::new(2).unwrap();
+    queue.enqueue(1, 8);
+    queue.enqueue(2, 9);
+    queue.enqueue(3, 8);
+    assert_eq!(queue.poll_ready(), Some(1));
+    assert_eq!(queue.poll_ready(), Some(2));
+    assert_eq!(queue.pending(), 3);
+
+    assert_eq!(queue.flush_all(), 3);
+    assert_eq!(queue.pending(), 0);
+    assert_eq!(queue.waiting(), 0);
+    assert_eq!(queue.in_flight(), 0);
+    assert_eq!(queue.connection_in_flight(8), 0);
+    assert_eq!(queue.connection_in_flight(9), 0);
+    assert!(queue.is_drained(8));
+    assert!(queue.is_drained(9));
+    assert_eq!(queue.poll_ready(), None);
+}
