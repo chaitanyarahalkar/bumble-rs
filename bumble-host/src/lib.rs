@@ -47,8 +47,9 @@ use bumble_l2cap::{
     L2CAP_SIGNALING_CID,
 };
 use bumble_smp::{
-    ClassicCtkdState, ManagedPairingState, PairingConnection, PairingFailureReason, PairingManager,
-    PairingRole, PairingState, ScPairingState, SmpPdu, SMP_BR_CID,
+    AddressResolver, ClassicCtkdState, ManagedPairingState, PairingConnection,
+    PairingFailureReason, PairingManager, PairingRole, PairingState, ScPairingState, SmpPdu,
+    SMP_BR_CID,
 };
 
 mod configuration;
@@ -873,6 +874,60 @@ pub enum DeviceConnectionTransport {
     Synchronous { link_type: u8 },
 }
 
+/// Radio family used by a peer-name lookup.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PeerLookupTransport {
+    Le,
+    Classic,
+}
+
+/// Stable identifier for one pending peer lookup.
+pub type PeerLookupId = u64;
+
+/// Completed peer lookup retained by the synchronous result journal.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PeerLookupResult {
+    pub lookup_id: PeerLookupId,
+    pub transport: PeerLookupTransport,
+    pub peer_address: Address,
+}
+
+/// Failures that prevent a peer lookup from starting.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PeerLookupError {
+    NoAddressResolver,
+}
+
+impl std::fmt::Display for PeerLookupError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NoAddressResolver => write!(f, "device has no address resolver"),
+        }
+    }
+}
+
+impl std::error::Error for PeerLookupError {}
+
+#[derive(Clone, Debug)]
+enum PeerLookupRequest {
+    Name {
+        name: String,
+        transport: PeerLookupTransport,
+    },
+    Identity {
+        identity_address: Address,
+    },
+}
+
+impl PeerLookupRequest {
+    fn transport(&self) -> PeerLookupTransport {
+        match self {
+            Self::Name { transport, .. } => *transport,
+            Self::Identity { .. } => PeerLookupTransport::Le,
+        }
+    }
+}
+
 /// Typed high-level events emitted by [`Device`].
 ///
 /// This is the synchronous Rust counterpart to upstream Bumble's device and
@@ -909,6 +964,7 @@ pub enum DeviceEvent {
     InquiryComplete {
         status: u8,
     },
+    PeerFound(PeerLookupResult),
     RemoteName {
         status: u8,
         peer_address: Address,
@@ -1550,6 +1606,7 @@ pub struct Device {
     pairing_terminal_handles: BTreeSet<u16>,
     pairing_errors: Vec<(u16, String)>,
     key_store: Option<Box<dyn KeyStore>>,
+    address_resolver: Option<AddressResolver>,
     key_store_errors: Vec<(Option<u16>, String)>,
     long_term_key_requests: Vec<LongTermKeyRequestInfo>,
     connection_feature_errors: Vec<ConnectionFeatureError>,
@@ -1559,6 +1616,11 @@ pub struct Device {
     device_events: Vec<DeviceEvent>,
     event_listeners: BTreeMap<DeviceEventListenerId, DeviceEventListener>,
     next_event_listener_id: DeviceEventListenerId,
+    pending_peer_lookups: BTreeMap<PeerLookupId, PeerLookupRequest>,
+    peer_lookup_results: Vec<PeerLookupResult>,
+    next_peer_lookup_id: PeerLookupId,
+    peer_lookup_started_scanning: Option<bool>,
+    peer_lookup_started_discovery: bool,
     pending_channel_sounding_configs: BTreeSet<(u16, u8)>,
     channel_sounding_errors: Vec<ChannelSoundingError>,
     channel_sounding_security_results: Vec<(u16, u8)>,
@@ -1660,6 +1722,7 @@ impl Device {
             pairing_terminal_handles: BTreeSet::new(),
             pairing_errors: Vec::new(),
             key_store: None,
+            address_resolver: None,
             key_store_errors: Vec::new(),
             long_term_key_requests: Vec::new(),
             connection_feature_errors: Vec::new(),
@@ -1669,6 +1732,11 @@ impl Device {
             device_events: Vec::new(),
             event_listeners: BTreeMap::new(),
             next_event_listener_id: 1,
+            pending_peer_lookups: BTreeMap::new(),
+            peer_lookup_results: Vec::new(),
+            next_peer_lookup_id: 1,
+            peer_lookup_started_scanning: None,
+            peer_lookup_started_discovery: false,
             pending_channel_sounding_configs: BTreeSet::new(),
             channel_sounding_errors: Vec::new(),
             channel_sounding_security_results: Vec::new(),
@@ -1771,6 +1839,7 @@ impl Device {
             pairing_terminal_handles: BTreeSet::new(),
             pairing_errors: Vec::new(),
             key_store: None,
+            address_resolver: None,
             key_store_errors: Vec::new(),
             long_term_key_requests: Vec::new(),
             connection_feature_errors: Vec::new(),
@@ -1780,6 +1849,11 @@ impl Device {
             device_events: Vec::new(),
             event_listeners: BTreeMap::new(),
             next_event_listener_id: 1,
+            pending_peer_lookups: BTreeMap::new(),
+            peer_lookup_results: Vec::new(),
+            next_peer_lookup_id: 1,
+            peer_lookup_started_scanning: None,
+            peer_lookup_started_discovery: false,
             pending_channel_sounding_configs: BTreeSet::new(),
             channel_sounding_errors: Vec::new(),
             channel_sounding_security_results: Vec::new(),
@@ -2033,8 +2107,13 @@ impl Device {
         self.local_le_features = None;
         self.local_le_features_max_page = None;
         self.local_le_features_status = None;
+        self.address_resolver = None;
         self.local_channel_sounding_capabilities = None;
         self.local_channel_sounding_capabilities_status = None;
+        self.pending_peer_lookups.clear();
+        self.peer_lookup_results.clear();
+        self.peer_lookup_started_scanning = None;
+        self.peer_lookup_started_discovery = false;
         self.send_hci_command(link, Command::Reset);
         self.send_hci_command(link, Command::ReadBdAddr);
         self.send_hci_command(
@@ -2167,6 +2246,10 @@ impl Device {
         self.classic_discovering = false;
         self.classic_auto_restart_inquiry = true;
         self.pending_disconnections.clear();
+        self.pending_peer_lookups.clear();
+        self.peer_lookup_results.clear();
+        self.peer_lookup_started_scanning = None;
+        self.peer_lookup_started_discovery = false;
     }
 
     /// Generate and program a fresh resolvable private address.
@@ -3262,6 +3345,7 @@ impl Device {
     }
 
     pub fn start_scanning(&mut self, link: &mut LocalLink, active: bool, filter_duplicates: bool) {
+        self.peer_lookup_started_scanning = None;
         self.advertisement_accumulators.clear();
         self.scanning_is_passive = !active;
         self.scanning = true;
@@ -3285,6 +3369,7 @@ impl Device {
     }
 
     pub fn stop_scanning(&mut self, link: &mut LocalLink) {
+        self.peer_lookup_started_scanning = None;
         self.scanning = false;
         self.send_hci_command(
             link,
@@ -3301,6 +3386,7 @@ impl Device {
         active: bool,
         filter_duplicates: bool,
     ) {
+        self.peer_lookup_started_scanning = None;
         self.advertisement_accumulators.clear();
         self.scanning_is_passive = !active;
         self.scanning = true;
@@ -3327,6 +3413,7 @@ impl Device {
     }
 
     pub fn stop_extended_scanning(&mut self, link: &mut LocalLink) {
+        self.peer_lookup_started_scanning = None;
         self.scanning = false;
         self.send_hci_command(
             link,
@@ -3352,6 +3439,180 @@ impl Device {
     /// response; passive scans deliver scannable advertisements immediately.
     pub fn take_advertisements(&mut self) -> Vec<Advertisement> {
         std::mem::take(&mut self.advertisements)
+    }
+
+    fn allocate_peer_lookup_id(&mut self) -> PeerLookupId {
+        let mut lookup_id = self.next_peer_lookup_id;
+        while self.pending_peer_lookups.contains_key(&lookup_id) {
+            lookup_id = lookup_id.wrapping_add(1).max(1);
+        }
+        self.next_peer_lookup_id = lookup_id.wrapping_add(1).max(1);
+        lookup_id
+    }
+
+    /// Start finding a peer by Complete or Shortened Local Name.
+    ///
+    /// This is the runtime-neutral counterpart to upstream's awaitable
+    /// `find_peer_by_name`: the method returns a stable lookup identifier,
+    /// starts scanning or inquiry only when the application was not already
+    /// doing so, and publishes completion through
+    /// [`Self::take_peer_lookup_results`] and [`DeviceEvent::PeerFound`].
+    pub fn find_peer_by_name(
+        &mut self,
+        link: &mut LocalLink,
+        name: impl Into<String>,
+        transport: PeerLookupTransport,
+    ) -> PeerLookupId {
+        let lookup_id = self.allocate_peer_lookup_id();
+        self.pending_peer_lookups.insert(
+            lookup_id,
+            PeerLookupRequest::Name {
+                name: name.into(),
+                transport,
+            },
+        );
+
+        match transport {
+            PeerLookupTransport::Le if !self.scanning => {
+                let extended = self.supports_le_extended_advertising();
+                if extended {
+                    self.start_extended_scanning(link, true, true);
+                } else {
+                    self.start_scanning(link, true, true);
+                }
+                self.peer_lookup_started_scanning = Some(extended);
+            }
+            PeerLookupTransport::Classic if !self.classic_discovering => {
+                self.start_discovery(link, true);
+                self.peer_lookup_started_discovery = true;
+            }
+            _ => {}
+        }
+        lookup_id
+    }
+
+    /// Start finding the current RPA for a bonded identity address.
+    pub fn find_peer_by_identity_address(
+        &mut self,
+        link: &mut LocalLink,
+        identity_address: Address,
+    ) -> Result<PeerLookupId, PeerLookupError> {
+        if self.address_resolver.is_none() {
+            return Err(PeerLookupError::NoAddressResolver);
+        }
+        let lookup_id = self.allocate_peer_lookup_id();
+        self.pending_peer_lookups
+            .insert(lookup_id, PeerLookupRequest::Identity { identity_address });
+        if !self.scanning {
+            let extended = self.supports_le_extended_advertising();
+            if extended {
+                self.start_extended_scanning(link, true, true);
+            } else {
+                self.start_scanning(link, true, true);
+            }
+            self.peer_lookup_started_scanning = Some(extended);
+        }
+        Ok(lookup_id)
+    }
+
+    /// Cancel one pending lookup and restore lookup-owned discovery activity
+    /// when it was the final lookup using that transport.
+    pub fn cancel_peer_lookup(&mut self, link: &mut LocalLink, lookup_id: PeerLookupId) -> bool {
+        if self.pending_peer_lookups.remove(&lookup_id).is_none() {
+            return false;
+        }
+        self.finish_peer_lookup_activity(link);
+        true
+    }
+
+    pub fn is_peer_lookup_pending(&self, lookup_id: PeerLookupId) -> bool {
+        self.pending_peer_lookups.contains_key(&lookup_id)
+    }
+
+    pub fn pending_peer_lookup_count(&self) -> usize {
+        self.pending_peer_lookups.len()
+    }
+
+    /// Drain completed peer lookups in discovery order.
+    pub fn take_peer_lookup_results(&mut self) -> Vec<PeerLookupResult> {
+        std::mem::take(&mut self.peer_lookup_results)
+    }
+
+    fn complete_peer_lookups(
+        &mut self,
+        link: &mut LocalLink,
+        transport: PeerLookupTransport,
+        peer_address: &Address,
+        advertising_data: &AdvertisingData,
+    ) {
+        let local_name = advertising_data
+            .get(bumble::advertising_data::Type::COMPLETE_LOCAL_NAME)
+            .or_else(|| advertising_data.get(bumble::advertising_data::Type::SHORTENED_LOCAL_NAME));
+        let resolved_address = self
+            .address_resolver
+            .as_ref()
+            .and_then(|resolver| resolver.resolve(peer_address));
+        let completed = self
+            .pending_peer_lookups
+            .iter()
+            .filter_map(|(lookup_id, request)| {
+                let matches = match request {
+                    PeerLookupRequest::Name {
+                        name,
+                        transport: request_transport,
+                    } => {
+                        *request_transport == transport
+                            && local_name.as_deref() == Some(name.as_bytes())
+                    }
+                    PeerLookupRequest::Identity { identity_address } => {
+                        transport == PeerLookupTransport::Le
+                            && (peer_address == identity_address
+                                || resolved_address.as_ref() == Some(identity_address))
+                    }
+                };
+                matches.then_some(*lookup_id)
+            })
+            .collect::<Vec<_>>();
+
+        for lookup_id in completed {
+            let request = self
+                .pending_peer_lookups
+                .remove(&lookup_id)
+                .expect("completed lookup remains pending");
+            let result = PeerLookupResult {
+                lookup_id,
+                transport: request.transport(),
+                peer_address: peer_address.clone(),
+            };
+            self.peer_lookup_results.push(result.clone());
+            self.emit_device_event(DeviceEvent::PeerFound(result));
+        }
+        self.finish_peer_lookup_activity(link);
+    }
+
+    fn finish_peer_lookup_activity(&mut self, link: &mut LocalLink) {
+        let le_pending = self
+            .pending_peer_lookups
+            .values()
+            .any(|request| request.transport() == PeerLookupTransport::Le);
+        if !le_pending {
+            if let Some(extended) = self.peer_lookup_started_scanning.take() {
+                if extended {
+                    self.stop_extended_scanning(link);
+                } else {
+                    self.stop_scanning(link);
+                }
+            }
+        }
+
+        let classic_pending = self
+            .pending_peer_lookups
+            .values()
+            .any(|request| request.transport() == PeerLookupTransport::Classic);
+        if !classic_pending && self.peer_lookup_started_discovery {
+            self.peer_lookup_started_discovery = false;
+            self.stop_discovery(link);
+        }
     }
 
     pub fn periodic_syncs(&self) -> &BTreeMap<u16, PeriodicAdvertisingSyncInfo> {
@@ -3763,6 +4024,7 @@ impl Device {
     /// same two-command sequence again. This retains upstream's discovery loop
     /// without binding the synchronous host to an async runtime.
     pub fn start_discovery(&mut self, link: &mut LocalLink, auto_restart: bool) {
+        self.peer_lookup_started_discovery = false;
         self.send_hci_command(link, Command::WriteInquiryMode { inquiry_mode: 2 });
         self.classic_discovering = false;
         self.send_hci_command(
@@ -3780,6 +4042,7 @@ impl Device {
     /// Stop BR/EDR inquiry if one is active and restore the default automatic
     /// restart policy for the next discovery run.
     pub fn stop_discovery(&mut self, link: &mut LocalLink) {
+        self.peer_lookup_started_discovery = false;
         if self.classic_discovering {
             self.send_hci_command(link, Command::InquiryCancel);
         }
@@ -5217,6 +5480,35 @@ impl Device {
     /// Replace the configured store with an application-provided implementation.
     pub fn set_key_store(&mut self, key_store: impl KeyStore + 'static) {
         self.key_store = Some(Box::new(key_store));
+        self.address_resolver = None;
+    }
+
+    pub fn address_resolver(&self) -> Option<&AddressResolver> {
+        self.address_resolver.as_ref()
+    }
+
+    /// Rebuild the host-side RPA resolver from the current pairing key store.
+    pub fn refresh_address_resolver(&mut self) -> Result<usize, DeviceKeyStoreError> {
+        self.ensure_key_store();
+        let resolving_keys = self
+            .key_store
+            .as_ref()
+            .expect("the key store was initialized")
+            .get_resolving_keys()?;
+        let loaded = resolving_keys
+            .iter()
+            .filter(|(irk, _)| irk.len() == 16)
+            .count();
+        self.address_resolver = Some(AddressResolver::new(resolving_keys));
+        Ok(loaded)
+    }
+
+    /// Rebuild host resolution state and program configured controller offload.
+    pub fn refresh_resolving_list(
+        &mut self,
+        link: &mut LocalLink,
+    ) -> Result<usize, DeviceKeyStoreError> {
+        self.refresh_configured_resolving_list(link)
     }
 
     /// Whether this device owns or is configured to create a pairing key store.
@@ -5604,8 +5896,20 @@ impl Device {
         &mut self,
         link: &mut LocalLink,
     ) -> Result<usize, DeviceKeyStoreError> {
+        self.ensure_key_store();
+        let resolving_keys = self
+            .key_store
+            .as_ref()
+            .expect("the key store was initialized")
+            .get_resolving_keys()?;
+        let host_loaded = resolving_keys
+            .iter()
+            .filter(|(irk, _)| irk.len() == 16)
+            .count();
+        self.address_resolver = Some(AddressResolver::new(resolving_keys.clone()));
+
         if !self.config.address_resolution_offload && !self.config.address_generation_offload {
-            return Ok(0);
+            return Ok(host_loaded);
         }
         let local_irk: [u8; 16] = self.config.irk.as_slice().try_into().map_err(|_| {
             DeviceKeyStoreError::InvalidKeyLength {
@@ -5614,12 +5918,6 @@ impl Device {
                 actual: self.config.irk.len(),
             }
         })?;
-        self.ensure_key_store();
-        let resolving_keys = self
-            .key_store
-            .as_ref()
-            .expect("the key store was initialized")
-            .get_resolving_keys()?;
 
         self.send_hci_command(link, Command::LeClearResolvingList);
         self.send_hci_command(
@@ -6412,7 +6710,15 @@ impl Device {
                             .update_legacy(&report);
                         if let Some(advertisement) = advertisement {
                             self.advertisements.push(advertisement.clone());
-                            self.emit_device_event(DeviceEvent::Advertisement(advertisement));
+                            self.emit_device_event(DeviceEvent::Advertisement(
+                                advertisement.clone(),
+                            ));
+                            self.complete_peer_lookups(
+                                link,
+                                PeerLookupTransport::Le,
+                                &advertisement.address,
+                                &advertisement.data,
+                            );
                         }
                     }
                 }
@@ -6435,7 +6741,15 @@ impl Device {
                             .update_extended(&report);
                         if let Some(advertisement) = advertisement {
                             self.advertisements.push(advertisement.clone());
-                            self.emit_device_event(DeviceEvent::Advertisement(advertisement));
+                            self.emit_device_event(DeviceEvent::Advertisement(
+                                advertisement.clone(),
+                            ));
+                            self.complete_peer_lookups(
+                                link,
+                                PeerLookupTransport::Le,
+                                &advertisement.address,
+                                &advertisement.data,
+                            );
                         }
                     }
                 }
@@ -7289,8 +7603,10 @@ impl Device {
                 HciPacket::Event(Event::InquiryComplete { status }) => {
                     self.classic_inquiry_complete.push(status);
                     self.emit_device_event(DeviceEvent::InquiryComplete { status });
-                    if self.classic_auto_restart_inquiry {
+                    if self.classic_discovering && self.classic_auto_restart_inquiry {
+                        let lookup_owned = self.peer_lookup_started_discovery;
                         self.start_discovery(link, true);
+                        self.peer_lookup_started_discovery = lookup_owned;
                     } else {
                         self.classic_auto_restart_inquiry = true;
                         self.classic_discovering = false;
@@ -7313,7 +7629,13 @@ impl Device {
                             extended_inquiry_response: Vec::new(),
                         };
                         self.classic_inquiry_result_details.push(result.clone());
-                        self.emit_device_event(DeviceEvent::InquiryResult(result));
+                        self.emit_device_event(DeviceEvent::InquiryResult(result.clone()));
+                        self.complete_peer_lookups(
+                            link,
+                            PeerLookupTransport::Classic,
+                            &result.peer_address,
+                            &AdvertisingData::from_bytes(&result.extended_inquiry_response),
+                        );
                     }
                 }
                 HciPacket::Event(Event::InquiryResultWithRssi {
@@ -7334,7 +7656,13 @@ impl Device {
                             extended_inquiry_response: Vec::new(),
                         };
                         self.classic_inquiry_result_details.push(result.clone());
-                        self.emit_device_event(DeviceEvent::InquiryResult(result));
+                        self.emit_device_event(DeviceEvent::InquiryResult(result.clone()));
+                        self.complete_peer_lookups(
+                            link,
+                            PeerLookupTransport::Classic,
+                            &result.peer_address,
+                            &AdvertisingData::from_bytes(&result.extended_inquiry_response),
+                        );
                     }
                 }
                 HciPacket::Event(Event::ExtendedInquiryResult {
@@ -7352,7 +7680,13 @@ impl Device {
                         extended_inquiry_response: extended_inquiry_response.to_vec(),
                     };
                     self.classic_inquiry_result_details.push(result.clone());
-                    self.emit_device_event(DeviceEvent::InquiryResult(result));
+                    self.emit_device_event(DeviceEvent::InquiryResult(result.clone()));
+                    self.complete_peer_lookups(
+                        link,
+                        PeerLookupTransport::Classic,
+                        &result.peer_address,
+                        &AdvertisingData::from_bytes(&result.extended_inquiry_response),
+                    );
                 }
                 HciPacket::Event(Event::RemoteNameRequestComplete {
                     status,
