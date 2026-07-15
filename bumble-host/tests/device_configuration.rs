@@ -5,8 +5,9 @@ use bumble_controller::{Controller, LocalLink};
 use bumble_hci::{AclDataPacket, Command, HciPacket, IsoDataPacket};
 use bumble_host::{
     pump, Device, DeviceConfiguration, DeviceConfigurationError, DevicePowerError,
-    ExtendedAdvertisingConfig, HostTransport, DEVICE_DEFAULT_ADDRESS,
+    ExtendedAdvertisingConfig, HostTransport, LePhyError, DEVICE_DEFAULT_ADDRESS,
     DEVICE_DEFAULT_ADVERTISING_INTERVAL, DEVICE_DEFAULT_LE_RPA_TIMEOUT, DEVICE_DEFAULT_NAME,
+    LE_1M_PHY, LE_2M_PHY, LE_CODED_PHY,
 };
 use bumble_smp::verify_resolvable_private_address;
 
@@ -233,7 +234,7 @@ fn default_power_on_generates_and_programs_a_static_address() {
     assert!(device.is_powered_on());
     assert!(device.static_address().is_static());
     assert_eq!(device.random_address(), device.static_address());
-    assert_eq!(transport.commands.len(), 4);
+    assert_eq!(transport.commands.len(), 5);
     assert_eq!(transport.commands[0], (3, Command::Reset));
     assert_eq!(transport.commands[1], (3, Command::ReadBdAddr));
     assert_eq!(
@@ -252,6 +253,7 @@ fn default_power_on_generates_and_programs_a_static_address() {
             random_address: device.random_address().clone(),
         }
     );
+    assert_eq!(transport.commands[4].1, Command::ReadLocalSupportedCommands);
 
     device.power_off();
     assert!(!device.is_powered_on());
@@ -283,7 +285,7 @@ fn privacy_and_optional_le_features_follow_power_on_configuration() {
         &irk,
         device.random_address()
     ));
-    assert_eq!(transport.commands.len(), 10);
+    assert_eq!(transport.commands.len(), 11);
     assert!(matches!(
         transport.commands[3].1,
         Command::LeSetRandomAddress { .. }
@@ -306,6 +308,10 @@ fn privacy_and_optional_le_features_follow_power_on_configuration() {
     assert_eq!(
         transport.commands[8].1,
         Command::LeCsReadLocalSupportedCapabilities
+    );
+    assert_eq!(
+        transport.commands[10].1,
+        Command::ReadLocalSupportedCommands
     );
 
     let rotated = device.update_rpa(&mut transport).unwrap();
@@ -441,7 +447,7 @@ fn classic_power_on_matches_upstream_visibility_and_security_order() {
 
     device.power_on(&mut transport).unwrap();
 
-    assert_eq!(transport.commands.len(), 12);
+    assert_eq!(transport.commands.len(), 13);
     assert_eq!(
         transport.commands[2].1,
         Command::WriteLeHostSupport {
@@ -497,6 +503,10 @@ fn classic_power_on_matches_upstream_visibility_and_security_order() {
         transport.commands[11].1,
         Command::WriteInquiryScanType { scan_type: 1 }
     );
+    assert_eq!(
+        transport.commands[12].1,
+        Command::ReadLocalSupportedCommands
+    );
 }
 
 #[test]
@@ -522,6 +532,21 @@ fn configured_power_on_is_live_against_the_software_controller() {
     pump(&mut link, std::slice::from_mut(&mut device));
 
     assert_eq!(device.public_address(), Some(&public));
+    assert_eq!(device.local_supported_commands_status(), Some(0));
+    assert!(device.local_supported_commands().is_some());
+    assert_eq!(device.local_le_features_status(), Some(0));
+    assert_eq!(device.local_le_features().unwrap().len(), 248);
+    assert_eq!(device.local_le_features_max_page(), Some(1));
+    assert!(device.supports_le_features(&[12, 32, 38, 47, 73]));
+    assert!(device.supports_le_extended_advertising());
+    assert!(!device.supports_le_periodic_advertising());
+    assert_eq!(device.supports_le_phy(LE_1M_PHY), Ok(true));
+    assert_eq!(device.supports_le_phy(LE_2M_PHY), Ok(false));
+    assert_eq!(device.supports_le_phy(LE_CODED_PHY), Ok(false));
+    assert_eq!(
+        device.supports_le_phy(0xFF),
+        Err(LePhyError::InvalidPhy { phy: 0xFF })
+    );
     assert_eq!(device.local_channel_sounding_capabilities_status(), Some(0));
     let capabilities = device.local_channel_sounding_capabilities().unwrap();
     assert_eq!(capabilities.num_config_supported, 4);

@@ -67,6 +67,19 @@ pub const EATT_PSM: u16 = 0x0027;
 /// The fixed L2CAP channel id for LE SMP.
 pub const SMP_CID: u16 = 0x0006;
 
+/// HCI identifier for the mandatory LE 1M PHY.
+pub const LE_1M_PHY: u8 = 0x01;
+/// HCI identifier for the optional LE 2M PHY.
+pub const LE_2M_PHY: u8 = 0x02;
+/// HCI identifier for the optional LE Coded PHY.
+pub const LE_CODED_PHY: u8 = 0x03;
+
+/// LE feature-bit identifiers used by upstream `Device` capability helpers.
+pub const LE_FEATURE_2M_PHY: u8 = 8;
+pub const LE_FEATURE_CODED_PHY: u8 = 11;
+pub const LE_FEATURE_EXTENDED_ADVERTISING: u8 = 12;
+pub const LE_FEATURE_PERIODIC_ADVERTISING: u8 = 13;
+
 fn advertising_interval_units(milliseconds: f64) -> Option<u16> {
     let units = (milliseconds / 0.625).trunc();
     (milliseconds.is_finite() && (0x0020 as f64..=0x4000 as f64).contains(&units))
@@ -108,6 +121,22 @@ impl std::fmt::Display for DevicePowerError {
 }
 
 impl std::error::Error for DevicePowerError {}
+
+/// Invalid physical-layer identifiers passed to [`Device::supports_le_phy`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LePhyError {
+    InvalidPhy { phy: u8 },
+}
+
+impl std::fmt::Display for LePhyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidPhy { phy } => write!(f, "invalid LE PHY 0x{phy:02X}"),
+        }
+    }
+}
+
+impl std::error::Error for LePhyError {}
 
 /// Failures produced while loading, updating, or using configured pairing bonds.
 #[derive(Debug)]
@@ -1455,6 +1484,11 @@ pub struct Device {
     public_address: Option<Address>,
     static_address: Address,
     random_address: Address,
+    local_supported_commands: Option<[u8; 64]>,
+    local_supported_commands_status: Option<u8>,
+    local_le_features: Option<Vec<u8>>,
+    local_le_features_max_page: Option<u8>,
+    local_le_features_status: Option<u8>,
     local_channel_sounding_capabilities: Option<ChannelSoundingCapabilities>,
     local_channel_sounding_capabilities_status: Option<u8>,
     controller_id: usize,
@@ -1561,6 +1595,11 @@ impl Device {
             public_address: None,
             random_address: static_address.clone(),
             static_address,
+            local_supported_commands: None,
+            local_supported_commands_status: None,
+            local_le_features: None,
+            local_le_features_max_page: None,
+            local_le_features_status: None,
             local_channel_sounding_capabilities: None,
             local_channel_sounding_capabilities_status: None,
             controller_id,
@@ -1667,6 +1706,11 @@ impl Device {
             public_address: None,
             random_address: static_address.clone(),
             static_address,
+            local_supported_commands: None,
+            local_supported_commands_status: None,
+            local_le_features: None,
+            local_le_features_max_page: None,
+            local_le_features_status: None,
             local_channel_sounding_capabilities: None,
             local_channel_sounding_capabilities_status: None,
             controller_id,
@@ -1855,6 +1899,71 @@ impl Device {
         &self.random_address
     }
 
+    /// Controller Supported Commands bitmap learned during power-on.
+    pub fn local_supported_commands(&self) -> Option<&[u8; 64]> {
+        self.local_supported_commands.as_ref()
+    }
+
+    /// Completion status for the power-on Supported Commands read.
+    pub fn local_supported_commands_status(&self) -> Option<u8> {
+        self.local_supported_commands_status
+    }
+
+    /// Controller LE feature bitmap learned during power-on.
+    ///
+    /// Controllers advertising the Bluetooth 6.1 all-page command return the
+    /// complete 248-byte catalog. Older controllers retain the legacy first
+    /// eight bytes instead.
+    pub fn local_le_features(&self) -> Option<&[u8]> {
+        self.local_le_features.as_deref()
+    }
+
+    /// Highest returned all-page LE feature page, or `None` for legacy reads.
+    pub fn local_le_features_max_page(&self) -> Option<u8> {
+        self.local_le_features_max_page
+    }
+
+    /// Completion status for the selected power-on LE feature read.
+    pub fn local_le_features_status(&self) -> Option<u8> {
+        self.local_le_features_status
+    }
+
+    /// Whether one controller LE feature bit is set.
+    pub fn supports_le_feature(&self, feature: u8) -> bool {
+        let feature = usize::from(feature);
+        self.local_le_features
+            .as_deref()
+            .and_then(|features| features.get(feature / 8))
+            .is_some_and(|byte| byte & (1 << (feature % 8)) != 0)
+    }
+
+    /// Whether every requested controller LE feature bit is set.
+    pub fn supports_le_features(&self, features: &[u8]) -> bool {
+        features
+            .iter()
+            .all(|feature| self.supports_le_feature(*feature))
+    }
+
+    /// Whether the controller supports an upstream `Phy` identifier.
+    pub fn supports_le_phy(&self, phy: u8) -> Result<bool, LePhyError> {
+        match phy {
+            LE_1M_PHY => Ok(true),
+            LE_2M_PHY => Ok(self.supports_le_feature(LE_FEATURE_2M_PHY)),
+            LE_CODED_PHY => Ok(self.supports_le_feature(LE_FEATURE_CODED_PHY)),
+            _ => Err(LePhyError::InvalidPhy { phy }),
+        }
+    }
+
+    /// Whether the controller supports LE Extended Advertising.
+    pub fn supports_le_extended_advertising(&self) -> bool {
+        self.supports_le_feature(LE_FEATURE_EXTENDED_ADVERTISING)
+    }
+
+    /// Whether the controller supports LE Periodic Advertising.
+    pub fn supports_le_periodic_advertising(&self) -> bool {
+        self.supports_le_feature(LE_FEATURE_PERIODIC_ADVERTISING)
+    }
+
     /// Local controller Channel Sounding capabilities learned during power-on.
     pub fn local_channel_sounding_capabilities(&self) -> Option<ChannelSoundingCapabilities> {
         self.local_channel_sounding_capabilities
@@ -1919,6 +2028,11 @@ impl Device {
         self.classic_auto_restart_inquiry = true;
         self.pending_disconnections.clear();
         self.public_address = None;
+        self.local_supported_commands = None;
+        self.local_supported_commands_status = None;
+        self.local_le_features = None;
+        self.local_le_features_max_page = None;
+        self.local_le_features_status = None;
         self.local_channel_sounding_capabilities = None;
         self.local_channel_sounding_capabilities_status = None;
         self.send_hci_command(link, Command::Reset);
@@ -2030,6 +2144,13 @@ impl Device {
                 self.send_hci_command(link, Command::WriteInquiryScanType { scan_type: 1 });
             }
         }
+
+        // Upstream Host initialization first learns the Supported Commands
+        // bitmap, then chooses the all-page LE feature read when available and
+        // falls back to the legacy eight-byte read. The second command is
+        // selected from the completion handler because this host is explicitly
+        // event-driven.
+        self.send_hci_command(link, Command::ReadLocalSupportedCommands);
 
         self.powered_on = true;
         Ok(())
@@ -6596,6 +6717,82 @@ impl Device {
                     }
                     self.cis_control_events
                         .push(CisControlEvent::Established { status, link });
+                }
+                HciPacket::Event(Event::CommandComplete {
+                    command_opcode,
+                    return_parameters:
+                        bumble_hci::ReturnParameters::ReadLocalSupportedCommands {
+                            status,
+                            supported_commands,
+                        },
+                    ..
+                }) if command_opcode == bumble_hci::HCI_READ_LOCAL_SUPPORTED_COMMANDS_COMMAND => {
+                    self.local_supported_commands_status = Some(status);
+                    if status == 0 {
+                        self.local_supported_commands = Some(supported_commands);
+                        let supported_names =
+                            bumble_hci::metadata::supported_command_names(&supported_commands);
+                        if supported_names
+                            .contains(&"HCI_LE_READ_ALL_LOCAL_SUPPORTED_FEATURES_COMMAND")
+                        {
+                            self.send_hci_command(link, Command::LeReadAllLocalSupportedFeatures);
+                        } else if supported_names
+                            .contains(&"HCI_LE_READ_LOCAL_SUPPORTED_FEATURES_COMMAND")
+                        {
+                            self.send_hci_command(link, Command::LeReadLocalSupportedFeatures);
+                        }
+                    }
+                }
+                HciPacket::Event(Event::CommandComplete {
+                    command_opcode,
+                    return_parameters:
+                        bumble_hci::ReturnParameters::LeReadAllLocalSupportedFeatures {
+                            status,
+                            max_page,
+                            le_features,
+                        },
+                    ..
+                }) if command_opcode
+                    == bumble_hci::HCI_LE_READ_ALL_LOCAL_SUPPORTED_FEATURES_COMMAND =>
+                {
+                    self.local_le_features_status = Some(status);
+                    if status == 0 {
+                        self.local_le_features = Some(le_features.to_vec());
+                        self.local_le_features_max_page = Some(max_page);
+                    }
+                }
+                HciPacket::Event(Event::CommandComplete {
+                    command_opcode,
+                    return_parameters:
+                        bumble_hci::ReturnParameters::LeReadLocalSupportedFeatures {
+                            status,
+                            le_features,
+                        },
+                    ..
+                }) if command_opcode
+                    == bumble_hci::HCI_LE_READ_LOCAL_SUPPORTED_FEATURES_COMMAND =>
+                {
+                    self.local_le_features_status = Some(status);
+                    if status == 0 {
+                        self.local_le_features = Some(le_features.to_vec());
+                        self.local_le_features_max_page = None;
+                    }
+                }
+                HciPacket::Event(Event::CommandComplete {
+                    command_opcode,
+                    return_parameters: bumble_hci::ReturnParameters::Status { status },
+                    ..
+                }) if command_opcode == bumble_hci::HCI_READ_LOCAL_SUPPORTED_COMMANDS_COMMAND => {
+                    self.local_supported_commands_status = Some(status);
+                }
+                HciPacket::Event(Event::CommandComplete {
+                    command_opcode:
+                        bumble_hci::HCI_LE_READ_LOCAL_SUPPORTED_FEATURES_COMMAND
+                        | bumble_hci::HCI_LE_READ_ALL_LOCAL_SUPPORTED_FEATURES_COMMAND,
+                    return_parameters: bumble_hci::ReturnParameters::Status { status },
+                    ..
+                }) => {
+                    self.local_le_features_status = Some(status);
                 }
                 HciPacket::Event(Event::CommandComplete {
                     command_opcode,
