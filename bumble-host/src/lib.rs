@@ -29,7 +29,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
-use bumble::keys::{JsonKeyStore, KeyStore, KeyStoreError, MemoryKeyStore, PairingKeys};
+use bumble::keys::{JsonKeyStore, Key, KeyStore, KeyStoreError, MemoryKeyStore, PairingKeys};
 use bumble::{Address, AdvertisingData};
 use bumble_att::AttPdu;
 use bumble_controller::LocalLink as ControllerLocalLink;
@@ -47,8 +47,8 @@ use bumble_l2cap::{
     L2CAP_SIGNALING_CID,
 };
 use bumble_smp::{
-    ManagedPairingState, PairingConnection, PairingFailureReason, PairingManager, PairingRole,
-    PairingState, ScPairingState, SmpPdu, SMP_BR_CID,
+    ClassicCtkdState, ManagedPairingState, PairingConnection, PairingFailureReason, PairingManager,
+    PairingRole, PairingState, ScPairingState, SmpPdu, SMP_BR_CID,
 };
 
 mod configuration;
@@ -1471,6 +1471,7 @@ pub struct Device {
     classic_connection_handle: Option<u16>,
     classic_connection_role: Option<u8>,
     classic_connections: BTreeMap<u16, ClassicConnectionInfo>,
+    classic_link_keys: BTreeMap<u16, ([u8; 16], bool)>,
     classic_channel_managers: BTreeMap<u16, ClassicChannelManager>,
     classic_channel_server_specs: BTreeMap<u32, ClassicChannelSpec>,
     classic_channel_errors: Vec<(u16, String)>,
@@ -1567,6 +1568,7 @@ impl Device {
             classic_connection_handle: None,
             classic_connection_role: None,
             classic_connections: BTreeMap::new(),
+            classic_link_keys: BTreeMap::new(),
             classic_channel_managers: BTreeMap::new(),
             classic_channel_server_specs: BTreeMap::new(),
             classic_channel_errors: Vec::new(),
@@ -1663,6 +1665,7 @@ impl Device {
             classic_connection_handle: None,
             classic_connection_role: None,
             classic_connections: BTreeMap::new(),
+            classic_link_keys: BTreeMap::new(),
             classic_channel_managers: BTreeMap::new(),
             classic_channel_server_specs: BTreeMap::new(),
             classic_channel_errors: Vec::new(),
@@ -4882,6 +4885,165 @@ impl Device {
         std::mem::take(&mut self.key_store_errors)
     }
 
+    fn stored_classic_link_key(
+        &mut self,
+        peer_address: &Address,
+    ) -> Result<Option<([u8; 16], bool)>, DeviceKeyStoreError> {
+        self.ensure_key_store();
+        let Some(keys) = self
+            .key_store
+            .as_ref()
+            .expect("the key store was initialized")
+            .get(&peer_address.to_string(false))?
+        else {
+            return Ok(None);
+        };
+        let Some(key) = keys.link_key else {
+            return Ok(None);
+        };
+        let link_key =
+            key.value
+                .as_slice()
+                .try_into()
+                .map_err(|_| DeviceKeyStoreError::InvalidKeyLength {
+                    field: "Link Key",
+                    expected: 16,
+                    actual: key.value.len(),
+                })?;
+        Ok(Some((link_key, key.authenticated)))
+    }
+
+    fn load_classic_link_key(
+        &mut self,
+        connection_handle: u16,
+    ) -> Result<bool, DeviceKeyStoreError> {
+        let peer_address = self
+            .classic_connections
+            .get(&connection_handle)
+            .ok_or(DeviceKeyStoreError::NoConnection)?
+            .peer_address
+            .clone();
+        let Some(link_key) = self.stored_classic_link_key(&peer_address)? else {
+            return Ok(false);
+        };
+        self.classic_link_keys.insert(connection_handle, link_key);
+        Ok(true)
+    }
+
+    fn register_classic_pairing_connection(
+        &mut self,
+        connection_handle: u16,
+    ) -> bumble_smp::Result<bool> {
+        if !self.config.classic_smp_enabled {
+            return Ok(false);
+        }
+        let Some(connection) = self.classic_connections.get(&connection_handle).cloned() else {
+            return Ok(false);
+        };
+        if connection.encryption_enabled == 0 {
+            return Ok(false);
+        }
+        let Some((link_key, authenticated)) =
+            self.classic_link_keys.get(&connection_handle).copied()
+        else {
+            return Ok(false);
+        };
+        let local_address = self
+            .public_address
+            .clone()
+            .unwrap_or_else(|| self.static_address.clone());
+        let pairing_role = if connection.role == bumble_controller::ROLE_CENTRAL {
+            PairingRole::Initiator
+        } else {
+            PairingRole::Responder
+        };
+        let Some(manager) = self.pairing_manager.as_mut() else {
+            return Ok(false);
+        };
+        if manager.has_connection(connection_handle) {
+            return Ok(true);
+        }
+        manager.register_connection(PairingConnection::br_edr(
+            connection_handle,
+            pairing_role,
+            local_address,
+            connection.peer_address,
+            link_key,
+            authenticated,
+            true,
+        ))?;
+        Ok(true)
+    }
+
+    fn synchronize_classic_pairing_connection(&mut self, connection_handle: u16) {
+        let Some(connection) = self.classic_connections.get(&connection_handle) else {
+            return;
+        };
+        if connection.encryption_enabled == 0 {
+            if let Some(manager) = self.pairing_manager.as_mut() {
+                manager.disconnect(connection_handle);
+            }
+            return;
+        }
+        if !self.classic_link_keys.contains_key(&connection_handle) {
+            if let Err(error) = self.load_classic_link_key(connection_handle) {
+                self.key_store_errors
+                    .push((Some(connection_handle), error.to_string()));
+                return;
+            }
+        }
+        if let Err(error) = self.register_classic_pairing_connection(connection_handle) {
+            self.pairing_errors
+                .push((connection_handle, error.to_string()));
+        }
+    }
+
+    fn persist_classic_link_key(
+        &mut self,
+        link: &mut LocalLink,
+        peer_address: &Address,
+        link_key: [u8; 16],
+        key_type: u8,
+    ) {
+        let connection_handle = self.classic_connection_handle_for_peer(peer_address);
+        let authenticated = matches!(key_type, 0x05 | 0x08);
+        if let Some(connection_handle) = connection_handle {
+            self.classic_link_keys
+                .insert(connection_handle, (link_key, authenticated));
+        }
+        self.ensure_key_store();
+        let name = peer_address.to_string(false);
+        let result = (|| -> Result<(), DeviceKeyStoreError> {
+            let store = self
+                .key_store
+                .as_mut()
+                .expect("the key store was initialized");
+            let mut keys = store.get(&name)?.unwrap_or_default();
+            keys.link_key = Some(Key {
+                value: link_key.to_vec(),
+                authenticated,
+                ..Key::default()
+            });
+            keys.link_key_type = Some(key_type);
+            store.update(&name, keys)?;
+            Ok(())
+        })();
+        match result {
+            Ok(()) => match self.refresh_configured_resolving_list(link) {
+                Ok(_) => self.emit_device_event(DeviceEvent::KeyStoreUpdated),
+                Err(error) => self
+                    .key_store_errors
+                    .push((connection_handle, error.to_string())),
+            },
+            Err(error) => self
+                .key_store_errors
+                .push((connection_handle, error.to_string())),
+        }
+        if let Some(connection_handle) = connection_handle {
+            self.synchronize_classic_pairing_connection(connection_handle);
+        }
+    }
+
     fn stored_encryption_parameters(
         &mut self,
         connection_handle: u16,
@@ -5012,6 +5174,14 @@ impl Device {
         let handle = self
             .connection_handle
             .ok_or_else(|| bumble_smp::Error::InvalidPacket("no active LE connection".into()))?;
+        self.pair_on_handle(link, handle)
+    }
+
+    /// Start configured SMP/CTKD on the selected encrypted BR/EDR connection.
+    pub fn pair_classic(&mut self, link: &mut LocalLink) -> bumble_smp::Result<()> {
+        let handle = self.classic_connection_handle.ok_or_else(|| {
+            bumble_smp::Error::InvalidPacket("no active Classic connection".into())
+        })?;
         self.pair_on_handle(link, handle)
     }
 
@@ -5184,7 +5354,12 @@ impl Device {
         };
 
         for (handle, pdu) in outbound {
-            if !self.send_l2cap_on_handle(link, handle, SMP_CID, &pdu.to_bytes()) {
+            let cid = if self.classic_connections.contains_key(&handle) {
+                SMP_BR_CID
+            } else {
+                SMP_CID
+            };
+            if !self.send_l2cap_on_handle(link, handle, cid, &pdu.to_bytes()) {
                 return Err(bumble_smp::Error::InvalidPacket(format!(
                     "failed to send SMP PDU on handle 0x{handle:04X}"
                 )));
@@ -5231,6 +5406,7 @@ impl Device {
                 | Some(ManagedPairingState::SecureConnections(
                     ScPairingState::Complete
                 ))
+                | Some(ManagedPairingState::ClassicCtkd(ClassicCtkdState::Complete))
         ) && self.pairing_terminal_handles.insert(connection_handle)
         {
             let keys = pairing_keys.ok_or_else(|| {
@@ -6588,6 +6764,7 @@ impl Device {
                     if let Some(manager) = self.pairing_manager.as_mut() {
                         manager.disconnect(connection_handle);
                     }
+                    self.classic_link_keys.remove(&connection_handle);
                     self.pairing_encryption_started.remove(&connection_handle);
                     self.pairing_terminal_handles.remove(&connection_handle);
                     self.pairing_errors
@@ -6817,6 +6994,13 @@ impl Device {
                         } else {
                             self.encrypted_handles.remove(&connection_handle);
                         }
+                        if self.pairing_manager.is_some() && self.config.classic_smp_enabled {
+                            if let Err(error) = self.load_classic_link_key(connection_handle) {
+                                self.key_store_errors
+                                    .push((Some(connection_handle), error.to_string()));
+                            }
+                            self.synchronize_classic_pairing_connection(connection_handle);
+                        }
                         let mut manager = ClassicChannelManager::with_information_capabilities(
                             self.l2cap_information_capabilities(),
                         );
@@ -6950,19 +7134,54 @@ impl Device {
                     .record_classic_pairing_event(ClassicPairingEvent::PinCodeRequest {
                         peer_address: bd_addr,
                     }),
-                HciPacket::Event(Event::LinkKeyRequest { bd_addr }) => self
-                    .record_classic_pairing_event(ClassicPairingEvent::LinkKeyRequest {
+                HciPacket::Event(Event::LinkKeyRequest { bd_addr }) => {
+                    if self.pairing_manager.is_some() {
+                        let command = match self.stored_classic_link_key(&bd_addr) {
+                            Ok(Some((link_key, authenticated))) => {
+                                if let Some(connection_handle) =
+                                    self.classic_connection_handle_for_peer(&bd_addr)
+                                {
+                                    self.classic_link_keys
+                                        .insert(connection_handle, (link_key, authenticated));
+                                }
+                                Command::LinkKeyRequestReply {
+                                    bd_addr: bd_addr.clone(),
+                                    link_key,
+                                }
+                            }
+                            Ok(None) => Command::LinkKeyRequestNegativeReply {
+                                bd_addr: bd_addr.clone(),
+                            },
+                            Err(error) => {
+                                let connection_handle =
+                                    self.classic_connection_handle_for_peer(&bd_addr);
+                                self.key_store_errors
+                                    .push((connection_handle, error.to_string()));
+                                Command::LinkKeyRequestNegativeReply {
+                                    bd_addr: bd_addr.clone(),
+                                }
+                            }
+                        };
+                        self.send_hci_command(link, command);
+                    }
+                    self.record_classic_pairing_event(ClassicPairingEvent::LinkKeyRequest {
                         peer_address: bd_addr,
-                    }),
+                    });
+                }
                 HciPacket::Event(Event::LinkKeyNotification {
                     bd_addr,
                     link_key,
                     key_type,
-                }) => self.record_classic_pairing_event(ClassicPairingEvent::LinkKeyNotification {
-                    peer_address: bd_addr,
-                    link_key,
-                    key_type,
-                }),
+                }) => {
+                    if self.pairing_manager.is_some() {
+                        self.persist_classic_link_key(link, &bd_addr, link_key, key_type);
+                    }
+                    self.record_classic_pairing_event(ClassicPairingEvent::LinkKeyNotification {
+                        peer_address: bd_addr,
+                        link_key,
+                        key_type,
+                    });
+                }
                 HciPacket::Event(Event::IoCapabilityRequest { bd_addr }) => self
                     .record_classic_pairing_event(ClassicPairingEvent::IoCapabilityRequest {
                         peer_address: bd_addr,
@@ -7027,6 +7246,7 @@ impl Device {
                 }) => {
                     if status == 0 {
                         self.update_connection_encryption(connection_handle, encryption_enabled, 0);
+                        self.synchronize_classic_pairing_connection(connection_handle);
                         self.advance_pairing_encryption(
                             link,
                             connection_handle,
@@ -7052,6 +7272,7 @@ impl Device {
                             encryption_enabled,
                             encryption_key_size,
                         );
+                        self.synchronize_classic_pairing_connection(connection_handle);
                         self.advance_pairing_encryption(
                             link,
                             connection_handle,
@@ -7304,11 +7525,51 @@ impl Device {
             }
             return;
         }
-        // Configured devices route SMP through their handle-keyed pairing
-        // manager. Client-only devices retain the raw channel behavior.
+        // Configured devices route LE and BR/EDR SMP through their handle-keyed
+        // pairing manager. Client-only devices retain the raw channel behavior.
         if l2cap.cid != ATT_CID {
             if l2cap.cid == SMP_CID && l2cap.payload.len() == 2 && l2cap.payload[0] == 0x0B {
                 self.security_requests.push((handle, l2cap.payload[1]));
+            }
+            if l2cap.cid == SMP_BR_CID
+                && self.config.classic_smp_enabled
+                && self.pairing_manager.is_some()
+            {
+                let pdu = match SmpPdu::from_bytes(&l2cap.payload) {
+                    Ok(pdu) => pdu,
+                    Err(error) => {
+                        self.pairing_errors.push((handle, error.to_string()));
+                        return;
+                    }
+                };
+                let registered = self
+                    .pairing_manager
+                    .as_ref()
+                    .is_some_and(|manager| manager.has_connection(handle));
+                if !registered {
+                    if matches!(pdu, SmpPdu::PairingRequest(_)) {
+                        let failure = SmpPdu::PairingFailed {
+                            reason: PairingFailureReason::CrossTransportKeyDerivationNotAllowed
+                                as u8,
+                        };
+                        self.send_l2cap_on_handle(link, handle, SMP_BR_CID, &failure.to_bytes());
+                    }
+                    self.pairing_errors.push((
+                        handle,
+                        "BR/EDR SMP requires an encrypted connection with a stored Link Key".into(),
+                    ));
+                    return;
+                }
+                let result = self
+                    .pairing_manager
+                    .as_mut()
+                    .expect("pairing manager was checked above")
+                    .receive(handle, pdu)
+                    .and_then(|()| self.flush_pairing_manager(link, handle));
+                if let Err(error) = result {
+                    self.pairing_errors.push((handle, error.to_string()));
+                }
+                return;
             }
             if l2cap.cid == SMP_CID && self.pairing_manager.is_some() {
                 let result = SmpPdu::from_bytes(&l2cap.payload).and_then(|pdu| {

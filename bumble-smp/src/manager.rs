@@ -349,6 +349,10 @@ impl PairingManager {
         self.connections.len()
     }
 
+    pub fn has_connection(&self, handle: u16) -> bool {
+        self.connections.contains_key(&handle)
+    }
+
     pub fn session_count(&self) -> usize {
         self.sessions.len()
     }

@@ -3729,6 +3729,30 @@ runtime behavior instead of remaining parsed-only configuration.
   Classic and LE capability exchange, fixed-channel masks, unknown types, and
   echo reflection.
 
+## Slice 171 — what's here
+
+Configured BR/EDR SMP now completes the Classic Link Key and CTKD lifecycle
+instead of stopping at fixed-channel advertisement and raw event journals.
+
+- Configured devices answer controller Link Key requests from their key store,
+  send the negative reply when no usable key exists, and retain the original
+  typed Classic pairing events for application observers.
+- Link Key notifications merge authenticated key material and key type into the
+  existing peer bond, emit `KeyStoreUpdated`, preserve other LE keys, and refresh
+  configured resolving-list offload just like an LE pairing update.
+- Encrypted Classic connections with a stored Link Key register as BR/EDR
+  connections in the handle-keyed `PairingManager`. Encryption loss and
+  disconnection remove that runtime state without deleting the persisted bond.
+- Managed SMP output selects CID `0x0007` for Classic handles and CID `0x0006`
+  for LE handles. `pair_classic` starts CTKD on the selected encrypted Classic
+  link; incoming requests route automatically when `classic_smp_enabled` is set.
+- Completed Classic CTKD persists its derived LTK and Link Key and emits the
+  same typed pairing-complete event as LE. A peer without a stored Link Key gets
+  the specification's Cross Transport Key Derivation Not Allowed failure.
+- Live tests prove managed two-party CTKD, derived-bond persistence, key-provider
+  positive/negative replies, Link Key notification storage, and the missing-key
+  failure over `LocalLink`.
+
 ## Acceptance
 
 The port's contract is the upstream Python test suite, ported 1:1:
