@@ -699,6 +699,7 @@ pub struct ClassicConnectionInfo {
     pub connection_handle: u16,
     pub role: u8,
     pub peer_address: Address,
+    pub peer_name: Option<String>,
     pub encryption_enabled: u8,
     pub encryption_key_size: u8,
     pub qos_service_type: Option<u8>,
@@ -707,6 +708,23 @@ pub struct ClassicConnectionInfo {
     pub peer_lmp_features: BTreeMap<u8, [u8; 8]>,
     pub peer_lmp_max_page_number: Option<u8>,
     pub peer_host_supported_features: Option<[u8; 8]>,
+}
+
+/// Why a Classic remote-name request did not produce a UTF-8 peer name.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RemoteNameError {
+    HciStatus(u8),
+    InvalidUtf8 {
+        valid_up_to: usize,
+        error_len: Option<usize>,
+    },
+}
+
+/// Completion journal entry for one Classic remote-name request.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RemoteNameResult {
+    pub peer_address: Address,
+    pub result: Result<String, RemoteNameError>,
 }
 
 /// One Classic inquiry report, retaining the discovery metadata applications
@@ -970,6 +988,10 @@ pub enum DeviceEvent {
         status: u8,
         peer_address: Address,
         name: String,
+    },
+    RemoteNameFailure {
+        peer_address: Address,
+        error: RemoteNameError,
     },
     LeConnectionControl(LeConnectionControlEvent),
     ClassicPairing(ClassicPairingEvent),
@@ -1573,6 +1595,9 @@ pub struct Device {
     classic_discovering: bool,
     classic_auto_restart_inquiry: bool,
     classic_remote_names: Vec<(u8, Address, String)>,
+    classic_remote_name_results: Vec<RemoteNameResult>,
+    pending_remote_name_commands: VecDeque<Address>,
+    pending_remote_name_requests: Vec<(Address, usize)>,
     classic_pairing_events: Vec<ClassicPairingEvent>,
     pending_classic_roles: Vec<(Address, u8)>,
     synchronous_connections: Vec<SynchronousConnectionInfo>,
@@ -1694,6 +1719,9 @@ impl Device {
             classic_discovering: false,
             classic_auto_restart_inquiry: true,
             classic_remote_names: Vec::new(),
+            classic_remote_name_results: Vec::new(),
+            pending_remote_name_commands: VecDeque::new(),
+            pending_remote_name_requests: Vec::new(),
             classic_pairing_events: Vec::new(),
             pending_classic_roles: Vec::new(),
             synchronous_connections: Vec::new(),
@@ -1815,6 +1843,9 @@ impl Device {
             classic_discovering: false,
             classic_auto_restart_inquiry: true,
             classic_remote_names: Vec::new(),
+            classic_remote_name_results: Vec::new(),
+            pending_remote_name_commands: VecDeque::new(),
+            pending_remote_name_requests: Vec::new(),
             classic_pairing_events: Vec::new(),
             pending_classic_roles: Vec::new(),
             synchronous_connections: Vec::new(),
@@ -2117,6 +2148,8 @@ impl Device {
         self.classic_link_keys.clear();
         self.classic_channel_managers.clear();
         self.pending_classic_roles.clear();
+        self.pending_remote_name_commands.clear();
+        self.pending_remote_name_requests.clear();
         self.synchronous_connections.clear();
         self.synchronous_requests.clear();
         self.synchronous_inbox.clear();
@@ -2199,6 +2232,7 @@ impl Device {
             || !self.classic_connections.is_empty()
             || !self.cis_links.is_empty()
             || !self.synchronous_connections.is_empty()
+            || !self.pending_remote_name_requests.is_empty()
         {
             self.flush();
         }
@@ -2235,6 +2269,8 @@ impl Device {
         self.peer_lookup_results.clear();
         self.peer_lookup_started_scanning = None;
         self.peer_lookup_started_discovery = false;
+        self.pending_remote_name_commands.clear();
+        self.pending_remote_name_requests.clear();
         self.pending_bigs.clear();
         self.pending_big_commands.clear();
         self.pending_big_syncs.clear();
@@ -2368,6 +2404,7 @@ impl Device {
             || !self.cis_links.is_empty()
             || !self.synchronous_connections.is_empty()
             || !self.pending_peer_lookups.is_empty()
+            || !self.pending_remote_name_requests.is_empty()
             || self.le_connecting
             || !self.pending_disconnections.is_empty()
         {
@@ -2386,6 +2423,8 @@ impl Device {
         self.peer_lookup_results.clear();
         self.peer_lookup_started_scanning = None;
         self.peer_lookup_started_discovery = false;
+        self.pending_remote_name_commands.clear();
+        self.pending_remote_name_requests.clear();
         self.pending_bigs.clear();
         self.pending_big_commands.clear();
         self.pending_big_syncs.clear();
@@ -4261,8 +4300,134 @@ impl Device {
         }
     }
 
+    /// Request a Classic peer's user-friendly name by address.
+    ///
+    /// This is the event-driven counterpart to upstream
+    /// `Device.request_remote_name(Address)`. Completion is reported through
+    /// [`DeviceEvent::RemoteName`], [`DeviceEvent::RemoteNameFailure`], and
+    /// [`Self::take_classic_remote_name_results`].
+    pub fn request_remote_name(&mut self, link: &mut LocalLink, peer_address: Address) {
+        self.pending_remote_name_commands
+            .push_back(peer_address.clone());
+        if let Some((_, count)) = self
+            .pending_remote_name_requests
+            .iter_mut()
+            .find(|(address, _)| *address == peer_address)
+        {
+            *count += 1;
+        } else {
+            self.pending_remote_name_requests
+                .push((peer_address.clone(), 1));
+        }
+        self.send_hci_command(
+            link,
+            Command::RemoteNameRequest {
+                bd_addr: peer_address,
+                page_scan_repetition_mode: 2,
+                reserved: 0,
+                clock_offset: 0,
+            },
+        );
+    }
+
+    /// Request the name of one established Classic ACL peer.
+    pub fn request_remote_name_on_handle(
+        &mut self,
+        link: &mut LocalLink,
+        connection_handle: u16,
+    ) -> bool {
+        let Some(peer_address) = self
+            .classic_connections
+            .get(&connection_handle)
+            .map(|connection| connection.peer_address.clone())
+        else {
+            return false;
+        };
+        self.request_remote_name(link, peer_address);
+        true
+    }
+
+    pub fn is_remote_name_pending(&self, peer_address: &Address) -> bool {
+        self.pending_remote_name_requests
+            .iter()
+            .any(|(address, _)| address == peer_address)
+    }
+
+    pub fn pending_remote_name_count(&self) -> usize {
+        self.pending_remote_name_requests
+            .iter()
+            .map(|(_, count)| count)
+            .sum()
+    }
+
     pub fn take_classic_remote_names(&mut self) -> Vec<(u8, Address, String)> {
         std::mem::take(&mut self.classic_remote_names)
+    }
+
+    /// Drain successful and failed Classic remote-name completions in order.
+    pub fn take_classic_remote_name_results(&mut self) -> Vec<RemoteNameResult> {
+        std::mem::take(&mut self.classic_remote_name_results)
+    }
+
+    fn remove_pending_remote_name_command(&mut self, peer_address: &Address) {
+        if let Some(index) = self
+            .pending_remote_name_commands
+            .iter()
+            .position(|address| address == peer_address)
+        {
+            self.pending_remote_name_commands.remove(index);
+        }
+    }
+
+    fn complete_remote_name_request(&mut self, peer_address: &Address) {
+        let Some(index) = self
+            .pending_remote_name_requests
+            .iter()
+            .position(|(address, _)| address == peer_address)
+        else {
+            return;
+        };
+        let count = &mut self.pending_remote_name_requests[index].1;
+        *count -= 1;
+        if *count == 0 {
+            self.pending_remote_name_requests.remove(index);
+        }
+    }
+
+    fn record_remote_name_result(
+        &mut self,
+        peer_address: Address,
+        result: Result<String, RemoteNameError>,
+    ) {
+        let completion = RemoteNameResult {
+            peer_address: peer_address.clone(),
+            result: result.clone(),
+        };
+        self.classic_remote_name_results.push(completion);
+        match result {
+            Ok(name) => {
+                for connection in self
+                    .classic_connections
+                    .values_mut()
+                    .filter(|connection| connection.peer_address == peer_address)
+                {
+                    connection.peer_name = Some(name.clone());
+                }
+                self.classic_remote_names
+                    .push((0, peer_address.clone(), name.clone()));
+                self.emit_device_event(DeviceEvent::RemoteName {
+                    status: 0,
+                    peer_address,
+                    name,
+                });
+            }
+            Err(error) => {
+                self.emit_device_event(DeviceEvent::RemoteNameFailure {
+                    peer_address,
+                    error,
+                });
+            }
+        }
     }
 
     pub fn authenticate_classic_on_handle(
@@ -7591,6 +7756,22 @@ impl Device {
                     status,
                     command_opcode,
                     ..
+                }) if command_opcode == bumble_hci::HCI_REMOTE_NAME_REQUEST_COMMAND => {
+                    let peer_address = self.pending_remote_name_commands.pop_front();
+                    if status != 0 {
+                        if let Some(peer_address) = peer_address {
+                            self.complete_remote_name_request(&peer_address);
+                            self.record_remote_name_result(
+                                peer_address,
+                                Err(RemoteNameError::HciStatus(status)),
+                            );
+                        }
+                    }
+                }
+                HciPacket::Event(Event::CommandStatus {
+                    status,
+                    command_opcode,
+                    ..
                 }) if status != 0
                     && matches!(
                         command_opcode,
@@ -7897,18 +8078,33 @@ impl Device {
                     bd_addr,
                     remote_name,
                 }) => {
+                    self.remove_pending_remote_name_command(&bd_addr);
+                    self.complete_remote_name_request(&bd_addr);
+                    if status != 0 {
+                        self.record_remote_name_result(
+                            bd_addr,
+                            Err(RemoteNameError::HciStatus(status)),
+                        );
+                        continue;
+                    }
                     let length = remote_name
                         .iter()
                         .position(|byte| *byte == 0)
                         .unwrap_or(remote_name.len());
-                    let name = String::from_utf8_lossy(&remote_name[..length]).into_owned();
-                    self.classic_remote_names
-                        .push((status, bd_addr.clone(), name.clone()));
-                    self.emit_device_event(DeviceEvent::RemoteName {
-                        status,
-                        peer_address: bd_addr,
-                        name,
-                    });
+                    match std::str::from_utf8(&remote_name[..length]) {
+                        Ok(name) => {
+                            self.record_remote_name_result(bd_addr, Ok(name.to_owned()));
+                        }
+                        Err(error) => {
+                            self.record_remote_name_result(
+                                bd_addr,
+                                Err(RemoteNameError::InvalidUtf8 {
+                                    valid_up_to: error.valid_up_to(),
+                                    error_len: error.error_len(),
+                                }),
+                            );
+                        }
+                    }
                 }
                 HciPacket::Event(Event::ReadRemoteSupportedFeaturesComplete {
                     status,
@@ -7997,6 +8193,7 @@ impl Device {
                                 connection_handle,
                                 role,
                                 peer_address: bd_addr,
+                                peer_name: None,
                                 encryption_enabled,
                                 encryption_key_size: 0,
                                 qos_service_type: None,

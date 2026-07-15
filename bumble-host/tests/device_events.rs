@@ -6,7 +6,7 @@ use bumble_hci::{
 };
 use bumble_host::{
     ClassicPairingEvent, Device, DeviceConnectionTransport, DeviceEvent, HostTransport,
-    LeConnectionControlEvent, LeDataLength, PeerLookupTransport,
+    LeConnectionControlEvent, LeDataLength, PeerLookupTransport, RemoteNameError,
 };
 
 fn random_address(value: &str) -> Address {
@@ -338,10 +338,9 @@ fn connection_failures_discovery_and_pairing_are_typed_device_events() {
     ));
     assert_eq!(
         events[6],
-        DeviceEvent::RemoteName {
-            status: 0x02,
+        DeviceEvent::RemoteNameFailure {
             peer_address: classic_peer,
-            name: "radio".into(),
+            error: RemoteNameError::HciStatus(0x02),
         }
     );
     assert!(!device.is_connected());
