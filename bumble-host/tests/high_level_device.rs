@@ -104,8 +104,10 @@ fn device_api_advertises_scans_connects_and_disconnects_without_raw_hci() {
     devices[0].set_random_address(&mut link, central_address);
     devices[1].set_random_address(&mut link, peripheral_address.clone());
     assert!(devices[1].start_advertising(&mut link, &[2, 0x01, 0x06, 3, 0x09, b'R', b'S']));
+    assert!(devices[1].is_advertising());
     assert!(!devices[1].start_advertising(&mut link, &[0; 32]));
     devices[0].start_scanning(&mut link, true, false);
+    assert!(devices[0].is_scanning());
     pump(&mut link, &mut devices);
 
     link.propagate_advertising();
@@ -115,9 +117,13 @@ fn device_api_advertises_scans_connects_and_disconnects_without_raw_hci() {
     assert_eq!(reports[0].address, peripheral_address);
     assert_eq!(reports[0].data, vec![2, 0x01, 0x06, 3, 0x09, b'R', b'S']);
     devices[0].stop_scanning(&mut link);
+    assert!(!devices[0].is_scanning());
 
     devices[0].connect_le(&mut link, peripheral_address.clone());
+    assert!(devices[0].is_le_connecting());
     pump(&mut link, &mut devices);
+    assert!(!devices[0].is_le_connecting());
+    assert!(!devices[1].is_advertising());
     assert!(devices[0].is_connected());
     assert!(devices[1].is_connected());
     assert_eq!(devices[0].peer_address(), Some(&peripheral_address));

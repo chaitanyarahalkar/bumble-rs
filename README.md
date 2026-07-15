@@ -3753,6 +3753,27 @@ instead of stopping at fixed-channel advertisement and raw event journals.
   positive/negative replies, Link Key notification storage, and the missing-key
   failure over `LocalLink`.
 
+## Slice 172 — what's here
+
+Configured LE privacy now owns upstream-equivalent periodic RPA rotation instead
+of leaving `le_rpa_timeout` as parsed-only configuration.
+
+- `advance_rpa_timeout` provides a deterministic, runtime-neutral clock surface
+  for the synchronous host. It arms at power-on, coalesces delayed wakes, resets
+  after each attempt, and disables cleanly for a zero timeout or power-off.
+- Due wakes generate and program a new resolvable private address from the
+  configured IRK. Manual `update_rpa` remains an explicit forced rotation API.
+- Legacy and extended advertising, legacy and extended scanning, and pending LE
+  connection initiation now have retained activity state. Scheduled rotations
+  skip all three upstream-busy conditions and wait a full interval before the
+  next attempt.
+- Successful or failed central connection completions clear initiation state;
+  peripheral connections stop legacy-advertising state, and Advertising Set
+  Terminated events retire the corresponding extended set.
+- Focused command-capture tests cover timeout boundaries, every busy condition,
+  zero-timeout disabling, power-off cancellation, valid generated RPAs, and
+  live connection-state transitions over `LocalLink`.
+
 ## Acceptance
 
 The port's contract is the upstream Python test suite, ported 1:1:

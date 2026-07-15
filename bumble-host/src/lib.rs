@@ -1529,6 +1529,11 @@ pub struct Device {
     advertisement_accumulators: BTreeMap<(u8, [u8; 6]), AdvertisementDataAccumulator>,
     advertisements: Vec<Advertisement>,
     scanning_is_passive: bool,
+    scanning: bool,
+    legacy_advertising: bool,
+    extended_advertising_handles: BTreeSet<u8>,
+    le_connecting: bool,
+    rpa_timeout_elapsed_seconds: u64,
     periodic_syncs: BTreeMap<u16, PeriodicAdvertisingSyncInfo>,
     periodic_report_accumulators: BTreeMap<u16, Vec<u8>>,
     periodic_advertisements: Vec<PeriodicAdvertisement>,
@@ -1625,6 +1630,11 @@ impl Device {
             advertisement_accumulators: BTreeMap::new(),
             advertisements: Vec::new(),
             scanning_is_passive: false,
+            scanning: false,
+            legacy_advertising: false,
+            extended_advertising_handles: BTreeSet::new(),
+            le_connecting: false,
+            rpa_timeout_elapsed_seconds: 0,
             periodic_syncs: BTreeMap::new(),
             periodic_report_accumulators: BTreeMap::new(),
             periodic_advertisements: Vec::new(),
@@ -1722,6 +1732,11 @@ impl Device {
             advertisement_accumulators: BTreeMap::new(),
             advertisements: Vec::new(),
             scanning_is_passive: false,
+            scanning: false,
+            legacy_advertising: false,
+            extended_advertising_handles: BTreeSet::new(),
+            le_connecting: false,
+            rpa_timeout_elapsed_seconds: 0,
             periodic_syncs: BTreeMap::new(),
             periodic_report_accumulators: BTreeMap::new(),
             periodic_advertisements: Vec::new(),
@@ -1879,6 +1894,11 @@ impl Device {
         };
 
         self.powered_on = false;
+        self.scanning = false;
+        self.legacy_advertising = false;
+        self.extended_advertising_handles.clear();
+        self.le_connecting = false;
+        self.rpa_timeout_elapsed_seconds = 0;
         self.public_address = None;
         self.local_channel_sounding_capabilities = None;
         self.local_channel_sounding_capabilities_status = None;
@@ -1997,12 +2017,18 @@ impl Device {
     /// Mark the host side powered off after any transport-specific flush.
     pub fn power_off(&mut self) {
         self.powered_on = false;
+        self.scanning = false;
+        self.legacy_advertising = false;
+        self.extended_advertising_handles.clear();
+        self.le_connecting = false;
+        self.rpa_timeout_elapsed_seconds = 0;
     }
 
     /// Generate and program a fresh resolvable private address.
     ///
-    /// Callers provide the scheduling policy, which keeps this synchronous host
-    /// independent of any particular async runtime.
+    /// This is the explicit, forced rotation surface. Configured periodic
+    /// rotation should be driven through [`Device::advance_rpa_timeout`], which
+    /// applies upstream's advertising/scanning/connecting suppression policy.
     pub fn update_rpa(&mut self, link: &mut LocalLink) -> Result<Address, DevicePowerError> {
         if !self.powered_on {
             return Err(DevicePowerError::NotPoweredOn);
@@ -2024,6 +2050,60 @@ impl Device {
             },
         );
         Ok(address)
+    }
+
+    /// Advance the configured periodic RPA timer by a caller-supplied duration.
+    ///
+    /// The synchronous host deliberately owns no async runtime or wall clock.
+    /// Its event loop supplies elapsed whole seconds here, and this method
+    /// performs the work of upstream's `_run_rpa_periodic_update` task. A late
+    /// wake is coalesced into one attempt and starts a fresh timeout interval,
+    /// just like a delayed async sleep. Rotation is suppressed while legacy or
+    /// extended advertising, scanning, or LE connection initiation is active.
+    /// A suppressed attempt also starts a fresh interval.
+    ///
+    /// `Ok(Some(address))` means a new RPA was submitted to the controller.
+    /// `Ok(None)` means the timer is disabled, not armed, not yet due, or the
+    /// device is currently busy.
+    pub fn advance_rpa_timeout(
+        &mut self,
+        link: &mut LocalLink,
+        elapsed_seconds: u64,
+    ) -> Result<Option<Address>, DevicePowerError> {
+        if !self.powered_on || !self.config.le_privacy_enabled || self.config.le_rpa_timeout == 0 {
+            self.rpa_timeout_elapsed_seconds = 0;
+            return Ok(None);
+        }
+
+        self.rpa_timeout_elapsed_seconds = self
+            .rpa_timeout_elapsed_seconds
+            .saturating_add(elapsed_seconds);
+        if self.rpa_timeout_elapsed_seconds < self.config.le_rpa_timeout {
+            return Ok(None);
+        }
+        self.rpa_timeout_elapsed_seconds = 0;
+
+        if self.is_advertising() || self.scanning || self.le_connecting {
+            return Ok(None);
+        }
+
+        self.update_rpa(link).map(Some)
+    }
+
+    /// Whether any legacy or extended LE advertising procedure is active.
+    pub fn is_advertising(&self) -> bool {
+        self.legacy_advertising || !self.extended_advertising_handles.is_empty()
+    }
+
+    /// Whether legacy or extended LE scanning is active.
+    pub fn is_scanning(&self) -> bool {
+        self.scanning
+    }
+
+    /// Whether this device has submitted an LE connection attempt that has not
+    /// yet completed or failed.
+    pub fn is_le_connecting(&self) -> bool {
+        self.le_connecting
     }
 
     pub fn controller_id(&self) -> usize {
@@ -2654,6 +2734,7 @@ impl Device {
                 advertising_enable: 1,
             },
         );
+        self.legacy_advertising = true;
         true
     }
 
@@ -2710,10 +2791,12 @@ impl Device {
                 advertising_enable: 1,
             },
         );
+        self.legacy_advertising = true;
         true
     }
 
     pub fn stop_advertising(&mut self, link: &mut LocalLink) {
+        self.legacy_advertising = false;
         self.send_hci_command(
             link,
             Command::LeSetAdvertisingEnable {
@@ -2776,10 +2859,12 @@ impl Device {
                 max_extended_advertising_events: vec![config.max_events],
             },
         );
+        self.extended_advertising_handles.insert(config.handle);
         true
     }
 
     pub fn stop_extended_advertising(&mut self, link: &mut LocalLink, handle: u8) {
+        self.extended_advertising_handles.remove(&handle);
         self.send_hci_command(
             link,
             Command::LeSetExtendedAdvertisingEnable {
@@ -3034,6 +3119,7 @@ impl Device {
     pub fn start_scanning(&mut self, link: &mut LocalLink, active: bool, filter_duplicates: bool) {
         self.advertisement_accumulators.clear();
         self.scanning_is_passive = !active;
+        self.scanning = true;
         self.send_hci_command(
             link,
             Command::LeSetScanParameters {
@@ -3054,6 +3140,7 @@ impl Device {
     }
 
     pub fn stop_scanning(&mut self, link: &mut LocalLink) {
+        self.scanning = false;
         self.send_hci_command(
             link,
             Command::LeSetScanEnable {
@@ -3071,6 +3158,7 @@ impl Device {
     ) {
         self.advertisement_accumulators.clear();
         self.scanning_is_passive = !active;
+        self.scanning = true;
         self.send_hci_command(
             link,
             Command::LeSetExtendedScanParameters {
@@ -3094,6 +3182,7 @@ impl Device {
     }
 
     pub fn stop_extended_scanning(&mut self, link: &mut LocalLink) {
+        self.scanning = false;
         self.send_hci_command(
             link,
             Command::LeSetExtendedScanEnable {
@@ -3141,6 +3230,7 @@ impl Device {
     }
 
     pub fn connect_le(&mut self, link: &mut LocalLink, peer_address: Address) {
+        self.le_connecting = true;
         self.send_hci_command(
             link,
             Command::LeCreateConnection {
@@ -3162,6 +3252,7 @@ impl Device {
     }
 
     pub fn connect_le_extended(&mut self, link: &mut LocalLink, peer_address: Address) {
+        self.le_connecting = true;
         self.send_hci_command(
             link,
             Command::LeExtendedCreateConnection {
@@ -5433,6 +5524,11 @@ impl Device {
         peripheral_latency: u16,
         supervision_timeout: u16,
     ) {
+        if role == bumble_controller::ROLE_CENTRAL {
+            self.le_connecting = false;
+        } else {
+            self.legacy_advertising = false;
+        }
         self.encrypted_handles.remove(&connection_handle);
         self.le_connections.insert(
             connection_handle,
@@ -5637,11 +5733,14 @@ impl Device {
                         peer_address,
                         ..
                     },
-                )) => self.emit_device_event(DeviceEvent::ConnectionFailed {
-                    transport: DeviceConnectionTransport::Le,
-                    peer_address,
-                    status,
-                }),
+                )) => {
+                    self.le_connecting = false;
+                    self.emit_device_event(DeviceEvent::ConnectionFailed {
+                        transport: DeviceConnectionTransport::Le,
+                        peer_address,
+                        status,
+                    });
+                }
                 HciPacket::Event(Event::LeMeta(LeMetaEvent::ConnectionUpdateComplete {
                     status,
                     connection_handle,
@@ -6182,6 +6281,13 @@ impl Device {
                     self.periodic_syncs.remove(&sync_handle);
                     self.periodic_report_accumulators.remove(&sync_handle);
                     self.lost_periodic_syncs.push(sync_handle);
+                }
+                HciPacket::Event(Event::LeMeta(LeMetaEvent::AdvertisingSetTerminated {
+                    advertising_handle,
+                    ..
+                })) => {
+                    self.extended_advertising_handles
+                        .remove(&advertising_handle);
                 }
                 HciPacket::Event(Event::LeMeta(LeMetaEvent::BiginfoAdvertisingReport {
                     sync_handle,

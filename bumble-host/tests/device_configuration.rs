@@ -4,9 +4,9 @@ use bumble::{Address, AddressType};
 use bumble_controller::{Controller, LocalLink};
 use bumble_hci::{AclDataPacket, Command, HciPacket, IsoDataPacket};
 use bumble_host::{
-    pump, Device, DeviceConfiguration, DeviceConfigurationError, DevicePowerError, HostTransport,
-    DEVICE_DEFAULT_ADDRESS, DEVICE_DEFAULT_ADVERTISING_INTERVAL, DEVICE_DEFAULT_LE_RPA_TIMEOUT,
-    DEVICE_DEFAULT_NAME,
+    pump, Device, DeviceConfiguration, DeviceConfigurationError, DevicePowerError,
+    ExtendedAdvertisingConfig, HostTransport, DEVICE_DEFAULT_ADDRESS,
+    DEVICE_DEFAULT_ADVERTISING_INTERVAL, DEVICE_DEFAULT_LE_RPA_TIMEOUT, DEVICE_DEFAULT_NAME,
 };
 use bumble_smp::verify_resolvable_private_address;
 
@@ -41,6 +41,14 @@ impl HostTransport for CapturingTransport {
     fn drain_host_events(&mut self, _controller_id: usize) -> Vec<HciPacket> {
         Vec::new()
     }
+}
+
+fn programmed_rpa_count(transport: &CapturingTransport) -> usize {
+    transport
+        .commands
+        .iter()
+        .filter(|(_, command)| matches!(command, Command::LeSetRandomAddress { .. }))
+        .count()
 }
 
 #[test]
@@ -309,6 +317,110 @@ fn privacy_and_optional_le_features_follow_power_on_configuration() {
             random_address: rotated,
         }
     );
+}
+
+#[test]
+fn configured_rpa_timeout_rotates_and_suppresses_busy_wakes() {
+    let irk = [
+        0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE,
+        0xFF,
+    ];
+    let config = DeviceConfiguration {
+        irk: irk.to_vec(),
+        le_privacy_enabled: true,
+        le_rpa_timeout: 10,
+        ..DeviceConfiguration::default()
+    };
+    let mut device = Device::from_config(0, config).unwrap();
+    let mut transport = CapturingTransport::default();
+    device.power_on(&mut transport).unwrap();
+
+    assert_eq!(device.advance_rpa_timeout(&mut transport, 9).unwrap(), None);
+    let rotated = device
+        .advance_rpa_timeout(&mut transport, 1)
+        .unwrap()
+        .expect("the configured timeout should rotate the RPA");
+    assert!(verify_resolvable_private_address(&irk, &rotated));
+    assert_eq!(device.random_address(), &rotated);
+
+    assert_eq!(programmed_rpa_count(&transport), 2);
+
+    assert!(device.start_advertising(&mut transport, &[]));
+    assert!(device.is_advertising());
+    assert_eq!(
+        device.advance_rpa_timeout(&mut transport, 10).unwrap(),
+        None
+    );
+    assert_eq!(programmed_rpa_count(&transport), 2);
+    device.stop_advertising(&mut transport);
+    assert!(!device.is_advertising());
+
+    device.start_scanning(&mut transport, false, false);
+    assert!(device.is_scanning());
+    assert_eq!(
+        device.advance_rpa_timeout(&mut transport, 10).unwrap(),
+        None
+    );
+    assert_eq!(programmed_rpa_count(&transport), 2);
+    device.stop_scanning(&mut transport);
+    assert!(!device.is_scanning());
+
+    let extended = ExtendedAdvertisingConfig::connectable_scannable(
+        3,
+        Address::parse("C0:11:22:33:44:66", AddressType::RANDOM_DEVICE).unwrap(),
+    );
+    assert!(device.start_extended_advertising(&mut transport, &extended, &[], &[]));
+    assert!(device.is_advertising());
+    assert_eq!(
+        device.advance_rpa_timeout(&mut transport, 10).unwrap(),
+        None
+    );
+    assert_eq!(programmed_rpa_count(&transport), 2);
+    device.stop_extended_advertising(&mut transport, extended.handle);
+    assert!(!device.is_advertising());
+
+    device.connect_le(
+        &mut transport,
+        Address::parse("C0:11:22:33:44:77", AddressType::RANDOM_DEVICE).unwrap(),
+    );
+    assert!(device.is_le_connecting());
+    assert_eq!(
+        device.advance_rpa_timeout(&mut transport, 10).unwrap(),
+        None
+    );
+    assert_eq!(programmed_rpa_count(&transport), 2);
+
+    device.power_off();
+    assert!(!device.is_le_connecting());
+    assert_eq!(
+        device
+            .advance_rpa_timeout(&mut transport, u64::MAX)
+            .unwrap(),
+        None
+    );
+    assert_eq!(programmed_rpa_count(&transport), 2);
+}
+
+#[test]
+fn zero_rpa_timeout_disables_periodic_rotation() {
+    let config = DeviceConfiguration {
+        le_privacy_enabled: true,
+        le_rpa_timeout: 0,
+        ..DeviceConfiguration::default()
+    };
+    let mut device = Device::from_config(0, config).unwrap();
+    let mut transport = CapturingTransport::default();
+    device.power_on(&mut transport).unwrap();
+
+    let original_address = device.random_address().clone();
+    assert_eq!(
+        device
+            .advance_rpa_timeout(&mut transport, u64::MAX)
+            .unwrap(),
+        None
+    );
+    assert_eq!(device.random_address(), &original_address);
+    assert_eq!(programmed_rpa_count(&transport), 1);
 }
 
 #[test]
