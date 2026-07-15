@@ -87,6 +87,111 @@ pub const L2CAP_SIGNALING_CID: u16 = 0x0001;
 /// The signaling channel identifier used for LE L2CAP.
 pub const L2CAP_LE_SIGNALING_CID: u16 = 0x0005;
 
+/// Default MTU advertised for connectionless L2CAP data, matching upstream.
+pub const L2CAP_DEFAULT_CONNECTIONLESS_MTU: u16 = 1024;
+
+pub const INFORMATION_TYPE_CONNECTIONLESS_MTU: u16 = 0x0001;
+pub const INFORMATION_TYPE_EXTENDED_FEATURES_SUPPORTED: u16 = 0x0002;
+pub const INFORMATION_TYPE_FIXED_CHANNELS_SUPPORTED: u16 = 0x0003;
+pub const INFORMATION_RESULT_SUCCESS: u16 = 0x0000;
+pub const INFORMATION_RESULT_NOT_SUPPORTED: u16 = 0x0001;
+
+/// Local values returned to a peer's L2CAP Information Request.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InformationCapabilities {
+    connectionless_mtu: u16,
+    extended_features: u32,
+    fixed_channels: u64,
+}
+
+impl Default for InformationCapabilities {
+    fn default() -> Self {
+        Self {
+            connectionless_mtu: L2CAP_DEFAULT_CONNECTIONLESS_MTU,
+            extended_features: 0,
+            fixed_channels: (1_u64 << L2CAP_SIGNALING_CID) | (1_u64 << L2CAP_LE_SIGNALING_CID),
+        }
+    }
+}
+
+impl InformationCapabilities {
+    pub fn new(extended_features: impl IntoIterator<Item = u16>) -> Self {
+        Self {
+            extended_features: extended_features.into_iter().map(u32::from).sum(),
+            ..Self::default()
+        }
+    }
+
+    pub fn connectionless_mtu(&self) -> u16 {
+        self.connectionless_mtu
+    }
+
+    pub fn set_connectionless_mtu(&mut self, connectionless_mtu: u16) {
+        self.connectionless_mtu = connectionless_mtu;
+    }
+
+    pub fn extended_features(&self) -> u32 {
+        self.extended_features
+    }
+
+    pub fn fixed_channels(&self) -> u64 {
+        self.fixed_channels
+    }
+
+    pub fn register_fixed_channel(&mut self, cid: u16) -> Result<()> {
+        if cid >= 64 {
+            return Err(Error::InvalidPacket(format!(
+                "fixed channel CID {cid:#06x} cannot be represented in the information mask"
+            )));
+        }
+        self.fixed_channels |= 1_u64 << cid;
+        Ok(())
+    }
+
+    pub fn deregister_fixed_channel(&mut self, cid: u16) -> bool {
+        if cid >= 64 {
+            return false;
+        }
+        let bit = 1_u64 << cid;
+        let was_registered = self.fixed_channels & bit != 0;
+        self.fixed_channels &= !bit;
+        was_registered
+    }
+
+    fn response(&self, identifier: u8, info_type: u16) -> ControlFrame {
+        let (result, data) = match info_type {
+            INFORMATION_TYPE_CONNECTIONLESS_MTU => (
+                INFORMATION_RESULT_SUCCESS,
+                self.connectionless_mtu.to_le_bytes().to_vec(),
+            ),
+            INFORMATION_TYPE_EXTENDED_FEATURES_SUPPORTED => (
+                INFORMATION_RESULT_SUCCESS,
+                self.extended_features.to_le_bytes().to_vec(),
+            ),
+            INFORMATION_TYPE_FIXED_CHANNELS_SUPPORTED => (
+                INFORMATION_RESULT_SUCCESS,
+                self.fixed_channels.to_le_bytes().to_vec(),
+            ),
+            _ => (INFORMATION_RESULT_NOT_SUPPORTED, Vec::new()),
+        };
+        ControlFrame::InformationResponse {
+            identifier,
+            info_type,
+            result,
+            data,
+        }
+    }
+}
+
+/// A peer's completed L2CAP Information Response.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InformationResponse {
+    pub identifier: u8,
+    pub info_type: u16,
+    pub result: u16,
+    pub data: Vec<u8>,
+}
+
 pub const CONNECTION_SUCCESSFUL: u16 = 0x0000;
 pub const CONNECTION_PENDING: u16 = 0x0001;
 pub const CONNECTION_REFUSED_PSM_NOT_SUPPORTED: u16 = 0x0002;

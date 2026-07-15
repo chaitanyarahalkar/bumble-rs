@@ -41,13 +41,14 @@ use bumble_hci::{
 };
 use bumble_l2cap::{
     ChannelManager as ClassicChannelManager, ClassicChannel, ClassicChannelSpec,
-    Error as L2capError, L2capPdu, LeCreditBasedChannel, LeCreditBasedChannelSpec,
-    LeCreditChannelManager, L2CAP_LE_PSM_DYNAMIC_RANGE_END, L2CAP_LE_PSM_DYNAMIC_RANGE_START,
-    L2CAP_LE_SIGNALING_CID, L2CAP_SIGNALING_CID,
+    Error as L2capError, InformationCapabilities, InformationResponse, L2capPdu,
+    LeCreditBasedChannel, LeCreditBasedChannelSpec, LeCreditChannelManager,
+    L2CAP_LE_PSM_DYNAMIC_RANGE_END, L2CAP_LE_PSM_DYNAMIC_RANGE_START, L2CAP_LE_SIGNALING_CID,
+    L2CAP_SIGNALING_CID,
 };
 use bumble_smp::{
     ManagedPairingState, PairingConnection, PairingFailureReason, PairingManager, PairingRole,
-    PairingState, ScPairingState, SmpPdu,
+    PairingState, ScPairingState, SmpPdu, SMP_BR_CID,
 };
 
 mod configuration;
@@ -1775,6 +1776,22 @@ impl Device {
         self.static_address = config.address.clone();
         self.random_address = config.address.clone();
         self.config = config;
+    }
+
+    fn l2cap_information_capabilities(&self) -> InformationCapabilities {
+        let mut capabilities =
+            InformationCapabilities::new(self.config.l2cap_extended_features.iter().copied());
+        for cid in [ATT_CID, SMP_CID] {
+            capabilities
+                .register_fixed_channel(cid)
+                .expect("built-in fixed L2CAP CID fits the information mask");
+        }
+        if self.config.classic_smp_enabled {
+            capabilities
+                .register_fixed_channel(SMP_BR_CID)
+                .expect("BR/EDR SMP fixed CID fits the information mask");
+        }
+        capabilities
     }
 
     fn initialize_memory_key_store(&mut self) {
@@ -4074,6 +4091,7 @@ impl Device {
         peer_address: Address,
         role: u8,
     ) {
+        self.set_pending_classic_role(peer_address.clone(), role);
         self.send_hci_command(
             link,
             Command::AcceptConnectionRequest {
@@ -4207,6 +4225,43 @@ impl Device {
             self.acl_packet_queue.enqueue(packet, handle);
         }
         self.flush_acl_queue(link)
+    }
+
+    /// Send an L2CAP Information Request on the signaling channel appropriate
+    /// for an established BR/EDR or LE connection.
+    pub fn request_l2cap_information(
+        &mut self,
+        link: &mut LocalLink,
+        connection_handle: u16,
+        info_type: u16,
+    ) -> bumble_l2cap::Result<u8> {
+        if let Some(manager) = self.classic_channel_managers.get_mut(&connection_handle) {
+            let identifier = manager.request_information(info_type);
+            self.flush_classic_channel_manager(link, connection_handle)?;
+            return Ok(identifier);
+        }
+        if let Some(manager) = self.le_credit_managers.get_mut(&connection_handle) {
+            let identifier = manager.request_information(info_type);
+            self.flush_le_credit_manager(link, connection_handle)?;
+            return Ok(identifier);
+        }
+        Err(L2capError::InvalidPacket(format!(
+            "unknown connection handle {connection_handle:#06x}"
+        )))
+    }
+
+    /// Drain peer Information Responses received on one logical link.
+    pub fn take_l2cap_information_responses(
+        &mut self,
+        connection_handle: u16,
+    ) -> Vec<InformationResponse> {
+        if let Some(manager) = self.classic_channel_managers.get_mut(&connection_handle) {
+            return manager.drain_information_responses();
+        }
+        self.le_credit_managers
+            .get_mut(&connection_handle)
+            .map(LeCreditChannelManager::drain_information_responses)
+            .unwrap_or_default()
     }
 
     pub fn le_credit_channel(
@@ -5253,7 +5308,9 @@ impl Device {
                     .push((connection_handle, error.to_string()));
             }
         }
-        let mut manager = LeCreditChannelManager::new();
+        let mut manager = LeCreditChannelManager::with_information_capabilities(
+            self.l2cap_information_capabilities(),
+        );
         for spec in self.le_credit_server_specs.values().copied() {
             manager
                 .register_server(spec)
@@ -6760,7 +6817,9 @@ impl Device {
                         } else {
                             self.encrypted_handles.remove(&connection_handle);
                         }
-                        let mut manager = ClassicChannelManager::new();
+                        let mut manager = ClassicChannelManager::with_information_capabilities(
+                            self.l2cap_information_capabilities(),
+                        );
                         for (psm, spec) in &self.classic_channel_server_specs {
                             manager
                                 .register_server(Some(*psm), *spec)
@@ -6820,7 +6879,11 @@ impl Device {
                     link_type,
                 }) => {
                     if link_type == 1 {
-                        self.classic_connection_requests.push(bd_addr.clone());
+                        if self.config.classic_enabled && self.config.classic_accept_any {
+                            self.accept_classic(link, bd_addr.clone());
+                        } else {
+                            self.classic_connection_requests.push(bd_addr.clone());
+                        }
                     } else {
                         self.synchronous_requests.push((bd_addr.clone(), link_type));
                     }

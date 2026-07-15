@@ -8,9 +8,10 @@ use std::collections::{BTreeMap, VecDeque};
 
 use crate::{
     crc_16, decode_configuration_options, encode_configuration_options, ConfigurationOption,
-    ControlFrame, Error, ErtmConfig, ErtmEngine, L2capPdu, Result, CONFIGURATION_OPTION_FCS,
-    CONFIGURATION_OPTION_MTU, CONFIGURATION_OPTION_RETRANSMISSION_AND_FLOW_CONTROL,
-    CONFIGURATION_SUCCESS, CONFIGURATION_UNACCEPTABLE_PARAMETERS, CONFIGURATION_UNKNOWN_OPTIONS,
+    ControlFrame, Error, ErtmConfig, ErtmEngine, InformationCapabilities, InformationResponse,
+    L2capPdu, Result, CONFIGURATION_OPTION_FCS, CONFIGURATION_OPTION_MTU,
+    CONFIGURATION_OPTION_RETRANSMISSION_AND_FLOW_CONTROL, CONFIGURATION_SUCCESS,
+    CONFIGURATION_UNACCEPTABLE_PARAMETERS, CONFIGURATION_UNKNOWN_OPTIONS,
     CONNECTION_REFUSED_NO_RESOURCES_AVAILABLE, CONNECTION_REFUSED_PSM_NOT_SUPPORTED,
     CONNECTION_SUCCESSFUL, L2CAP_SIGNALING_CID,
 };
@@ -193,12 +194,42 @@ pub struct ChannelManager {
     channels: BTreeMap<u16, ClassicChannel>,
     accepted_channels: VecDeque<u16>,
     outbound: VecDeque<L2capPdu>,
+    information: InformationCapabilities,
+    information_responses: VecDeque<InformationResponse>,
     identifier: u8,
 }
 
 impl ChannelManager {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn with_information_capabilities(information: InformationCapabilities) -> Self {
+        Self {
+            information,
+            ..Self::default()
+        }
+    }
+
+    pub fn information_capabilities(&self) -> &InformationCapabilities {
+        &self.information
+    }
+
+    pub fn request_information(&mut self, info_type: u16) -> u8 {
+        let identifier = self.next_identifier();
+        self.queue_control(ControlFrame::InformationRequest {
+            identifier,
+            info_type,
+        });
+        identifier
+    }
+
+    pub fn poll_information_response(&mut self) -> Option<InformationResponse> {
+        self.information_responses.pop_front()
+    }
+
+    pub fn drain_information_responses(&mut self) -> Vec<InformationResponse> {
+        self.information_responses.drain(..).collect()
     }
 
     /// Register a Classic PSM. Passing `None` allocates the first valid dynamic
@@ -443,6 +474,31 @@ impl ChannelManager {
                 source_cid,
                 ..
             } => self.on_disconnection_response(destination_cid, source_cid),
+            ControlFrame::EchoRequest { identifier, data } => {
+                self.queue_control(ControlFrame::EchoResponse { identifier, data });
+                Ok(())
+            }
+            ControlFrame::InformationRequest {
+                identifier,
+                info_type,
+            } => {
+                self.queue_control(self.information.response(identifier, info_type));
+                Ok(())
+            }
+            ControlFrame::InformationResponse {
+                identifier,
+                info_type,
+                result,
+                data,
+            } => {
+                self.information_responses.push_back(InformationResponse {
+                    identifier,
+                    info_type,
+                    result,
+                    data,
+                });
+                Ok(())
+            }
             _ => Ok(()),
         }
     }

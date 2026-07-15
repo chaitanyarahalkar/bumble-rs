@@ -3706,6 +3706,29 @@ complete LE bond lifecycle.
   persisted bonds. A separate live test proves configured power-on loads a
   stored peer IRK and resolves an identity-targeted connection to its RPA.
 
+## Slice 170 — what's here
+
+Configured Classic admission and L2CAP information signaling now drive live
+runtime behavior instead of remaining parsed-only configuration.
+
+- A Classic-enabled device with `classic_accept_any` accepts incoming ACL
+  requests as a peripheral without an application round trip. Disabling the
+  option retains the request for explicit `accept_classic`; both paths now
+  preserve the requested role in established connection state.
+- Classic and LE signaling managers answer Connectionless MTU, Extended
+  Features Supported, and Fixed Channels Supported requests with upstream's
+  exact payload widths and return `NOT_SUPPORTED` for unknown information
+  types. Echo requests are reflected on both signaling transports.
+- `l2cap_extended_features` becomes the advertised 32-bit mask. Fixed-channel
+  responses include BR/EDR and LE signaling, ATT, LE SMP, and configured
+  BR/EDR SMP; the connectionless MTU retains upstream's 1024-byte default.
+- Both manager layers can initiate information requests and retain typed
+  responses. `Device::request_l2cap_information` selects the correct signaling
+  channel by connection handle and exposes responses through a drainable API.
+- Focused manager and live `LocalLink` tests cover Classic auto-accept on/off,
+  Classic and LE capability exchange, fixed-channel masks, unknown types, and
+  echo reflection.
+
 ## Acceptance
 
 The port's contract is the upstream Python test suite, ported 1:1:
