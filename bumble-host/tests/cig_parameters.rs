@@ -38,7 +38,7 @@ impl HostTransport for CaptureTransport {
 }
 
 #[test]
-fn upstream_cis_defaults_and_unidirectional_normalization_are_exact() {
+fn upstream_cis_defaults_and_unidirectional_rtn_normalization_are_exact() {
     let defaults = CisParameters::new(1);
     assert_eq!(defaults.max_sdu_c_to_p, DEFAULT_ISO_CIS_MAX_SDU);
     assert_eq!(defaults.max_sdu_p_to_c, DEFAULT_ISO_CIS_MAX_SDU);
@@ -82,8 +82,8 @@ fn upstream_cis_defaults_and_unidirectional_normalization_are_exact() {
             cis_id: vec![2, 3],
             max_sdu_c_to_p: vec![DEFAULT_ISO_CIS_MAX_SDU, 0],
             max_sdu_p_to_c: vec![0, DEFAULT_ISO_CIS_MAX_SDU],
-            phy_c_to_p: vec![0x02, 0],
-            phy_p_to_c: vec![0, 0x02],
+            phy_c_to_p: vec![0x02, 0x03],
+            phy_p_to_c: vec![0x03, 0x02],
             rtn_c_to_p: vec![DEFAULT_ISO_CIS_RTN, 0],
             rtn_p_to_c: vec![0, DEFAULT_ISO_CIS_RTN],
         }

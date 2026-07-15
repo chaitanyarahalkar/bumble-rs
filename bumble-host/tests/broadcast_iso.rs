@@ -10,6 +10,27 @@ fn address(value: &str) -> Address {
 }
 
 #[test]
+fn big_command_status_failure_releases_the_reserved_handle() {
+    let mut link = LocalLink::new();
+    let controller_id =
+        link.add_controller(Controller::new("source", address("00:00:00:00:00:01")));
+    let mut device = Device::new(controller_id);
+    let parameters = BigParameters::new(7, 4, 1);
+
+    // The Device accepts this shape, but the controller rejects it because
+    // advertising set 4 has not been configured and enabled.
+    assert!(device.create_big(&mut link, parameters.clone()));
+    assert!(device.is_big_pending(7));
+    assert!(!device.create_big(&mut link, parameters.clone()));
+    pump(&mut link, std::slice::from_mut(&mut device));
+
+    assert!(!device.is_big_pending(7));
+    assert!(device.big_bis_handles(7).is_none());
+    assert_eq!(device.take_big_errors(), vec![(7, 0x12)]);
+    assert!(device.create_big(&mut link, parameters));
+}
+
+#[test]
 fn encrypted_big_fans_bis_sdus_out_to_synchronized_receivers() {
     let broadcast_address = address("C4:F2:17:1A:1D:D0");
     let mut link = LocalLink::new();
@@ -70,9 +91,13 @@ fn encrypted_big_fans_bis_sdus_out_to_synchronized_receivers() {
 
     let mut wrong_parameters = BigSyncParameters::new(3, second_sync, vec![1]);
     wrong_parameters.broadcast_code = Some(*b"wrong-code!!!!!!");
-    assert!(devices[2].create_big_sync(&mut link, wrong_parameters));
+    assert!(devices[2].create_big_sync(&mut link, wrong_parameters.clone()));
+    assert!(devices[2].is_big_sync_pending(3));
+    assert!(!devices[2].create_big_sync(&mut link, wrong_parameters));
     link.propagate_advertising();
     pump(&mut link, &mut devices);
+    assert!(!devices[2].is_big_sync_pending(3));
+    assert!(devices[2].big_sync_bis_handles(3).is_none());
     assert_eq!(devices[2].take_big_errors(), vec![(3, 0x3D)]);
 
     let mut second_parameters = BigSyncParameters::new(3, second_sync, vec![1]);

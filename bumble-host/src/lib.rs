@@ -1145,19 +1145,18 @@ impl CisParameters {
         }
     }
 
-    /// Apply upstream's mandatory unidirectional normalization.
+    /// Apply upstream's unidirectional retransmission normalization.
     ///
-    /// Controllers reject a zero-sized direction when its PHY or retransmission
-    /// count remains nonzero. Python Bumble performs this in `__post_init__`;
-    /// Rust applies it again when the containing CIG is serialized so later
-    /// field updates cannot reintroduce an invalid combination.
+    /// A zero-sized direction forces RTN to zero for compatibility with older
+    /// controller firmware, while its configured PHY remains valid. Python
+    /// Bumble performs this in `__post_init__`; Rust applies it again when the
+    /// containing CIG is serialized so later field updates cannot reintroduce
+    /// a nonzero RTN.
     pub const fn normalized(mut self) -> Self {
         if self.max_sdu_c_to_p == 0 {
-            self.phy_c_to_p = 0;
             self.rtn_c_to_p = 0;
         }
         if self.max_sdu_p_to_c == 0 {
-            self.phy_p_to_c = 0;
             self.rtn_p_to_c = 0;
         }
         self
@@ -1589,7 +1588,11 @@ pub struct Device {
     iso_tx_syncs: BTreeMap<u16, IsoTxSyncInfo>,
     iso_control_events: Vec<IsoControlEvent>,
     bigs: BTreeMap<u8, Vec<u16>>,
+    pending_bigs: BTreeSet<u8>,
+    pending_big_commands: VecDeque<u8>,
     big_syncs: BTreeMap<u8, Vec<u16>>,
+    pending_big_syncs: BTreeSet<u8>,
+    pending_big_sync_commands: VecDeque<u8>,
     bis_directions: BTreeMap<u16, u8>,
     biginfo_reports: Vec<BigInfoReport>,
     big_errors: Vec<(u8, u8)>,
@@ -1706,7 +1709,11 @@ impl Device {
             iso_tx_syncs: BTreeMap::new(),
             iso_control_events: Vec::new(),
             bigs: BTreeMap::new(),
+            pending_bigs: BTreeSet::new(),
+            pending_big_commands: VecDeque::new(),
             big_syncs: BTreeMap::new(),
+            pending_big_syncs: BTreeSet::new(),
+            pending_big_sync_commands: VecDeque::new(),
             bis_directions: BTreeMap::new(),
             biginfo_reports: Vec::new(),
             big_errors: Vec::new(),
@@ -1823,7 +1830,11 @@ impl Device {
             iso_tx_syncs: BTreeMap::new(),
             iso_control_events: Vec::new(),
             bigs: BTreeMap::new(),
+            pending_bigs: BTreeSet::new(),
+            pending_big_commands: VecDeque::new(),
             big_syncs: BTreeMap::new(),
+            pending_big_syncs: BTreeSet::new(),
+            pending_big_sync_commands: VecDeque::new(),
             bis_directions: BTreeMap::new(),
             biginfo_reports: Vec::new(),
             big_errors: Vec::new(),
@@ -2114,6 +2125,10 @@ impl Device {
         self.peer_lookup_results.clear();
         self.peer_lookup_started_scanning = None;
         self.peer_lookup_started_discovery = false;
+        self.pending_bigs.clear();
+        self.pending_big_commands.clear();
+        self.pending_big_syncs.clear();
+        self.pending_big_sync_commands.clear();
         self.send_hci_command(link, Command::Reset);
         self.send_hci_command(link, Command::ReadBdAddr);
         self.send_hci_command(
@@ -2250,6 +2265,10 @@ impl Device {
         self.peer_lookup_results.clear();
         self.peer_lookup_started_scanning = None;
         self.peer_lookup_started_discovery = false;
+        self.pending_bigs.clear();
+        self.pending_big_commands.clear();
+        self.pending_big_syncs.clear();
+        self.pending_big_sync_commands.clear();
     }
 
     /// Generate and program a fresh resolvable private address.
@@ -4337,7 +4356,9 @@ impl Device {
     pub fn create_big(&mut self, link: &mut LocalLink, parameters: BigParameters) -> bool {
         if parameters.big_handle > 0xEF
             || self.bigs.contains_key(&parameters.big_handle)
+            || self.pending_bigs.contains(&parameters.big_handle)
             || self.big_syncs.contains_key(&parameters.big_handle)
+            || self.pending_big_syncs.contains(&parameters.big_handle)
             || parameters.num_bis == 0
             || parameters.num_bis > 31
             || !(0xFF..=0x00FF_FFFF).contains(&parameters.sdu_interval)
@@ -4351,6 +4372,8 @@ impl Device {
         {
             return false;
         }
+        self.pending_bigs.insert(parameters.big_handle);
+        self.pending_big_commands.push_back(parameters.big_handle);
         let encrypted = parameters.broadcast_code.is_some();
         self.send_hci_command(
             link,
@@ -4384,6 +4407,10 @@ impl Device {
         self.bigs.get(&big_handle).map(Vec::as_slice)
     }
 
+    pub fn is_big_pending(&self, big_handle: u8) -> bool {
+        self.pending_bigs.contains(&big_handle)
+    }
+
     /// Start receiver synchronization to selected BIS indices. The periodic
     /// sync must already exist and BIGInfo must subsequently arrive over it.
     pub fn create_big_sync(&mut self, link: &mut LocalLink, parameters: BigSyncParameters) -> bool {
@@ -4392,7 +4419,9 @@ impl Device {
         unique_bis.dedup();
         if parameters.big_handle > 0xEF
             || self.bigs.contains_key(&parameters.big_handle)
+            || self.pending_bigs.contains(&parameters.big_handle)
             || self.big_syncs.contains_key(&parameters.big_handle)
+            || self.pending_big_syncs.contains(&parameters.big_handle)
             || !self.periodic_syncs.contains_key(&parameters.sync_handle)
             || parameters.bis.is_empty()
             || parameters.bis.len() > 31
@@ -4403,6 +4432,9 @@ impl Device {
         {
             return false;
         }
+        self.pending_big_syncs.insert(parameters.big_handle);
+        self.pending_big_sync_commands
+            .push_back(parameters.big_handle);
         let encrypted = parameters.broadcast_code.is_some();
         self.send_hci_command(
             link,
@@ -4429,6 +4461,10 @@ impl Device {
 
     pub fn big_sync_bis_handles(&self, big_handle: u8) -> Option<&[u16]> {
         self.big_syncs.get(&big_handle).map(Vec::as_slice)
+    }
+
+    pub fn is_big_sync_pending(&self, big_handle: u8) -> bool {
+        self.pending_big_syncs.contains(&big_handle)
     }
 
     pub fn established_bis_handles(&self) -> impl Iterator<Item = u16> + '_ {
@@ -6929,6 +6965,14 @@ impl Device {
                     connection_handle,
                     ..
                 })) => {
+                    self.pending_bigs.remove(&big_handle);
+                    if let Some(index) = self
+                        .pending_big_commands
+                        .iter()
+                        .position(|pending| *pending == big_handle)
+                    {
+                        self.pending_big_commands.remove(index);
+                    }
                     if status == 0 {
                         for handle in &connection_handle {
                             self.bis_directions.insert(*handle, 0);
@@ -6936,6 +6980,7 @@ impl Device {
                         }
                         self.bigs.insert(big_handle, connection_handle);
                     } else {
+                        self.bigs.remove(&big_handle);
                         self.big_errors.push((big_handle, status));
                     }
                 }
@@ -6956,6 +7001,14 @@ impl Device {
                     connection_handle,
                     ..
                 })) => {
+                    self.pending_big_syncs.remove(&big_handle);
+                    if let Some(index) = self
+                        .pending_big_sync_commands
+                        .iter()
+                        .position(|pending| *pending == big_handle)
+                    {
+                        self.pending_big_sync_commands.remove(index);
+                    }
                     if status == 0 {
                         for handle in &connection_handle {
                             self.bis_directions.insert(*handle, 1);
@@ -6963,6 +7016,7 @@ impl Device {
                         }
                         self.big_syncs.insert(big_handle, connection_handle);
                     } else {
+                        self.big_syncs.remove(&big_handle);
                         self.big_errors.push((big_handle, status));
                     }
                 }
@@ -7447,6 +7501,35 @@ impl Device {
                             command_opcode,
                             status,
                         });
+                }
+                HciPacket::Event(Event::CommandStatus {
+                    status,
+                    command_opcode,
+                    ..
+                }) if matches!(
+                    command_opcode,
+                    bumble_hci::HCI_LE_CREATE_BIG_COMMAND
+                        | bumble_hci::HCI_LE_BIG_CREATE_SYNC_COMMAND
+                ) =>
+                {
+                    let pending_handle = if command_opcode == bumble_hci::HCI_LE_CREATE_BIG_COMMAND
+                    {
+                        self.pending_big_commands.pop_front()
+                    } else {
+                        self.pending_big_sync_commands.pop_front()
+                    };
+                    if status != 0 {
+                        if let Some(big_handle) = pending_handle {
+                            if command_opcode == bumble_hci::HCI_LE_CREATE_BIG_COMMAND {
+                                self.pending_bigs.remove(&big_handle);
+                                self.bigs.remove(&big_handle);
+                            } else {
+                                self.pending_big_syncs.remove(&big_handle);
+                                self.big_syncs.remove(&big_handle);
+                            }
+                            self.big_errors.push((big_handle, status));
+                        }
+                    }
                 }
                 HciPacket::Event(Event::CommandComplete {
                     command_opcode,
