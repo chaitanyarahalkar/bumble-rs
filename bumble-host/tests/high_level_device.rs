@@ -119,7 +119,7 @@ fn device_api_advertises_scans_connects_and_disconnects_without_raw_hci() {
     devices[0].stop_scanning(&mut link);
     assert!(!devices[0].is_scanning());
 
-    devices[0].connect_le(&mut link, peripheral_address.clone());
+    assert!(devices[0].connect_le(&mut link, peripheral_address.clone()));
     assert!(devices[0].is_le_connecting());
     pump(&mut link, &mut devices);
     assert!(!devices[0].is_le_connecting());
@@ -131,10 +131,54 @@ fn device_api_advertises_scans_connects_and_disconnects_without_raw_hci() {
     assert_eq!(devices[1].connection_role(), Some(1));
 
     assert!(devices[0].disconnect(&mut link, 0x13));
+    assert!(devices[0].is_disconnecting());
+    assert!(devices[0]
+        .is_disconnecting_on_handle(devices[0].connection_handle().expect("connected handle")));
     pump(&mut link, &mut devices);
+    assert!(!devices[0].is_disconnecting());
     assert!(!devices[0].is_connected());
     assert!(!devices[1].is_connected());
     devices[1].stop_advertising(&mut link);
+}
+
+#[test]
+fn device_rejects_overlapping_le_attempts_and_cancels_pending_connection() {
+    let central_address = address("C4:F2:17:1A:1D:AA");
+    let peripheral_address = address("C4:F2:17:1A:1D:BB");
+    let other_address = address("C4:F2:17:1A:1D:CC");
+    let mut link = LocalLink::new();
+    let central_id = link.add_controller(Controller::new(
+        "central",
+        public_address("00:00:00:00:00:01/P"),
+    ));
+    let peripheral_id = link.add_controller(Controller::new(
+        "peripheral",
+        public_address("00:00:00:00:00:02/P"),
+    ));
+    let mut devices = [Device::new(central_id), Device::new(peripheral_id)];
+    devices[0].set_random_address(&mut link, central_address);
+    devices[1].set_random_address(&mut link, peripheral_address.clone());
+
+    assert!(devices[0].connect_le(&mut link, peripheral_address.clone()));
+    assert!(devices[0].is_le_connecting());
+    assert!(!devices[0].connect_le(&mut link, other_address));
+    assert!(link.controller(central_id).is_initiating());
+
+    assert!(devices[0].cancel_le_connection(&mut link));
+    assert!(!devices[0].is_le_connecting());
+    assert!(!link.controller(central_id).is_initiating());
+    assert!(!devices[0].cancel_le_connection(&mut link));
+
+    assert!(devices[1].start_advertising(&mut link, &[]));
+    link.establish_connections();
+    pump(&mut link, &mut devices);
+    assert!(!devices[0].is_connected());
+    assert!(!devices[1].is_connected());
+
+    assert!(devices[0].connect_le_extended(&mut link, peripheral_address));
+    pump(&mut link, &mut devices);
+    assert!(devices[0].is_connected());
+    assert!(devices[1].is_connected());
 }
 
 #[test]

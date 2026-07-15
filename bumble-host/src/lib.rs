@@ -1521,6 +1521,7 @@ pub struct Device {
     connection_feature_errors: Vec<ConnectionFeatureError>,
     connection_control_events: Vec<LeConnectionControlEvent>,
     pending_connection_controls: BTreeMap<u16, VecDeque<u16>>,
+    pending_disconnections: BTreeSet<u16>,
     device_events: Vec<DeviceEvent>,
     event_listeners: BTreeMap<DeviceEventListenerId, DeviceEventListener>,
     next_event_listener_id: DeviceEventListenerId,
@@ -1625,6 +1626,7 @@ impl Device {
             connection_feature_errors: Vec::new(),
             connection_control_events: Vec::new(),
             pending_connection_controls: BTreeMap::new(),
+            pending_disconnections: BTreeSet::new(),
             device_events: Vec::new(),
             event_listeners: BTreeMap::new(),
             next_event_listener_id: 1,
@@ -1730,6 +1732,7 @@ impl Device {
             connection_feature_errors: Vec::new(),
             connection_control_events: Vec::new(),
             pending_connection_controls: BTreeMap::new(),
+            pending_disconnections: BTreeSet::new(),
             device_events: Vec::new(),
             event_listeners: BTreeMap::new(),
             next_event_listener_id: 1,
@@ -1914,6 +1917,7 @@ impl Device {
         self.rpa_timeout_elapsed_seconds = 0;
         self.classic_discovering = false;
         self.classic_auto_restart_inquiry = true;
+        self.pending_disconnections.clear();
         self.public_address = None;
         self.local_channel_sounding_capabilities = None;
         self.local_channel_sounding_capabilities_status = None;
@@ -2041,6 +2045,7 @@ impl Device {
         self.rpa_timeout_elapsed_seconds = 0;
         self.classic_discovering = false;
         self.classic_auto_restart_inquiry = true;
+        self.pending_disconnections.clear();
     }
 
     /// Generate and program a fresh resolvable private address.
@@ -3248,7 +3253,10 @@ impl Device {
         std::mem::take(&mut self.periodic_sync_transfers)
     }
 
-    pub fn connect_le(&mut self, link: &mut LocalLink, peer_address: Address) {
+    pub fn connect_le(&mut self, link: &mut LocalLink, peer_address: Address) -> bool {
+        if self.le_connecting {
+            return false;
+        }
         self.le_connecting = true;
         self.send_hci_command(
             link,
@@ -3268,9 +3276,13 @@ impl Device {
             },
         );
         link.establish_connections();
+        true
     }
 
-    pub fn connect_le_extended(&mut self, link: &mut LocalLink, peer_address: Address) {
+    pub fn connect_le_extended(&mut self, link: &mut LocalLink, peer_address: Address) -> bool {
+        if self.le_connecting {
+            return false;
+        }
         self.le_connecting = true;
         self.send_hci_command(
             link,
@@ -3291,6 +3303,29 @@ impl Device {
             },
         );
         link.establish_connections();
+        true
+    }
+
+    /// Cancel a pending LE connection attempt. Returns `false` when no LE
+    /// connection procedure is active.
+    pub fn cancel_le_connection(&mut self, link: &mut LocalLink) -> bool {
+        if !self.le_connecting {
+            return false;
+        }
+        self.send_hci_command(link, Command::LeCreateConnectionCancel);
+        self.le_connecting = false;
+        true
+    }
+
+    /// Submit the BR/EDR Create Connection Cancel command for a peer. As in
+    /// upstream Bumble, the controller decides whether that peer is pending.
+    pub fn cancel_classic_connection(&mut self, link: &mut LocalLink, peer_address: Address) {
+        self.send_hci_command(
+            link,
+            Command::CreateConnectionCancel {
+                bd_addr: peer_address,
+            },
+        );
     }
 
     pub fn is_encrypted(&self) -> bool {
@@ -4343,7 +4378,11 @@ impl Device {
         connection_handle: u16,
         reason: u8,
     ) -> bool {
-        link.disconnect(self.controller_id, connection_handle, reason)
+        if !link.disconnect(self.controller_id, connection_handle, reason) {
+            return false;
+        }
+        self.pending_disconnections.insert(connection_handle);
+        true
     }
 
     /// Disconnect the current connection with the given reason. Both this device
@@ -4353,7 +4392,17 @@ impl Device {
         let Some(handle) = self.connection_handle else {
             return false;
         };
-        link.disconnect(self.controller_id, handle, reason)
+        self.disconnect_handle(link, handle, reason)
+    }
+
+    /// Whether any submitted disconnection is awaiting a completion event.
+    pub fn is_disconnecting(&self) -> bool {
+        !self.pending_disconnections.is_empty()
+    }
+
+    /// Whether one handle has a submitted disconnection awaiting completion.
+    pub fn is_disconnecting_on_handle(&self, connection_handle: u16) -> bool {
+        self.pending_disconnections.contains(&connection_handle)
     }
 
     /// `true` if this device has an attribute server (server role).
@@ -6930,6 +6979,7 @@ impl Device {
                     connection_handle,
                     reason,
                 }) => {
+                    self.pending_disconnections.remove(&connection_handle);
                     let known_connection = self.le_connections.contains_key(&connection_handle)
                         || self.classic_connections.contains_key(&connection_handle)
                         || self.cis_links.contains_key(&connection_handle)

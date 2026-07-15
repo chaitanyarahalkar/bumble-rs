@@ -232,6 +232,13 @@ fn discoverable_and_connectable_update_eir_and_scan_bits() {
         transport.commands[4],
         (3, Command::WriteScanEnable { scan_enable: 1 })
     );
+
+    let peer = address("44:44:44:44:44:44");
+    device.cancel_classic_connection(&mut transport, peer.clone());
+    assert_eq!(
+        transport.commands[5],
+        (3, Command::CreateConnectionCancel { bd_addr: peer })
+    );
 }
 
 #[test]

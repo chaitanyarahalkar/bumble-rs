@@ -277,6 +277,46 @@ fn no_connection_without_matching_advertiser() {
     assert!(link.controller(central).is_initiating());
 }
 
+#[test]
+fn pending_le_connection_can_be_cancelled() {
+    let mut link = LocalLink::new();
+    let central = link.add_controller(Controller::new("C", addr("00:00:00:00:00:01")));
+    let peripheral = link.add_controller(Controller::new("P", addr("00:00:00:00:00:02")));
+    let target = addr("C4:F2:17:1A:1D:BB");
+
+    link.handle_command(central, create_connection(&target));
+    let _ = link.drain_host_events(central);
+    assert!(link.controller(central).is_initiating());
+
+    link.handle_command(central, Command::LeCreateConnectionCancel);
+    assert!(!link.controller(central).is_initiating());
+    assert_eq!(
+        link.drain_host_events(central),
+        vec![HciPacket::Event(Event::CommandComplete {
+            num_hci_command_packets: 1,
+            command_opcode: bumble_hci::HCI_LE_CREATE_CONNECTION_CANCEL_COMMAND,
+            return_parameters: ReturnParameters::Status { status: 0 },
+        })]
+    );
+
+    link.handle_command(
+        peripheral,
+        Command::LeSetRandomAddress {
+            random_address: target,
+        },
+    );
+    link.handle_command(
+        peripheral,
+        Command::LeSetAdvertisingEnable {
+            advertising_enable: 1,
+        },
+    );
+    let _ = link.drain_host_events(peripheral);
+    link.establish_connections();
+    assert!(link.controller(central).connections().is_empty());
+    assert!(link.controller(peripheral).connections().is_empty());
+}
+
 /// Reset acknowledges with a status-only Command Complete and clears state.
 #[test]
 fn reset_acknowledges_and_clears_state() {

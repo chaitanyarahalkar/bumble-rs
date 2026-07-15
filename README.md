@@ -147,6 +147,7 @@ crate whose behavior is verified against the upstream Python.
 | 171. Configured Classic SMP and CTKD | `bumble-host` + `bumble-smp` | ✅ Link Key reuse/persistence + BR/EDR SMP routing + two-party CTKD green |
 | 172. Configured periodic RPA rotation | `bumble-host` | ✅ runtime-neutral timer + advertising/scanning/connecting suppression green |
 | 173. Classic discovery and visibility controls | `bumble-host` | ✅ inquiry start/stop/auto-restart + retained EIR + live scan-bit updates green |
+| 174. Connection cancellation and disconnect state | `bumble-controller` + `bumble-host` | ✅ overlap rejection + LE/Classic cancel + per-handle completion state green |
 | 103+. Repository completion audit and remaining gaps | workspace | in progress |
 
 The LE lifecycle is now complete end-to-end through library APIs: **connect →
@@ -3796,6 +3797,26 @@ controls instead of only recording inquiry events submitted by raw HCI callers.
   Complete Local Name field from the configured name.
 - Command-capture tests pin the full discovery sequence, restart and one-shot
   state transitions, synthesized/custom EIR payloads, and all scan-bit values.
+
+## Slice 174 — what's here
+
+High-level connection procedures now retain upstream's pending/cancellation
+state instead of relying on the controller to reject overlapping raw commands.
+
+- Legacy and extended `connect_le` return whether a procedure was submitted and
+  reject a second attempt while one is pending, matching upstream's explicit
+  `connection already pending` guard without requiring exceptions.
+- `cancel_le_connection` submits LE Create Connection Cancel, clears Device
+  initiation state, and the software controller now clears its pending target.
+  A peer that begins advertising afterward cannot complete the cancelled link.
+- `cancel_classic_connection` exposes the corresponding peer-addressed BR/EDR
+  command while preserving upstream's controller-decided result boundary.
+- `disconnect` and `disconnect_handle` retain every submitted handle until its
+  Disconnection Complete event. Global and handle-scoped queries clear on both
+  success and failure; a failed completion leaves the connection intact.
+- Focused controller and live two-device tests cover pending cancellation,
+  overlap rejection, extended reconnect, successful disconnection, and the
+  non-destructive failure path.
 
 ## Acceptance
 

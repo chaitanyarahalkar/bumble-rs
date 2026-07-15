@@ -180,6 +180,52 @@ fn listeners_observe_post_state_events_and_failed_disconnects_preserve_state() {
 }
 
 #[test]
+fn failed_disconnection_clears_pending_state_without_removing_connection() {
+    let handle = 0x0041;
+    let peer = random_address("C0:00:00:00:00:03");
+    let mut transport = ScriptedTransport {
+        events: vec![HciPacket::Event(Event::LeMeta(
+            LeMetaEvent::ConnectionComplete {
+                status: 0,
+                connection_handle: handle,
+                role: 0,
+                peer_address_type: 1,
+                peer_address: peer,
+                connection_interval: 24,
+                peripheral_latency: 0,
+                supervision_timeout: 72,
+                central_clock_accuracy: 0,
+            },
+        ))],
+    };
+    let mut device = Device::new(0);
+    assert!(device.poll(&mut transport));
+
+    assert!(device.disconnect_handle(&mut transport, handle, 0x13));
+    assert!(device.is_disconnecting());
+    assert!(device.is_disconnecting_on_handle(handle));
+    transport
+        .events
+        .push(HciPacket::Event(Event::DisconnectionComplete {
+            status: 0x0C,
+            connection_handle: handle,
+            reason: 0x13,
+        }));
+    assert!(device.poll(&mut transport));
+
+    assert!(!device.is_disconnecting());
+    assert!(!device.is_disconnecting_on_handle(handle));
+    assert!(device.is_connected_on_handle(handle));
+    assert_eq!(
+        device.take_device_events().last(),
+        Some(&DeviceEvent::DisconnectionFailed {
+            connection_handle: handle,
+            status: 0x0C,
+        })
+    );
+}
+
+#[test]
 fn connection_failures_discovery_and_pairing_are_typed_device_events() {
     let le_peer = random_address("C0:00:00:00:00:11");
     let classic_peer = random_address("C0:00:00:00:00:22");

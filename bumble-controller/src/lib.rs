@@ -852,6 +852,10 @@ impl Controller {
                     command_opcode: op_code,
                 }));
             }
+            Command::LeCreateConnectionCancel => {
+                self.initiating = None;
+                self.ack(op_code, HCI_SUCCESS);
+            }
             Command::LeSetRandomAddress { random_address } => {
                 self.random_address = random_address;
                 self.ack(op_code, HCI_SUCCESS);
