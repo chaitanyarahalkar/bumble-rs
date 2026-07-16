@@ -4876,8 +4876,14 @@ impl LocalLink {
         });
 
         if let Some((i, handle)) = destination {
+            // Controller->host direction: the first fragment of an L2CAP PDU
+            // must carry PB=0b10 ("first automatically flushable", Vol 4,
+            // Part E - 5.4.2); hosts like NimBLE silently drop PB=0b00 here.
+            // Matches the Python controller, which delivers with pb_flag=2.
+            let pb_flag = if packet.pb_flag == 0b01 { 0b01 } else { 0b10 };
             self.controllers[i].deliver_acl_packet(AclDataPacket {
                 connection_handle: handle,
+                pb_flag,
                 ..packet
             });
             self.controllers[from].complete_acl_packets(connection_handle, 1);
