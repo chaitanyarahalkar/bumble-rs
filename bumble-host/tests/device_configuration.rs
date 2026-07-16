@@ -4,10 +4,11 @@ use bumble::{Address, AddressType};
 use bumble_controller::{Controller, LocalLink};
 use bumble_hci::{AclDataPacket, Command, HciPacket, IsoDataPacket};
 use bumble_host::{
-    pump, Device, DeviceConfiguration, DeviceConfigurationError, DevicePowerError,
-    ExtendedAdvertisingConfig, HostTransport, LePhyError, DEVICE_DEFAULT_ADDRESS,
+    pump, ControllerBufferInfo, Device, DeviceConfiguration, DeviceConfigurationError,
+    DevicePowerError, ExtendedAdvertisingConfig, HostTransport, LePhyError, DEVICE_DEFAULT_ADDRESS,
     DEVICE_DEFAULT_ADVERTISING_INTERVAL, DEVICE_DEFAULT_LE_RPA_TIMEOUT, DEVICE_DEFAULT_NAME,
-    LE_1M_PHY, LE_2M_PHY, LE_CODED_PHY,
+    HOST_EVENT_MASK, HOST_EVENT_MASK_PAGE_2, HOST_LE_EVENT_MASK, LE_1M_PHY, LE_2M_PHY,
+    LE_CODED_PHY,
 };
 use bumble_smp::verify_resolvable_private_address;
 
@@ -533,6 +534,34 @@ fn configured_power_on_is_live_against_the_software_controller() {
     assert_eq!(device.local_le_features_status(), Some(0));
     assert_eq!(device.local_le_features().unwrap().len(), 248);
     assert_eq!(device.local_le_features_max_page(), Some(1));
+    assert!(device.host_initialization_complete());
+    assert!(device.host_initialization_succeeded());
+    assert_eq!(device.event_mask_status(), Some(0));
+    assert_eq!(device.event_mask_page_2_status(), Some(0));
+    assert_eq!(device.le_event_mask_status(), Some(0));
+    assert_eq!(device.classic_buffer_status(), Some(0));
+    assert_eq!(
+        device.classic_acl_buffer(),
+        Some(ControllerBufferInfo {
+            data_packet_length: 27,
+            total_num_data_packets: 64,
+        })
+    );
+    assert_eq!(device.le_buffer_status(), Some(0));
+    assert_eq!(
+        device.le_acl_buffer(),
+        Some(ControllerBufferInfo {
+            data_packet_length: 27,
+            total_num_data_packets: 64,
+        })
+    );
+    assert_eq!(
+        device.iso_buffer(),
+        Some(ControllerBufferInfo {
+            data_packet_length: 960,
+            total_num_data_packets: 64,
+        })
+    );
     assert!(device.supports_le_features(&[12, 32, 38, 47, 73]));
     assert!(device.supports_le_extended_advertising());
     assert!(!device.supports_le_periodic_advertising());
@@ -549,6 +578,9 @@ fn configured_power_on_is_live_against_the_software_controller() {
     assert_eq!(capabilities.max_consecutive_procedures_supported, 16);
     assert_eq!(capabilities.roles_supported, 3);
     let controller = link.controller(controller_id);
+    assert_eq!(controller.event_mask(), HOST_EVENT_MASK);
+    assert_eq!(controller.event_mask_page_2(), HOST_EVENT_MASK_PAGE_2);
+    assert_eq!(controller.le_event_mask(), HOST_LE_EVENT_MASK);
     assert_eq!(controller.name, "Powered");
     assert_eq!(controller.random_address(), &random);
     assert_eq!(controller.class_of_device(), 0x654321);

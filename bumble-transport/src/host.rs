@@ -9,7 +9,10 @@ use bumble_hci::{
     AclDataPacket, Command, Event, HciPacket, IsoDataPacket, ReturnParameters,
     SynchronousDataPacket,
 };
-use bumble_host::{ClassicPairingEvent, Device, HostTransport};
+use bumble_host::{
+    ClassicPairingEvent, Device, HostTransport, HOST_EVENT_MASK, HOST_EVENT_MASK_PAGE_2,
+    HOST_LE_EVENT_MASK, HOST_LE_EVENT_MASK_LEGACY,
+};
 use bumble_l2cap::LeCreditBasedChannelSpec;
 use bumble_smp::{
     security_request, AcceptAllDelegate, AuthReq, ClassicCtkdState, IoCapability,
@@ -19,12 +22,6 @@ use bumble_smp::{
 use std::collections::VecDeque;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, TryRecvError};
 use std::time::{Duration, Instant};
-
-/// Upstream host event mask: all host events consumed by Bumble, including
-/// Classic connection, SSP, link-key, synchronous-audio, and LE Meta events.
-const HOST_EVENT_MASK: [u8; 8] = [0xFF, 0x9F, 0xFF, 0xBF, 0x07, 0xF8, 0xBF, 0x3D];
-/// Enable Encryption Change V2 (event code 0x59, page-2 bit 25).
-const HOST_EVENT_MASK_PAGE_2: [u8; 8] = [0, 0, 0, 2, 0, 0, 0, 0];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ExternalHostState {
@@ -1642,18 +1639,15 @@ impl ExternalHost {
                 timeout,
             )?;
         }
-        if supported_names.contains(&"HCI_LE_SET_EVENT_MASK_COMMAND") {
-            self.send_successful_command(
-                Command::LeSetEventMask {
-                    le_event_mask: event_mask(&[
-                        0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x0A, 0x0C, 0x0D, 0x0E, 0x0F,
-                        0x10, 0x18, 0x19, 0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x22, 0x23, 0x24, 0x25,
-                        0x26, 0x29,
-                    ]),
-                },
-                timeout,
-            )?;
-        }
+        let le_event_mask = if local_version
+            .as_ref()
+            .is_some_and(|version| version.hci_version <= 6)
+        {
+            HOST_LE_EVENT_MASK_LEGACY
+        } else {
+            HOST_LE_EVENT_MASK
+        };
+        self.send_successful_command(Command::LeSetEventMask { le_event_mask }, timeout)?;
 
         let mut info = ExternalControllerInfo {
             supported_commands,
@@ -1832,19 +1826,6 @@ impl ExternalHost {
         }
         true
     }
-}
-
-fn event_mask(event_codes: &[u8]) -> [u8; 8] {
-    let mut mask = [0; 8];
-    for event_code in event_codes
-        .iter()
-        .copied()
-        .filter(|code| (1..=64).contains(code))
-    {
-        let bit = usize::from(event_code - 1);
-        mask[bit / 8] |= 1 << (bit % 8);
-    }
-    mask
 }
 
 impl HostTransport for ExternalHost {
@@ -2294,6 +2275,7 @@ mod tests {
                 _ => None,
             })
             .expect("LE event mask command");
+        assert_eq!(le_event_mask, HOST_LE_EVENT_MASK);
         for subevent in [0x1B_u8, 0x1C, 0x1D, 0x1E, 0x22] {
             let bit = usize::from(subevent - 1);
             assert_ne!(
@@ -2331,6 +2313,12 @@ mod tests {
                 Command::SetEventMask { event_mask: [0; 8] },
                 ReturnParameters::Status { status: 0 },
             ),
+            command_complete(
+                Command::LeSetEventMask {
+                    le_event_mask: [0; 8],
+                },
+                ReturnParameters::Status { status: 0 },
+            ),
         ];
         let sink = RecordingSink::default();
         let recorded = sink.clone();
@@ -2358,8 +2346,68 @@ mod tests {
                 Command::ReadLocalSupportedCommands.op_code(),
                 Command::LeReadAllLocalSupportedFeatures.op_code(),
                 Command::SetEventMask { event_mask: [0; 8] }.op_code(),
+                Command::LeSetEventMask {
+                    le_event_mask: [0; 8]
+                }
+                .op_code(),
             ]
         );
+        assert!(recorded.0.lock().unwrap().iter().any(|packet| matches!(
+            packet,
+            HciPacket::Command(Command::LeSetEventMask { le_event_mask })
+                if *le_event_mask == HOST_LE_EVENT_MASK
+        )));
+    }
+
+    #[test]
+    fn initialization_uses_the_legacy_le_mask_for_bluetooth_4_0() {
+        let mut supported_commands = [0; 64];
+        supported_commands[14] = 1 << 3;
+        let responses = vec![
+            command_complete(Command::Reset, ReturnParameters::Status { status: 0 }),
+            command_complete(
+                Command::ReadLocalSupportedCommands,
+                ReturnParameters::ReadLocalSupportedCommands {
+                    status: 0,
+                    supported_commands,
+                },
+            ),
+            command_complete(
+                Command::ReadLocalVersionInformation,
+                ReturnParameters::ReadLocalVersionInformation {
+                    status: 0,
+                    hci_version: 6,
+                    hci_subversion: 0x0102,
+                    lmp_version: 6,
+                    company_identifier: 0x00E0,
+                    lmp_subversion: 0x0304,
+                },
+            ),
+            command_complete(
+                Command::SetEventMask { event_mask: [0; 8] },
+                ReturnParameters::Status { status: 0 },
+            ),
+            command_complete(
+                Command::LeSetEventMask {
+                    le_event_mask: [0; 8],
+                },
+                ReturnParameters::Status { status: 0 },
+            ),
+        ];
+        let sink = RecordingSink::default();
+        let recorded = sink.clone();
+        let mut host = ExternalHost::new(split(responses, sink));
+        let mut device = Device::new(0);
+
+        let info = host
+            .initialize_device(&mut device, Duration::from_secs(1))
+            .unwrap();
+        assert_eq!(info.local_version.unwrap().hci_version, 6);
+        assert!(recorded.0.lock().unwrap().iter().any(|packet| matches!(
+            packet,
+            HciPacket::Command(Command::LeSetEventMask { le_event_mask })
+                if *le_event_mask == HOST_LE_EVENT_MASK_LEGACY
+        )));
     }
 
     #[test]

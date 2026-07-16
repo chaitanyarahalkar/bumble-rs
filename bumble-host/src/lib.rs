@@ -84,6 +84,15 @@ pub const LE_FEATURE_PERIODIC_ADVERTISING: u8 = 13;
 pub const LMP_FEATURE_INTERLACED_INQUIRY_SCAN: u16 = 28;
 pub const LMP_FEATURE_INTERLACED_PAGE_SCAN: u16 = 29;
 
+/// Classic event mask installed by upstream `Host.reset`.
+pub const HOST_EVENT_MASK: [u8; 8] = [0xFF, 0x9F, 0xFF, 0xBF, 0x07, 0xF8, 0xBF, 0x3D];
+/// Page-2 event mask enabling Encryption Change V2.
+pub const HOST_EVENT_MASK_PAGE_2: [u8; 8] = [0, 0, 0, 2, 0, 0, 0, 0];
+/// Complete LE Meta event mask installed for controllers newer than Bluetooth 4.0.
+pub const HOST_LE_EVENT_MASK: [u8; 8] = [0xFF, 0xFF, 0xF7, 0xFF, 0x0F, 0xED, 0x7B, 0x00];
+/// Conservative LE Meta event mask used for Bluetooth 4.0 and older controllers.
+pub const HOST_LE_EVENT_MASK_LEGACY: [u8; 8] = [0x1F, 0, 0, 0, 0, 0, 0, 0];
+
 fn advertising_interval_units(milliseconds: f64) -> Option<u16> {
     let units = (milliseconds / 0.625).trunc();
     (milliseconds.is_finite() && (0x0020 as f64..=0x4000 as f64).contains(&units))
@@ -675,6 +684,13 @@ pub struct LocalVersionInformation {
     pub lmp_version: u8,
     pub company_identifier: u16,
     pub lmp_subversion: u16,
+}
+
+/// One controller-owned HCI packet pool learned during Host reset.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ControllerBufferInfo {
+    pub data_packet_length: u16,
+    pub total_num_data_packets: u16,
 }
 
 /// Host-owned metadata for one established LE ACL connection.
@@ -1586,6 +1602,16 @@ pub struct Device {
     local_le_features: Option<Vec<u8>>,
     local_le_features_max_page: Option<u8>,
     local_le_features_status: Option<u8>,
+    host_initialization_started: bool,
+    host_initialization_complete: bool,
+    event_mask_status: Option<u8>,
+    event_mask_page_2_status: Option<u8>,
+    le_event_mask_status: Option<u8>,
+    classic_buffer_status: Option<u8>,
+    classic_acl_buffer: Option<ControllerBufferInfo>,
+    le_buffer_status: Option<u8>,
+    le_acl_buffer: Option<ControllerBufferInfo>,
+    iso_buffer: Option<ControllerBufferInfo>,
     local_channel_sounding_capabilities: Option<ChannelSoundingCapabilities>,
     local_channel_sounding_capabilities_status: Option<u8>,
     controller_id: usize,
@@ -1691,6 +1717,10 @@ pub struct Device {
     acl_data_packet_length: usize,
     acl_assemblers: BTreeMap<u16, AclDataPacketAssembler>,
     acl_packet_queue: DataPacketQueue<AclDataPacket>,
+    le_acl_data_packet_length: Option<usize>,
+    le_acl_packet_queue: Option<DataPacketQueue<AclDataPacket>>,
+    iso_data_packet_length: Option<usize>,
+    iso_packet_queue: Option<DataPacketQueue<IsoDataPacket>>,
     encrypted_handles: BTreeSet<u16>,
 }
 
@@ -1716,6 +1746,16 @@ impl Device {
             local_le_features: None,
             local_le_features_max_page: None,
             local_le_features_status: None,
+            host_initialization_started: false,
+            host_initialization_complete: false,
+            event_mask_status: None,
+            event_mask_page_2_status: None,
+            le_event_mask_status: None,
+            classic_buffer_status: None,
+            classic_acl_buffer: None,
+            le_buffer_status: None,
+            le_acl_buffer: None,
+            iso_buffer: None,
             local_channel_sounding_capabilities: None,
             local_channel_sounding_capabilities_status: None,
             controller_id,
@@ -1820,6 +1860,10 @@ impl Device {
             acl_data_packet_length: 27,
             acl_assemblers: BTreeMap::new(),
             acl_packet_queue: DataPacketQueue::new(64).expect("nonzero ACL queue capacity"),
+            le_acl_data_packet_length: None,
+            le_acl_packet_queue: None,
+            iso_data_packet_length: None,
+            iso_packet_queue: None,
             encrypted_handles: BTreeSet::new(),
         }
     }
@@ -1846,6 +1890,16 @@ impl Device {
             local_le_features: None,
             local_le_features_max_page: None,
             local_le_features_status: None,
+            host_initialization_started: false,
+            host_initialization_complete: false,
+            event_mask_status: None,
+            event_mask_page_2_status: None,
+            le_event_mask_status: None,
+            classic_buffer_status: None,
+            classic_acl_buffer: None,
+            le_buffer_status: None,
+            le_acl_buffer: None,
+            iso_buffer: None,
             local_channel_sounding_capabilities: None,
             local_channel_sounding_capabilities_status: None,
             controller_id,
@@ -1950,6 +2004,10 @@ impl Device {
             acl_data_packet_length: 27,
             acl_assemblers: BTreeMap::new(),
             acl_packet_queue: DataPacketQueue::new(64).expect("nonzero ACL queue capacity"),
+            le_acl_data_packet_length: None,
+            le_acl_packet_queue: None,
+            iso_data_packet_length: None,
+            iso_packet_queue: None,
             encrypted_handles: BTreeSet::new(),
         }
     }
@@ -2066,6 +2124,70 @@ impl Device {
         self.local_version_status
     }
 
+    /// Whether every reset-time event-mask and advertised buffer command has completed.
+    pub fn host_initialization_complete(&self) -> bool {
+        self.host_initialization_complete
+    }
+
+    /// Whether reset-time event-mask and buffer initialization completed successfully.
+    pub fn host_initialization_succeeded(&self) -> bool {
+        if !self.host_initialization_complete
+            || self.event_mask_status != Some(0)
+            || self.le_event_mask_status != Some(0)
+        {
+            return false;
+        }
+        if self.supports_command_name("HCI_SET_EVENT_MASK_PAGE_2_COMMAND")
+            && self.event_mask_page_2_status != Some(0)
+        {
+            return false;
+        }
+        if self.supports_command_name("HCI_READ_BUFFER_SIZE_COMMAND")
+            && self.classic_buffer_status != Some(0)
+        {
+            return false;
+        }
+        if (self.supports_command_name("HCI_LE_READ_BUFFER_SIZE_V2_COMMAND")
+            || self.supports_command_name("HCI_LE_READ_BUFFER_SIZE_COMMAND"))
+            && self.le_buffer_status != Some(0)
+        {
+            return false;
+        }
+        true
+    }
+
+    pub fn event_mask_status(&self) -> Option<u8> {
+        self.event_mask_status
+    }
+
+    pub fn event_mask_page_2_status(&self) -> Option<u8> {
+        self.event_mask_page_2_status
+    }
+
+    pub fn le_event_mask_status(&self) -> Option<u8> {
+        self.le_event_mask_status
+    }
+
+    pub fn classic_buffer_status(&self) -> Option<u8> {
+        self.classic_buffer_status
+    }
+
+    pub fn classic_acl_buffer(&self) -> Option<ControllerBufferInfo> {
+        self.classic_acl_buffer
+    }
+
+    pub fn le_buffer_status(&self) -> Option<u8> {
+        self.le_buffer_status
+    }
+
+    pub fn le_acl_buffer(&self) -> Option<ControllerBufferInfo> {
+        self.le_acl_buffer
+    }
+
+    pub fn iso_buffer(&self) -> Option<ControllerBufferInfo> {
+        self.iso_buffer
+    }
+
     /// One local LMP feature page learned during reset.
     pub fn local_lmp_feature_page(&self, page_number: u8) -> Option<&[u8; 8]> {
         self.local_lmp_features.get(&page_number)
@@ -2092,6 +2214,137 @@ impl Device {
         features
             .iter()
             .all(|feature| self.supports_lmp_feature(*feature))
+    }
+
+    fn supports_command_name(&self, command_name: &str) -> bool {
+        self.local_supported_commands
+            .as_ref()
+            .is_some_and(|commands| {
+                bumble_hci::metadata::supported_command_names(commands).contains(&command_name)
+            })
+    }
+
+    fn capability_discovery_complete(&self) -> bool {
+        if self.local_supported_commands.is_none() {
+            return false;
+        }
+        if self.supports_command_name("HCI_READ_LOCAL_VERSION_INFORMATION_COMMAND")
+            && self.local_version_status.is_none()
+        {
+            return false;
+        }
+        if (self.supports_command_name("HCI_LE_READ_ALL_LOCAL_SUPPORTED_FEATURES_COMMAND")
+            || self.supports_command_name("HCI_LE_READ_LOCAL_SUPPORTED_FEATURES_COMMAND"))
+            && self.local_le_features_status.is_none()
+        {
+            return false;
+        }
+        if self.supports_command_name("HCI_READ_LOCAL_EXTENDED_FEATURES_COMMAND") {
+            if !self.pending_local_lmp_feature_pages.is_empty()
+                || self.local_lmp_feature_statuses.is_empty()
+            {
+                return false;
+            }
+            if self
+                .local_lmp_feature_statuses
+                .values()
+                .any(|status| *status != 0)
+            {
+                return true;
+            }
+            let Some(maximum_page_number) = self.local_lmp_features_max_page else {
+                return false;
+            };
+            if !(0..=maximum_page_number)
+                .all(|page_number| self.local_lmp_feature_statuses.contains_key(&page_number))
+            {
+                return false;
+            }
+        } else if self.supports_command_name("HCI_READ_LOCAL_SUPPORTED_FEATURES_COMMAND")
+            && !self.local_lmp_feature_statuses.contains_key(&0)
+        {
+            return false;
+        }
+        true
+    }
+
+    fn maybe_start_host_initialization(&mut self, link: &mut LocalLink) {
+        if self.host_initialization_started || !self.capability_discovery_complete() {
+            return;
+        }
+        self.host_initialization_started = true;
+        self.send_hci_command(
+            link,
+            Command::SetEventMask {
+                event_mask: HOST_EVENT_MASK,
+            },
+        );
+        if self.supports_command_name("HCI_SET_EVENT_MASK_PAGE_2_COMMAND") {
+            self.send_hci_command(
+                link,
+                Command::SetEventMaskPage2 {
+                    event_mask_page_2: HOST_EVENT_MASK_PAGE_2,
+                },
+            );
+        }
+        let le_event_mask = if self
+            .local_version
+            .is_some_and(|version| version.hci_version <= 6)
+        {
+            HOST_LE_EVENT_MASK_LEGACY
+        } else {
+            HOST_LE_EVENT_MASK
+        };
+        self.send_hci_command(link, Command::LeSetEventMask { le_event_mask });
+        if self.supports_command_name("HCI_READ_BUFFER_SIZE_COMMAND") {
+            self.send_hci_command(link, Command::ReadBufferSize);
+        }
+        if self.supports_command_name("HCI_LE_READ_BUFFER_SIZE_V2_COMMAND") {
+            self.send_hci_command(link, Command::LeReadBufferSizeV2);
+        } else if self.supports_command_name("HCI_LE_READ_BUFFER_SIZE_COMMAND") {
+            self.send_hci_command(link, Command::LeReadBufferSize);
+        }
+    }
+
+    fn maybe_finish_host_initialization(&mut self, link: &mut LocalLink) {
+        if !self.host_initialization_started
+            || self.host_initialization_complete
+            || self.event_mask_status.is_none()
+            || self.le_event_mask_status.is_none()
+            || (self.supports_command_name("HCI_SET_EVENT_MASK_PAGE_2_COMMAND")
+                && self.event_mask_page_2_status.is_none())
+            || (self.supports_command_name("HCI_READ_BUFFER_SIZE_COMMAND")
+                && self.classic_buffer_status.is_none())
+            || ((self.supports_command_name("HCI_LE_READ_BUFFER_SIZE_V2_COMMAND")
+                || self.supports_command_name("HCI_LE_READ_BUFFER_SIZE_COMMAND"))
+                && self.le_buffer_status.is_none())
+        {
+            return;
+        }
+        self.host_initialization_complete = true;
+        if self.host_initialization_succeeded() {
+            self.apply_supported_classic_scan_types(link);
+        }
+    }
+
+    fn clear_host_initialization_state(&mut self) {
+        self.host_initialization_started = false;
+        self.host_initialization_complete = false;
+        self.event_mask_status = None;
+        self.event_mask_page_2_status = None;
+        self.le_event_mask_status = None;
+        self.classic_buffer_status = None;
+        self.classic_acl_buffer = None;
+        self.le_buffer_status = None;
+        self.le_acl_buffer = None;
+        self.iso_buffer = None;
+        self.acl_data_packet_length = 27;
+        self.acl_packet_queue =
+            DataPacketQueue::new(64).expect("nonzero default ACL queue capacity");
+        self.le_acl_data_packet_length = None;
+        self.le_acl_packet_queue = None;
+        self.iso_data_packet_length = None;
+        self.iso_packet_queue = None;
     }
 
     fn request_local_lmp_feature_page(&mut self, link: &mut LocalLink, page_number: u8) {
@@ -2268,6 +2521,12 @@ impl Device {
         self.pending_channel_sounding_configs.clear();
         self.acl_assemblers.clear();
         self.acl_packet_queue.flush_all();
+        if let Some(queue) = self.le_acl_packet_queue.as_mut() {
+            queue.flush_all();
+        }
+        if let Some(queue) = self.iso_packet_queue.as_mut() {
+            queue.flush_all();
+        }
         self.encrypted_handles.clear();
         self.le_connecting = false;
 
@@ -2355,6 +2614,7 @@ impl Device {
         self.local_le_features = None;
         self.local_le_features_max_page = None;
         self.local_le_features_status = None;
+        self.clear_host_initialization_state();
         self.address_resolver = None;
         self.local_channel_sounding_capabilities = None;
         self.local_channel_sounding_capabilities_status = None;
@@ -2515,6 +2775,7 @@ impl Device {
         self.local_le_features = None;
         self.local_le_features_max_page = None;
         self.local_le_features_status = None;
+        self.clear_host_initialization_state();
         self.send_hci_command(link, Command::Reset);
         self.send_hci_command(link, Command::ReadLocalSupportedCommands);
     }
@@ -4282,6 +4543,11 @@ impl Device {
     /// Whether all host-to-controller ACL packets queued for this connection
     /// have been acknowledged by controller flow control.
     pub fn acl_output_is_drained(&self, connection_handle: u16) -> bool {
+        if self.le_connections.contains_key(&connection_handle) {
+            if let Some(queue) = self.le_acl_packet_queue.as_ref() {
+                return queue.is_drained(connection_handle);
+            }
+        }
         self.acl_packet_queue.is_drained(connection_handle)
     }
 
@@ -5019,21 +5285,27 @@ impl Device {
     }
 
     /// Fragment and send one ISO SDU through an established CIS or broadcaster
-    /// BIS. The 960-byte controller packet size and first-fragment SDU-info
-    /// overhead match upstream Bumble's software-controller defaults.
+    /// BIS. Reset-time V2 buffer discovery supplies the packet size and flow
+    /// window; the software-controller default remains the pre-reset fallback.
     pub fn send_iso_sdu(&mut self, link: &mut LocalLink, iso_handle: u16, sdu: &[u8]) -> bool {
-        const ISO_PACKET_LENGTH: usize = 960;
+        const DEFAULT_ISO_PACKET_LENGTH: usize = 960;
         const SDU_INFO_LENGTH: usize = 4;
         let can_send = self.cis_links.contains_key(&iso_handle)
             || self.bis_directions.get(&iso_handle) == Some(&0);
         if !can_send || sdu.len() > 0x0FFF {
             return false;
         }
+        let packet_length = self
+            .iso_data_packet_length
+            .unwrap_or(DEFAULT_ISO_PACKET_LENGTH);
+        if packet_length <= SDU_INFO_LENGTH {
+            return false;
+        }
         let sequence = *self.iso_sequence_numbers.entry(iso_handle).or_default();
         let mut offset = 0;
         loop {
             let first = offset == 0;
-            let capacity = ISO_PACKET_LENGTH - if first { SDU_INFO_LENGTH } else { 0 };
+            let capacity = packet_length - if first { SDU_INFO_LENGTH } else { 0 };
             let end = (offset + capacity).min(sdu.len());
             let last = end == sdu.len();
             let fragment = sdu[offset..end].to_vec();
@@ -5054,7 +5326,9 @@ impl Device {
                 packet_status_flag: first.then_some(0),
                 iso_sdu_fragment: fragment,
             };
-            if !link.send_iso_packet(self.controller_id, packet) {
+            if let Some(queue) = self.iso_packet_queue.as_mut() {
+                queue.enqueue(packet, iso_handle);
+            } else if !link.send_iso_packet(self.controller_id, packet) {
                 return false;
             }
             if last {
@@ -5064,7 +5338,7 @@ impl Device {
         }
         self.iso_sequence_numbers
             .insert(iso_handle, sequence.wrapping_add(1));
-        true
+        self.flush_iso_queue(link)
     }
 
     pub fn take_iso_sdus(&mut self, cis_handle: u16) -> Vec<IsoSdu> {
@@ -5264,6 +5538,11 @@ impl Device {
 
     pub fn acl_packets_pending(&self) -> usize {
         self.acl_packet_queue.pending()
+            + self
+                .le_acl_packet_queue
+                .as_ref()
+                .map(DataPacketQueue::pending)
+                .unwrap_or(0)
     }
 
     pub fn acl_data_packet_length(&self) -> usize {
@@ -5272,6 +5551,40 @@ impl Device {
 
     pub fn acl_max_in_flight(&self) -> usize {
         self.acl_packet_queue.max_in_flight()
+    }
+
+    /// Effective LE ACL packet size, using the Classic pool when the controller shares it.
+    pub fn le_acl_data_packet_length(&self) -> usize {
+        self.le_acl_data_packet_length
+            .unwrap_or(self.acl_data_packet_length)
+    }
+
+    /// Effective LE ACL in-flight window, using the Classic pool when shared.
+    pub fn le_acl_max_in_flight(&self) -> usize {
+        self.le_acl_packet_queue
+            .as_ref()
+            .map(DataPacketQueue::max_in_flight)
+            .unwrap_or_else(|| self.acl_packet_queue.max_in_flight())
+    }
+
+    pub fn iso_data_packet_length(&self) -> Option<usize> {
+        self.iso_data_packet_length
+    }
+
+    pub fn iso_max_in_flight(&self) -> Option<usize> {
+        self.iso_packet_queue
+            .as_ref()
+            .map(DataPacketQueue::max_in_flight)
+    }
+
+    pub fn iso_packets_pending(&self) -> Option<usize> {
+        self.iso_packet_queue.as_ref().map(DataPacketQueue::pending)
+    }
+
+    pub fn iso_output_is_drained(&self, connection_handle: u16) -> bool {
+        self.iso_packet_queue
+            .as_ref()
+            .is_none_or(|queue| queue.is_drained(connection_handle))
     }
 
     /// Remove and return the ATT PDUs received so far that were not handled by
@@ -5309,13 +5622,26 @@ impl Device {
         payload: &[u8],
     ) -> bool {
         let frame = L2capPdu::new(cid, payload.to_vec()).to_bytes(false);
-        let Ok(fragments) =
-            fragment_l2cap_pdu(handle, 0, self.acl_data_packet_length, &frame, false)
-        else {
+        let uses_separate_le_pool =
+            self.le_connections.contains_key(&handle) && self.le_acl_packet_queue.is_some();
+        let packet_length = if uses_separate_le_pool {
+            self.le_acl_data_packet_length
+                .expect("separate LE ACL queue has a packet length")
+        } else {
+            self.acl_data_packet_length
+        };
+        let Ok(fragments) = fragment_l2cap_pdu(handle, 0, packet_length, &frame, false) else {
             return false;
         };
         for packet in fragments {
-            self.acl_packet_queue.enqueue(packet, handle);
+            if uses_separate_le_pool {
+                self.le_acl_packet_queue
+                    .as_mut()
+                    .expect("separate LE ACL queue exists")
+                    .enqueue(packet, handle);
+            } else {
+                self.acl_packet_queue.enqueue(packet, handle);
+            }
         }
         self.flush_acl_queue(link)
     }
@@ -7528,6 +7854,7 @@ impl Device {
                         {
                             self.send_hci_command(link, Command::ReadLocalSupportedFeatures);
                         }
+                        self.maybe_start_host_initialization(link);
                     }
                 }
                 HciPacket::Event(Event::CommandComplete {
@@ -7553,6 +7880,7 @@ impl Device {
                             lmp_subversion,
                         });
                     }
+                    self.maybe_start_host_initialization(link);
                 }
                 HciPacket::Event(Event::CommandComplete {
                     command_opcode,
@@ -7579,10 +7907,9 @@ impl Device {
                         self.local_lmp_features_max_page = Some(maximum_page_number);
                         if page_number < maximum_page_number {
                             self.request_local_lmp_feature_page(link, page_number + 1);
-                        } else {
-                            self.apply_supported_classic_scan_types(link);
                         }
                     }
+                    self.maybe_start_host_initialization(link);
                 }
                 HciPacket::Event(Event::CommandComplete {
                     command_opcode,
@@ -7597,8 +7924,8 @@ impl Device {
                     if status == 0 {
                         self.local_lmp_features.insert(0, lmp_features);
                         self.local_lmp_features_max_page = Some(0);
-                        self.apply_supported_classic_scan_types(link);
                     }
+                    self.maybe_start_host_initialization(link);
                 }
                 HciPacket::Event(Event::CommandComplete {
                     command_opcode,
@@ -7617,6 +7944,7 @@ impl Device {
                         self.local_le_features = Some(le_features.to_vec());
                         self.local_le_features_max_page = Some(max_page);
                     }
+                    self.maybe_start_host_initialization(link);
                 }
                 HciPacket::Event(Event::CommandComplete {
                     command_opcode,
@@ -7634,6 +7962,7 @@ impl Device {
                         self.local_le_features = Some(le_features.to_vec());
                         self.local_le_features_max_page = None;
                     }
+                    self.maybe_start_host_initialization(link);
                 }
                 HciPacket::Event(Event::CommandComplete {
                     command_opcode,
@@ -7641,6 +7970,7 @@ impl Device {
                     ..
                 }) if command_opcode == bumble_hci::HCI_READ_LOCAL_VERSION_INFORMATION_COMMAND => {
                     self.local_version_status = Some(status);
+                    self.maybe_start_host_initialization(link);
                 }
                 HciPacket::Event(Event::CommandComplete {
                     command_opcode,
@@ -7648,6 +7978,7 @@ impl Device {
                     ..
                 }) if command_opcode == bumble_hci::HCI_READ_LOCAL_SUPPORTED_FEATURES_COMMAND => {
                     self.local_lmp_feature_statuses.insert(0, status);
+                    self.maybe_start_host_initialization(link);
                 }
                 HciPacket::Event(Event::CommandComplete {
                     command_opcode,
@@ -7657,6 +7988,7 @@ impl Device {
                     if let Some(page_number) = self.pending_local_lmp_feature_pages.pop_front() {
                         self.local_lmp_feature_statuses.insert(page_number, status);
                     }
+                    self.maybe_start_host_initialization(link);
                 }
                 HciPacket::Event(Event::CommandComplete {
                     command_opcode,
@@ -7673,6 +8005,151 @@ impl Device {
                     ..
                 }) => {
                     self.local_le_features_status = Some(status);
+                    self.maybe_start_host_initialization(link);
+                }
+                HciPacket::Event(Event::CommandComplete {
+                    command_opcode,
+                    return_parameters: bumble_hci::ReturnParameters::Status { status },
+                    ..
+                }) if command_opcode == bumble_hci::HCI_SET_EVENT_MASK_COMMAND => {
+                    self.event_mask_status = Some(status);
+                    self.maybe_finish_host_initialization(link);
+                }
+                HciPacket::Event(Event::CommandComplete {
+                    command_opcode,
+                    return_parameters: bumble_hci::ReturnParameters::Status { status },
+                    ..
+                }) if command_opcode == bumble_hci::HCI_SET_EVENT_MASK_PAGE_2_COMMAND => {
+                    self.event_mask_page_2_status = Some(status);
+                    self.maybe_finish_host_initialization(link);
+                }
+                HciPacket::Event(Event::CommandComplete {
+                    command_opcode,
+                    return_parameters: bumble_hci::ReturnParameters::Status { status },
+                    ..
+                }) if command_opcode == bumble_hci::HCI_LE_SET_EVENT_MASK_COMMAND => {
+                    self.le_event_mask_status = Some(status);
+                    self.maybe_finish_host_initialization(link);
+                }
+                HciPacket::Event(Event::CommandComplete {
+                    command_opcode,
+                    return_parameters:
+                        bumble_hci::ReturnParameters::ReadBufferSize {
+                            status,
+                            hc_acl_data_packet_length,
+                            hc_total_num_acl_data_packets,
+                            ..
+                        },
+                    ..
+                }) if command_opcode == bumble_hci::HCI_READ_BUFFER_SIZE_COMMAND => {
+                    self.classic_buffer_status = Some(status);
+                    if status == 0 {
+                        self.classic_acl_buffer = Some(ControllerBufferInfo {
+                            data_packet_length: hc_acl_data_packet_length,
+                            total_num_data_packets: hc_total_num_acl_data_packets,
+                        });
+                        if hc_acl_data_packet_length != 0 && hc_total_num_acl_data_packets != 0 {
+                            self.acl_data_packet_length = usize::from(hc_acl_data_packet_length);
+                            self.acl_packet_queue =
+                                DataPacketQueue::new(usize::from(hc_total_num_acl_data_packets))
+                                    .expect("nonzero controller ACL packet count");
+                        }
+                    }
+                    self.maybe_finish_host_initialization(link);
+                }
+                HciPacket::Event(Event::CommandComplete {
+                    command_opcode,
+                    return_parameters:
+                        bumble_hci::ReturnParameters::LeReadBufferSize {
+                            status,
+                            le_acl_data_packet_length,
+                            total_num_le_acl_data_packets,
+                        },
+                    ..
+                }) if command_opcode == bumble_hci::HCI_LE_READ_BUFFER_SIZE_COMMAND => {
+                    self.le_buffer_status = Some(status);
+                    if status == 0 {
+                        self.le_acl_buffer = Some(ControllerBufferInfo {
+                            data_packet_length: le_acl_data_packet_length,
+                            total_num_data_packets: u16::from(total_num_le_acl_data_packets),
+                        });
+                        if le_acl_data_packet_length != 0 && total_num_le_acl_data_packets != 0 {
+                            self.le_acl_data_packet_length =
+                                Some(usize::from(le_acl_data_packet_length));
+                            self.le_acl_packet_queue = Some(
+                                DataPacketQueue::new(usize::from(total_num_le_acl_data_packets))
+                                    .expect("nonzero controller LE ACL packet count"),
+                            );
+                        } else {
+                            self.le_acl_data_packet_length = None;
+                            self.le_acl_packet_queue = None;
+                        }
+                    }
+                    self.maybe_finish_host_initialization(link);
+                }
+                HciPacket::Event(Event::CommandComplete {
+                    command_opcode,
+                    return_parameters:
+                        bumble_hci::ReturnParameters::LeReadBufferSizeV2 {
+                            status,
+                            le_acl_data_packet_length,
+                            total_num_le_acl_data_packets,
+                            iso_data_packet_length,
+                            total_num_iso_data_packets,
+                        },
+                    ..
+                }) if command_opcode == bumble_hci::HCI_LE_READ_BUFFER_SIZE_V2_COMMAND => {
+                    self.le_buffer_status = Some(status);
+                    if status == 0 {
+                        self.le_acl_buffer = Some(ControllerBufferInfo {
+                            data_packet_length: le_acl_data_packet_length,
+                            total_num_data_packets: u16::from(total_num_le_acl_data_packets),
+                        });
+                        if le_acl_data_packet_length != 0 && total_num_le_acl_data_packets != 0 {
+                            self.le_acl_data_packet_length =
+                                Some(usize::from(le_acl_data_packet_length));
+                            self.le_acl_packet_queue = Some(
+                                DataPacketQueue::new(usize::from(total_num_le_acl_data_packets))
+                                    .expect("nonzero controller LE ACL packet count"),
+                            );
+                        } else {
+                            self.le_acl_data_packet_length = None;
+                            self.le_acl_packet_queue = None;
+                        }
+                        self.iso_buffer = Some(ControllerBufferInfo {
+                            data_packet_length: iso_data_packet_length,
+                            total_num_data_packets: u16::from(total_num_iso_data_packets),
+                        });
+                        if iso_data_packet_length != 0 && total_num_iso_data_packets != 0 {
+                            self.iso_data_packet_length = Some(usize::from(iso_data_packet_length));
+                            self.iso_packet_queue = Some(
+                                DataPacketQueue::new(usize::from(total_num_iso_data_packets))
+                                    .expect("nonzero controller ISO packet count"),
+                            );
+                        } else {
+                            self.iso_data_packet_length = None;
+                            self.iso_packet_queue = None;
+                        }
+                    }
+                    self.maybe_finish_host_initialization(link);
+                }
+                HciPacket::Event(Event::CommandComplete {
+                    command_opcode,
+                    return_parameters: bumble_hci::ReturnParameters::Status { status },
+                    ..
+                }) if matches!(
+                    command_opcode,
+                    bumble_hci::HCI_READ_BUFFER_SIZE_COMMAND
+                        | bumble_hci::HCI_LE_READ_BUFFER_SIZE_COMMAND
+                        | bumble_hci::HCI_LE_READ_BUFFER_SIZE_V2_COMMAND
+                ) =>
+                {
+                    if matches!(command_opcode, bumble_hci::HCI_READ_BUFFER_SIZE_COMMAND) {
+                        self.classic_buffer_status = Some(status);
+                    } else {
+                        self.le_buffer_status = Some(status);
+                    }
+                    self.maybe_finish_host_initialization(link);
                 }
                 HciPacket::Event(Event::CommandComplete {
                     command_opcode,
@@ -8131,6 +8608,12 @@ impl Device {
                         .retain(|sdu| sdu.connection_handle != connection_handle);
                     self.acl_assemblers.remove(&connection_handle);
                     self.acl_packet_queue.flush(connection_handle);
+                    if let Some(queue) = self.le_acl_packet_queue.as_mut() {
+                        queue.flush(connection_handle);
+                    }
+                    if let Some(queue) = self.iso_packet_queue.as_mut() {
+                        queue.flush(connection_handle);
+                    }
                     self.pending_connection_controls.retain(|_, handles| {
                         handles.retain(|handle| *handle != connection_handle);
                         !handles.is_empty()
@@ -8674,11 +9157,27 @@ impl Device {
                         .into_iter()
                         .zip(num_completed_packets.into_iter())
                     {
-                        let _ = self
-                            .acl_packet_queue
-                            .on_packets_completed(usize::from(count), handle);
+                        let count = usize::from(count);
+                        if self.cis_links.contains_key(&handle)
+                            || self.bis_directions.contains_key(&handle)
+                        {
+                            if let Some(queue) = self.iso_packet_queue.as_mut() {
+                                let _ = queue.on_packets_completed(count, handle);
+                            }
+                        } else if self.le_connections.contains_key(&handle)
+                            && self.le_acl_packet_queue.is_some()
+                        {
+                            let _ = self
+                                .le_acl_packet_queue
+                                .as_mut()
+                                .expect("separate LE ACL queue exists")
+                                .on_packets_completed(count, handle);
+                        } else {
+                            let _ = self.acl_packet_queue.on_packets_completed(count, handle);
+                        }
                     }
                     self.flush_acl_queue(link);
+                    self.flush_iso_queue(link);
                 }
                 HciPacket::Event(Event::EncryptionChange {
                     status,
@@ -8816,6 +9315,30 @@ impl Device {
             let handle = packet.connection_handle;
             if !link.send_acl_packet(self.controller_id, packet) {
                 let _ = self.acl_packet_queue.on_packets_completed(1, handle);
+                success = false;
+            }
+        }
+        if let Some(queue) = self.le_acl_packet_queue.as_mut() {
+            while let Some(packet) = queue.poll_ready() {
+                let handle = packet.connection_handle;
+                if !link.send_acl_packet(self.controller_id, packet) {
+                    let _ = queue.on_packets_completed(1, handle);
+                    success = false;
+                }
+            }
+        }
+        success
+    }
+
+    fn flush_iso_queue(&mut self, link: &mut LocalLink) -> bool {
+        let Some(queue) = self.iso_packet_queue.as_mut() else {
+            return true;
+        };
+        let mut success = true;
+        while let Some(packet) = queue.poll_ready() {
+            let handle = packet.connection_handle;
+            if !link.send_iso_packet(self.controller_id, packet) {
+                let _ = queue.on_packets_completed(1, handle);
                 success = false;
             }
         }
