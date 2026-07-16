@@ -255,10 +255,7 @@ impl ResponseStream {
     pub fn push(&mut self, bytes: &[u8]) -> Result<Vec<AtResponse>> {
         self.buffer.extend_from_slice(bytes);
         let mut responses = Vec::new();
-        loop {
-            let Some(header) = find_crlf(&self.buffer, 0) else {
-                break;
-            };
+        while let Some(header) = find_crlf(&self.buffer, 0) {
             let Some(trailer) = find_crlf(&self.buffer, header + 2) else {
                 break;
             };
