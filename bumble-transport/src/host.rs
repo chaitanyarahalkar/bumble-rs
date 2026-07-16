@@ -1380,6 +1380,9 @@ pub struct ExternalHost {
     sink: Box<dyn PacketSink + Send>,
     receiver: Receiver<ReaderMessage>,
     pending: VecDeque<HciPacket>,
+    device_command_queue: VecDeque<Command>,
+    device_pending_command: Option<u16>,
+    device_command_credit: bool,
     state: ExternalHostState,
 }
 
@@ -1411,6 +1414,9 @@ impl ExternalHost {
             sink: transport.sink,
             receiver,
             pending: VecDeque::new(),
+            device_command_queue: VecDeque::new(),
+            device_pending_command: None,
+            device_command_credit: true,
             state: ExternalHostState::Running,
         }
     }
@@ -1443,6 +1449,14 @@ impl ExternalHost {
     /// the attached [`Device`].
     pub fn send_command(&mut self, command: Command, timeout: Duration) -> Result<CommandResponse> {
         let expected_opcode = command.op_code();
+        if self.device_pending_command.is_some()
+            || !self.device_command_queue.is_empty()
+            || !self.device_command_credit
+        {
+            return Err(Error::Remote(format!(
+                "cannot send blocking HCI command {expected_opcode:#06x} while Device command flow is busy"
+            )));
+        }
         if !self.write(0, HciPacket::Command(command)) {
             return Err(
                 self.failure_error(format!("failed to send HCI command {expected_opcode:#06x}"))
@@ -1875,6 +1889,60 @@ impl ExternalHost {
             })
     }
 
+    fn submit_device_command(&mut self, controller_id: usize, command: Command) {
+        if controller_id != 0 {
+            self.fail(format!(
+                "external host exposes controller 0, not controller {controller_id}"
+            ));
+            return;
+        }
+        self.device_command_queue.push_back(command);
+        self.dispatch_next_device_command();
+    }
+
+    fn dispatch_next_device_command(&mut self) {
+        if self.device_pending_command.is_some() || !self.device_command_credit {
+            return;
+        }
+        let Some(command) = self.device_command_queue.pop_front() else {
+            return;
+        };
+        let command_opcode = command.op_code();
+        self.device_command_credit = false;
+        if self.write(0, HciPacket::Command(command)) {
+            self.device_pending_command = Some(command_opcode);
+        }
+    }
+
+    fn observe_device_command_flow(&mut self, packet: &HciPacket) {
+        let (completes_command, num_hci_command_packets) = match packet {
+            HciPacket::Event(Event::CommandComplete {
+                num_hci_command_packets,
+                command_opcode,
+                ..
+            }) => (*command_opcode != 0, *num_hci_command_packets),
+            HciPacket::Event(Event::CommandStatus {
+                num_hci_command_packets,
+                ..
+            }) => (true, *num_hci_command_packets),
+            _ => return,
+        };
+        if completes_command {
+            self.device_pending_command = None;
+        }
+        if num_hci_command_packets != 0 {
+            self.device_command_credit = true;
+        }
+        self.dispatch_next_device_command();
+    }
+
+    fn is_device_command_flow_event(packet: &HciPacket) -> bool {
+        matches!(
+            packet,
+            HciPacket::Event(Event::CommandComplete { .. } | Event::CommandStatus { .. })
+        )
+    }
+
     fn receive_message(&mut self, message: ReaderMessage) -> Result<ExternalHostActivity> {
         match message {
             ReaderMessage::Packet(packet) => {
@@ -1893,10 +1961,21 @@ impl ExternalHost {
     }
 
     fn collect_available(&mut self) {
+        if self.pending.iter().any(Self::is_device_command_flow_event) {
+            return;
+        }
         while matches!(self.state, ExternalHostState::Running) {
             match self.receiver.try_recv() {
                 Ok(message) => {
+                    let command_flow_boundary = matches!(
+                        &message,
+                        ReaderMessage::Packet(packet)
+                            if Self::is_device_command_flow_event(packet)
+                    );
                     let _ = self.receive_message(message);
+                    if command_flow_boundary {
+                        return;
+                    }
                 }
                 Err(TryRecvError::Empty) => return,
                 Err(TryRecvError::Disconnected) => {
@@ -1943,7 +2022,7 @@ impl ExternalHost {
 
 impl HostTransport for ExternalHost {
     fn handle_command(&mut self, controller_id: usize, command: Command) {
-        self.write(controller_id, HciPacket::Command(command));
+        self.submit_device_command(controller_id, command);
     }
 
     fn send_acl_packet(&mut self, controller_id: usize, packet: AclDataPacket) -> bool {
@@ -1983,7 +2062,19 @@ impl HostTransport for ExternalHost {
             return Vec::new();
         }
         self.collect_available();
-        self.pending.drain(..).collect()
+        match self
+            .pending
+            .iter()
+            .position(Self::is_device_command_flow_event)
+        {
+            Some(0) => {
+                let packet = self.pending.pop_front().expect("flow event is pending");
+                self.observe_device_command_flow(&packet);
+                vec![packet]
+            }
+            Some(boundary) => self.pending.drain(..boundary).collect(),
+            None => self.pending.drain(..).collect(),
+        }
     }
 }
 
@@ -1992,7 +2083,11 @@ mod tests {
     use super::*;
     use crate::{PacketSource, Result as TransportResult};
     use bumble::Address;
-    use bumble_hci::{CustomPacket, Event, LeMetaEvent};
+    use bumble_hci::{
+        CustomPacket, Event, LeMetaEvent, HCI_AUTHENTICATION_REQUESTED_COMMAND,
+        HCI_IO_CAPABILITY_REQUEST_REPLY_COMMAND, HCI_LINK_KEY_REQUEST_NEGATIVE_REPLY_COMMAND,
+        HCI_USER_CONFIRMATION_REQUEST_REPLY_COMMAND,
+    };
     use bumble_host::Device;
     use bumble_l2cap::{ControlFrame, L2capPdu, L2CAP_LE_SIGNALING_CID};
     use std::collections::BTreeMap;
@@ -2127,6 +2222,143 @@ mod tests {
         assert_eq!(
             host.wait_for_activity(Duration::from_secs(1)).unwrap(),
             ExternalHostActivity::Ended
+        );
+    }
+
+    #[test]
+    fn serializes_device_commands_and_waits_for_controller_credit() {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let sink = RecordingSink::default();
+        let recorded = sink.clone();
+        let mut host = ExternalHost::new(SplitOpenedTransport {
+            source: Box::new(ChannelSource(receiver)),
+            sink: Box::new(sink),
+            metadata: BTreeMap::new(),
+        });
+
+        host.handle_command(0, Command::Reset);
+        host.handle_command(0, Command::ReadBdAddr);
+        host.handle_command(0, Command::ReadLocalSupportedCommands);
+        assert_eq!(
+            recorded.0.lock().unwrap().as_slice(),
+            &[HciPacket::Command(Command::Reset)]
+        );
+        assert!(matches!(
+            host.send_command(Command::ReadRssi { handle: 1 }, Duration::from_secs(1)),
+            Err(Error::Remote(message)) if message.contains("Device command flow is busy")
+        ));
+
+        let reset_complete = HciPacket::Event(Event::CommandComplete {
+            num_hci_command_packets: 1,
+            command_opcode: Command::Reset.op_code(),
+            return_parameters: ReturnParameters::Status { status: 0 },
+        });
+        sender.send(reset_complete.clone()).unwrap();
+        assert_eq!(
+            host.wait_for_activity(Duration::from_secs(1)).unwrap(),
+            ExternalHostActivity::Packet
+        );
+        assert_eq!(host.drain_host_events(0), vec![reset_complete]);
+        assert_eq!(
+            recorded.0.lock().unwrap().as_slice(),
+            &[
+                HciPacket::Command(Command::Reset),
+                HciPacket::Command(Command::ReadBdAddr),
+            ]
+        );
+
+        let address_status = HciPacket::Event(Event::CommandStatus {
+            status: 0,
+            num_hci_command_packets: 0,
+            command_opcode: Command::ReadBdAddr.op_code(),
+        });
+        sender.send(address_status.clone()).unwrap();
+        assert_eq!(
+            host.wait_for_activity(Duration::from_secs(1)).unwrap(),
+            ExternalHostActivity::Packet
+        );
+        assert_eq!(host.drain_host_events(0), vec![address_status]);
+        assert_eq!(recorded.0.lock().unwrap().len(), 2);
+
+        let credit = HciPacket::Event(Event::CommandComplete {
+            num_hci_command_packets: 1,
+            command_opcode: 0,
+            return_parameters: ReturnParameters::Raw { data: Vec::new() },
+        });
+        sender.send(credit.clone()).unwrap();
+        assert_eq!(
+            host.wait_for_activity(Duration::from_secs(1)).unwrap(),
+            ExternalHostActivity::Packet
+        );
+        assert_eq!(host.drain_host_events(0), vec![credit]);
+        assert_eq!(
+            recorded.0.lock().unwrap().as_slice(),
+            &[
+                HciPacket::Command(Command::Reset),
+                HciPacket::Command(Command::ReadBdAddr),
+                HciPacket::Command(Command::ReadLocalSupportedCommands),
+            ]
+        );
+    }
+
+    #[test]
+    fn defers_command_response_until_prior_events_are_delivered() {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let sink = RecordingSink::default();
+        let recorded = sink.clone();
+        let mut host = ExternalHost::new(SplitOpenedTransport {
+            source: Box::new(ChannelSource(receiver)),
+            sink: Box::new(sink),
+            metadata: BTreeMap::new(),
+        });
+        let peer =
+            Address::parse("11:22:33:44:55:66/P", bumble::AddressType::PUBLIC_DEVICE).unwrap();
+        let request = HciPacket::Event(Event::IoCapabilityRequest {
+            bd_addr: peer.clone(),
+        });
+        let reply_complete = HciPacket::Event(Event::CommandComplete {
+            num_hci_command_packets: 1,
+            command_opcode: HCI_IO_CAPABILITY_REQUEST_REPLY_COMMAND,
+            return_parameters: ReturnParameters::Status { status: 0 },
+        });
+        sender.send(request.clone()).unwrap();
+        sender.send(reply_complete.clone()).unwrap();
+
+        assert_eq!(
+            host.wait_for_activity(Duration::from_secs(1)).unwrap(),
+            ExternalHostActivity::Packet
+        );
+        let response = host.receiver.recv_timeout(Duration::from_secs(1)).unwrap();
+        host.receive_message(response).unwrap();
+        assert_eq!(host.drain_host_events(0), vec![request]);
+        assert_eq!(host.pending.front(), Some(&reply_complete));
+
+        host.handle_command(
+            0,
+            Command::IoCapabilityRequestReply {
+                bd_addr: peer,
+                io_capability: 3,
+                oob_data_present: 0,
+                authentication_requirements: 5,
+            },
+        );
+        assert_eq!(host.drain_host_events(0), vec![reply_complete]);
+        host.handle_command(0, Command::Reset);
+        assert_eq!(
+            recorded.0.lock().unwrap().as_slice(),
+            &[
+                HciPacket::Command(Command::IoCapabilityRequestReply {
+                    bd_addr: Address::parse(
+                        "11:22:33:44:55:66/P",
+                        bumble::AddressType::PUBLIC_DEVICE,
+                    )
+                    .unwrap(),
+                    io_capability: 3,
+                    oob_data_present: 0,
+                    authentication_requirements: 5,
+                }),
+                HciPacket::Command(Command::Reset),
+            ]
         );
     }
 
@@ -3338,6 +3570,11 @@ mod tests {
         assert!(device.poll(&mut host));
 
         for event in [
+            Event::CommandStatus {
+                status: 0,
+                num_hci_command_packets: 1,
+                command_opcode: HCI_AUTHENTICATION_REQUESTED_COMMAND,
+            },
             Event::IoCapabilityResponse {
                 bd_addr: peer.clone(),
                 io_capability: IoCapability::DisplayYesNo as u8,
@@ -3347,12 +3584,27 @@ mod tests {
             Event::IoCapabilityRequest {
                 bd_addr: peer.clone(),
             },
+            Event::CommandComplete {
+                num_hci_command_packets: 1,
+                command_opcode: HCI_IO_CAPABILITY_REQUEST_REPLY_COMMAND,
+                return_parameters: ReturnParameters::Status { status: 0 },
+            },
             Event::UserConfirmationRequest {
                 bd_addr: peer.clone(),
                 numeric_value: 123_456,
             },
+            Event::CommandComplete {
+                num_hci_command_packets: 1,
+                command_opcode: HCI_USER_CONFIRMATION_REQUEST_REPLY_COMMAND,
+                return_parameters: ReturnParameters::Status { status: 0 },
+            },
             Event::LinkKeyRequest {
                 bd_addr: peer.clone(),
+            },
+            Event::CommandComplete {
+                num_hci_command_packets: 1,
+                command_opcode: HCI_LINK_KEY_REQUEST_NEGATIVE_REPLY_COMMAND,
+                return_parameters: ReturnParameters::Status { status: 0 },
             },
             Event::LinkKeyNotification {
                 bd_addr: peer.clone(),

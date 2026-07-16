@@ -839,7 +839,11 @@ impl SecurityStorage for SecurityStorageService {
 mod tests {
     use super::*;
     use bumble::keys::MemoryKeyStore;
-    use bumble_hci::{Command, Event, HciPacket};
+    use bumble_hci::{
+        Command, Event, HciPacket, ReturnParameters, HCI_AUTHENTICATION_REQUESTED_COMMAND,
+        HCI_IO_CAPABILITY_REQUEST_REPLY_COMMAND, HCI_LINK_KEY_REQUEST_NEGATIVE_REPLY_COMMAND,
+        HCI_USER_CONFIRMATION_REQUEST_REPLY_COMMAND,
+    };
     use bumble_transport::{
         ExternalHost, ExternalHostActivity, PacketSink, PacketSource, Result as TransportResult,
         SplitOpenedTransport,
@@ -871,6 +875,11 @@ mod tests {
                     if *connection_handle == self.connection_handle =>
                 {
                     for event in [
+                        Event::CommandStatus {
+                            status: 0,
+                            num_hci_command_packets: 1,
+                            command_opcode: HCI_AUTHENTICATION_REQUESTED_COMMAND,
+                        },
                         Event::IoCapabilityResponse {
                             bd_addr: self.peer.clone(),
                             io_capability: IoCapability::NoInputNoOutput as u8,
@@ -880,12 +889,27 @@ mod tests {
                         Event::IoCapabilityRequest {
                             bd_addr: self.peer.clone(),
                         },
+                        Event::CommandComplete {
+                            num_hci_command_packets: 1,
+                            command_opcode: HCI_IO_CAPABILITY_REQUEST_REPLY_COMMAND,
+                            return_parameters: ReturnParameters::Status { status: 0 },
+                        },
                         Event::UserConfirmationRequest {
                             bd_addr: self.peer.clone(),
                             numeric_value: 123_456,
                         },
+                        Event::CommandComplete {
+                            num_hci_command_packets: 1,
+                            command_opcode: HCI_USER_CONFIRMATION_REQUEST_REPLY_COMMAND,
+                            return_parameters: ReturnParameters::Status { status: 0 },
+                        },
                         Event::LinkKeyRequest {
                             bd_addr: self.peer.clone(),
+                        },
+                        Event::CommandComplete {
+                            num_hci_command_packets: 1,
+                            command_opcode: HCI_LINK_KEY_REQUEST_NEGATIVE_REPLY_COMMAND,
+                            return_parameters: ReturnParameters::Status { status: 0 },
                         },
                         Event::LinkKeyNotification {
                             bd_addr: self.peer.clone(),
@@ -1061,10 +1085,11 @@ mod tests {
             .await
             .unwrap()
             .into_inner();
-        assert!(matches!(
-            response.result,
-            Some(secure_response::Result::Success(()))
-        ));
+        assert!(
+            matches!(response.result, Some(secure_response::Result::Success(()))),
+            "unexpected secure response: {response:?}; packets: {:?}",
+            packets.lock().unwrap()
+        );
 
         let state = runtime.state.lock().unwrap();
         assert!(state.device.is_classic_encrypted_on_handle(0x0234));

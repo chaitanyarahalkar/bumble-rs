@@ -159,6 +159,7 @@ crate whose behavior is verified against the upstream Python.
 | 183. Host reset capability tail | `bumble-host` + `bumble-transport` | ✅ suggested data-length reconciliation + advertising capacity/default discovery green |
 | 184. Remaining Host event publication | `bumble-host` | ✅ Channel Sounding result fragments + opaque vendor events retained and published green |
 | 185. Host readiness and transport loss | `bumble-host` | ✅ pre-reset packet gate + reset status + ordered transport-loss flush green |
+| 186. External Host command serialization | `bumble-transport` | ✅ one pending Device command + HCI credit stalls/resume + blocking-route exclusion green |
 | 103+. Repository completion audit and remaining gaps | workspace | in progress |
 
 The LE lifecycle is now complete end-to-end through library APIs: **connect →
@@ -4058,6 +4059,28 @@ transport-loss behavior.
   disconnection path, matching upstream after its pending command is failed.
 - Focused coverage pins successful and failed Reset gates, same-batch ordering,
   stale fixture correction, and transport-loss cleanup of a live connection.
+
+## Slice 186 — what's here
+
+`Device` commands crossing a real `ExternalHost` now obey upstream Host's
+one-command-at-a-time HCI flow-control boundary.
+
+- The first Device command is written immediately; later commands remain FIFO
+  queued until the pending command receives Command Complete or Command Status.
+- A nonzero `Num_HCI_Command_Packets` releases the next command. A zero-credit
+  response completes the pending command but keeps the queue stalled until an
+  opcode-zero Command Complete grants credit.
+- The blocking `ExternalHost::send_command` route refuses to bypass an active
+  Device command flow, so raw synchronous callers cannot create a second
+  in-flight command.
+- Controller responses remain in the ordinary Device packet stream and
+  are held behind preceding asynchronous events until `Device` has had a turn
+  to emit any required reply command. Unrelated ACL/event traffic is
+  unaffected, and deterministic in-process `LocalLink` scheduling remains
+  explicit and unchanged.
+- Focused coverage pins FIFO writes, Complete and Status handling, zero-credit
+  stalling, credit-only resumption, event/response handoff ordering, Classic
+  Pandora pairing, and blocking-route exclusion.
 
 ## Acceptance
 
