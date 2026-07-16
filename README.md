@@ -1,8 +1,12 @@
 # bumble-rs
 
 [![CI](https://github.com/chaitanyarahalkar/bumble-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/chaitanyarahalkar/bumble-rs/actions/workflows/ci.yml)
+[![Docs](https://github.com/chaitanyarahalkar/bumble-rs/actions/workflows/docs.yml/badge.svg)](https://chaitanyarahalkar.github.io/bumble-rs/)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 ![MSRV](https://img.shields.io/badge/MSRV-1.87-blue)
+
+**[Documentation](https://chaitanyarahalkar.github.io/bumble-rs/)** ·
+**[API reference](https://chaitanyarahalkar.github.io/bumble-rs/api/)**
 
 A complete synchronous Rust implementation of
 [`google/bumble`](https://github.com/google/bumble), the dual-mode Bluetooth
@@ -90,6 +94,17 @@ Clone and build the complete workspace:
 git clone https://github.com/chaitanyarahalkar/bumble-rs.git
 cd bumble-rs
 cargo build --workspace --all-targets
+```
+
+## Documentation
+
+The user guide and full rustdoc API reference are published at
+[chaitanyarahalkar.github.io/bumble-rs](https://chaitanyarahalkar.github.io/bumble-rs/).
+The guide sources live in [`docs/`](docs/) and are built with
+[mdBook](https://rust-lang.github.io/mdBook/):
+
+```bash
+mdbook serve docs --open
 ```
 
 Generate local API documentation:

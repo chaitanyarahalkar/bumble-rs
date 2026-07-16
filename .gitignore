@@ -2,6 +2,9 @@
 /target
 **/*.rs.bk
 
+# mdBook output
+/docs/book
+
 # Library workspace: the lock file is not committed (applications pin it, libs don't).
 Cargo.lock
 

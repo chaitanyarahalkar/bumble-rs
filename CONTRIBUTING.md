@@ -18,8 +18,9 @@ cargo test        # run the whole workspace
 
 The workspace is a set of layered crates (`bumble` → `bumble-hci` →
 `bumble-controller` / `bumble-l2cap` / `bumble-att` / `bumble-gatt` /
-`bumble-crypto` / `bumble-smp` → `bumble-host`). See the [README](README.md) for
-the layer map and the design specs under `docs/superpowers/`.
+`bumble-crypto` / `bumble-smp` → `bumble-host`). See the [README](README.md)
+and the [documentation site](https://chaitanyarahalkar.github.io/bumble-rs/)
+for the layer map and design notes.
 
 ## The bar every change must clear
 

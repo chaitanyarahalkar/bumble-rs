@@ -1,0 +1,23 @@
+[book]
+title = "bumble-rs"
+description = "Documentation for bumble-rs, a synchronous Rust implementation of the Bumble Bluetooth stack"
+authors = ["The bumble-rs contributors"]
+language = "en"
+src = "src"
+
+[build]
+create-missing = false
+
+[output.html]
+git-repository-url = "https://github.com/chaitanyarahalkar/bumble-rs"
+edit-url-template = "https://github.com/chaitanyarahalkar/bumble-rs/edit/main/docs/{path}"
+site-url = "/bumble-rs/"
+default-theme = "rust"
+preferred-dark-theme = "navy"
+
+[output.html.fold]
+enable = true
+level = 1
+
+[output.html.search]
+limit-results = 20
