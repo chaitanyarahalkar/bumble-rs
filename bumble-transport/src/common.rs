@@ -194,10 +194,7 @@ impl PacketFramer {
         self.buffer.extend_from_slice(data);
         let mut packets = Vec::new();
 
-        loop {
-            let Some(&packet_type) = self.buffer.first() else {
-                break;
-            };
+        while let Some(&packet_type) = self.buffer.first() {
             let layout = standard_layout(packet_type)
                 .or_else(|| self.extended_layouts.get(&packet_type).copied())
                 .ok_or_else(|| {
