@@ -447,7 +447,7 @@ fn classic_power_on_matches_upstream_visibility_and_security_order() {
 
     device.power_on(&mut transport).unwrap();
 
-    assert_eq!(transport.commands.len(), 13);
+    assert_eq!(transport.commands.len(), 11);
     assert_eq!(
         transport.commands[2].1,
         Command::WriteLeHostSupport {
@@ -497,14 +497,6 @@ fn classic_power_on_matches_upstream_visibility_and_security_order() {
     );
     assert_eq!(
         transport.commands[10].1,
-        Command::WritePageScanType { page_scan_type: 1 }
-    );
-    assert_eq!(
-        transport.commands[11].1,
-        Command::WriteInquiryScanType { scan_type: 1 }
-    );
-    assert_eq!(
-        transport.commands[12].1,
         Command::ReadLocalSupportedCommands
     );
 }
@@ -534,6 +526,10 @@ fn configured_power_on_is_live_against_the_software_controller() {
     assert_eq!(device.public_address(), Some(&public));
     assert_eq!(device.local_supported_commands_status(), Some(0));
     assert!(device.local_supported_commands().is_some());
+    assert_eq!(device.local_version_status(), Some(0));
+    assert!(device.local_version().is_some());
+    assert_eq!(device.local_lmp_features_max_page(), Some(0));
+    assert_eq!(device.local_lmp_feature_status(0), Some(0));
     assert_eq!(device.local_le_features_status(), Some(0));
     assert_eq!(device.local_le_features().unwrap().len(), 248);
     assert_eq!(device.local_le_features_max_page(), Some(1));
@@ -558,8 +554,8 @@ fn configured_power_on_is_live_against_the_software_controller() {
     assert_eq!(controller.class_of_device(), 0x654321);
     assert_eq!(controller.classic_scan_enable(), 3);
     assert!(controller.secure_connections_host_support());
-    assert_eq!(controller.page_scan_type(), 1);
-    assert_eq!(controller.inquiry_scan_type(), 1);
+    assert_eq!(controller.page_scan_type(), 0);
+    assert_eq!(controller.inquiry_scan_type(), 0);
     assert_eq!(
         &controller.extended_inquiry_response()[..9],
         b"\x08\x09Powered"

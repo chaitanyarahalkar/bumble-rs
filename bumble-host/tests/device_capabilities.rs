@@ -1,11 +1,13 @@
 use bumble_hci::{
     AclDataPacket, Command, Event, HciPacket, IsoDataPacket, ReturnParameters,
     HCI_LE_READ_ALL_LOCAL_SUPPORTED_FEATURES_COMMAND, HCI_LE_READ_LOCAL_SUPPORTED_FEATURES_COMMAND,
-    HCI_READ_LOCAL_SUPPORTED_COMMANDS_COMMAND,
+    HCI_READ_LOCAL_EXTENDED_FEATURES_COMMAND, HCI_READ_LOCAL_SUPPORTED_COMMANDS_COMMAND,
+    HCI_READ_LOCAL_SUPPORTED_FEATURES_COMMAND, HCI_READ_LOCAL_VERSION_INFORMATION_COMMAND,
 };
 use bumble_host::{
-    Device, HostTransport, LE_1M_PHY, LE_2M_PHY, LE_CODED_PHY, LE_FEATURE_2M_PHY,
-    LE_FEATURE_CODED_PHY, LE_FEATURE_PERIODIC_ADVERTISING,
+    Device, DeviceEvent, HostTransport, LocalVersionInformation, LE_1M_PHY, LE_2M_PHY,
+    LE_CODED_PHY, LE_FEATURE_2M_PHY, LE_FEATURE_CODED_PHY, LE_FEATURE_PERIODIC_ADVERTISING,
+    LMP_FEATURE_INTERLACED_INQUIRY_SCAN, LMP_FEATURE_INTERLACED_PAGE_SCAN,
 };
 
 #[derive(Default)]
@@ -102,6 +104,230 @@ fn power_on_selects_legacy_le_feature_fallback_and_exposes_capabilities() {
     assert_eq!(device.supports_le_phy(LE_CODED_PHY), Ok(true));
     assert!(!device.supports_le_extended_advertising());
     assert!(device.supports_le_periodic_advertising());
+}
+
+#[test]
+fn power_on_discovers_local_version_and_every_lmp_feature_page() {
+    let mut device = Device::new(0);
+    device.config.classic_enabled = true;
+    device.config.classic_interlaced_scan_enabled = true;
+    let mut transport = ScriptedTransport::default();
+    device.power_on(&mut transport).unwrap();
+    transport.commands.clear();
+
+    let mut supported_commands = [0; 64];
+    supported_commands[14] = (1 << 3) | (1 << 6);
+    transport.events.push(command_complete(
+        HCI_READ_LOCAL_SUPPORTED_COMMANDS_COMMAND,
+        ReturnParameters::ReadLocalSupportedCommands {
+            status: 0,
+            supported_commands,
+        },
+    ));
+    assert!(device.poll(&mut transport));
+    assert_eq!(
+        transport.commands,
+        vec![
+            Command::ReadLocalVersionInformation,
+            Command::ReadLocalExtendedFeatures { page_number: 0 },
+        ]
+    );
+    transport.commands.clear();
+
+    let mut page_0 = [0; 8];
+    page_0[3] = 0x30;
+    transport.events.extend([
+        command_complete(
+            HCI_READ_LOCAL_VERSION_INFORMATION_COMMAND,
+            ReturnParameters::ReadLocalVersionInformation {
+                status: 0,
+                hci_version: 13,
+                hci_subversion: 0x1234,
+                lmp_version: 12,
+                company_identifier: 0x00E0,
+                lmp_subversion: 0x5678,
+            },
+        ),
+        command_complete(
+            HCI_READ_LOCAL_EXTENDED_FEATURES_COMMAND,
+            ReturnParameters::ReadLocalExtendedFeatures {
+                status: 0,
+                page_number: 0,
+                maximum_page_number: 2,
+                extended_lmp_features: page_0,
+            },
+        ),
+    ]);
+    assert!(device.poll(&mut transport));
+    assert_eq!(
+        transport.commands,
+        vec![Command::ReadLocalExtendedFeatures { page_number: 1 }]
+    );
+    transport.commands.clear();
+
+    transport.events.push(command_complete(
+        HCI_READ_LOCAL_EXTENDED_FEATURES_COMMAND,
+        ReturnParameters::ReadLocalExtendedFeatures {
+            status: 0,
+            page_number: 1,
+            maximum_page_number: 2,
+            extended_lmp_features: [0x11; 8],
+        },
+    ));
+    assert!(device.poll(&mut transport));
+    assert_eq!(
+        transport.commands,
+        vec![Command::ReadLocalExtendedFeatures { page_number: 2 }]
+    );
+    transport.commands.clear();
+
+    transport.events.push(command_complete(
+        HCI_READ_LOCAL_EXTENDED_FEATURES_COMMAND,
+        ReturnParameters::ReadLocalExtendedFeatures {
+            status: 0,
+            page_number: 2,
+            maximum_page_number: 2,
+            extended_lmp_features: [0x22; 8],
+        },
+    ));
+    assert!(device.poll(&mut transport));
+    assert_eq!(
+        transport.commands,
+        vec![
+            Command::WritePageScanType { page_scan_type: 1 },
+            Command::WriteInquiryScanType { scan_type: 1 },
+        ]
+    );
+
+    assert_eq!(
+        device.local_version(),
+        Some(LocalVersionInformation {
+            hci_version: 13,
+            hci_subversion: 0x1234,
+            lmp_version: 12,
+            company_identifier: 0x00E0,
+            lmp_subversion: 0x5678,
+        })
+    );
+    assert_eq!(device.local_version_status(), Some(0));
+    assert_eq!(device.local_lmp_features_max_page(), Some(2));
+    assert_eq!(device.local_lmp_feature_page(0), Some(&page_0));
+    assert_eq!(device.local_lmp_feature_page(1), Some(&[0x11; 8]));
+    assert_eq!(device.local_lmp_feature_page(2), Some(&[0x22; 8]));
+    assert_eq!(device.local_lmp_feature_status(0), Some(0));
+    assert_eq!(device.local_lmp_feature_status(1), Some(0));
+    assert_eq!(device.local_lmp_feature_status(2), Some(0));
+    assert!(device.supports_lmp_features(&[
+        LMP_FEATURE_INTERLACED_INQUIRY_SCAN,
+        LMP_FEATURE_INTERLACED_PAGE_SCAN,
+    ]));
+}
+
+#[test]
+fn legacy_lmp_feature_failure_is_retained_without_enabling_scan_modes() {
+    let mut device = Device::new(0);
+    device.config.classic_enabled = true;
+    device.config.classic_interlaced_scan_enabled = true;
+    let mut transport = ScriptedTransport::default();
+    let mut supported_commands = [0; 64];
+    supported_commands[14] = 1 << 5;
+    transport.events.push(command_complete(
+        HCI_READ_LOCAL_SUPPORTED_COMMANDS_COMMAND,
+        ReturnParameters::ReadLocalSupportedCommands {
+            status: 0,
+            supported_commands,
+        },
+    ));
+    assert!(device.poll(&mut transport));
+    assert_eq!(
+        transport.commands,
+        vec![Command::ReadLocalSupportedFeatures]
+    );
+    transport.commands.clear();
+
+    transport.events.push(command_complete(
+        HCI_READ_LOCAL_SUPPORTED_FEATURES_COMMAND,
+        ReturnParameters::Status { status: 0x01 },
+    ));
+    assert!(device.poll(&mut transport));
+
+    assert!(transport.commands.is_empty());
+    assert_eq!(device.local_lmp_feature_status(0), Some(0x01));
+    assert_eq!(device.local_lmp_feature_page(0), None);
+    assert_eq!(device.local_lmp_features_max_page(), None);
+    assert!(!device.supports_lmp_feature(LMP_FEATURE_INTERLACED_PAGE_SCAN));
+}
+
+#[test]
+fn failed_extended_lmp_page_stops_the_sequence_with_correlated_status() {
+    let mut device = Device::new(0);
+    let mut transport = ScriptedTransport::default();
+    let mut supported_commands = [0; 64];
+    supported_commands[14] = 1 << 6;
+    transport.events.push(command_complete(
+        HCI_READ_LOCAL_SUPPORTED_COMMANDS_COMMAND,
+        ReturnParameters::ReadLocalSupportedCommands {
+            status: 0,
+            supported_commands,
+        },
+    ));
+    assert!(device.poll(&mut transport));
+    assert_eq!(
+        transport.commands,
+        vec![Command::ReadLocalExtendedFeatures { page_number: 0 }]
+    );
+    transport.commands.clear();
+
+    transport.events.push(command_complete(
+        HCI_READ_LOCAL_EXTENDED_FEATURES_COMMAND,
+        ReturnParameters::ReadLocalExtendedFeatures {
+            status: 0,
+            page_number: 0,
+            maximum_page_number: 2,
+            extended_lmp_features: [0xAA; 8],
+        },
+    ));
+    assert!(device.poll(&mut transport));
+    assert_eq!(
+        transport.commands,
+        vec![Command::ReadLocalExtendedFeatures { page_number: 1 }]
+    );
+    transport.commands.clear();
+
+    transport.events.push(command_complete(
+        HCI_READ_LOCAL_EXTENDED_FEATURES_COMMAND,
+        ReturnParameters::Status { status: 0x01 },
+    ));
+    assert!(device.poll(&mut transport));
+
+    assert!(transport.commands.is_empty());
+    assert_eq!(device.local_lmp_feature_page(0), Some(&[0xAA; 8]));
+    assert_eq!(device.local_lmp_feature_status(0), Some(0));
+    assert_eq!(device.local_lmp_feature_page(1), None);
+    assert_eq!(device.local_lmp_feature_status(1), Some(0x01));
+    assert_eq!(device.local_lmp_features_max_page(), Some(2));
+}
+
+#[test]
+fn reset_flushes_ready_state_and_restarts_capability_discovery() {
+    let mut device = Device::new(0);
+    let mut transport = ScriptedTransport::default();
+    device.power_on(&mut transport).unwrap();
+    device.take_device_events();
+    transport.commands.clear();
+
+    device.reset(&mut transport);
+
+    assert!(device.is_powered_on());
+    assert_eq!(device.take_device_events(), vec![DeviceEvent::Flush]);
+    assert_eq!(
+        transport.commands,
+        vec![Command::Reset, Command::ReadLocalSupportedCommands]
+    );
+    assert_eq!(device.local_supported_commands(), None);
+    assert_eq!(device.local_version(), None);
+    assert_eq!(device.local_lmp_features_max_page(), None);
+    assert_eq!(device.local_le_features(), None);
 }
 
 #[test]

@@ -80,6 +80,9 @@ pub const LE_FEATURE_2M_PHY: u8 = 8;
 pub const LE_FEATURE_CODED_PHY: u8 = 11;
 pub const LE_FEATURE_EXTENDED_ADVERTISING: u8 = 12;
 pub const LE_FEATURE_PERIODIC_ADVERTISING: u8 = 13;
+/// LMP feature-bit identifiers used by upstream's Classic scan setup.
+pub const LMP_FEATURE_INTERLACED_INQUIRY_SCAN: u16 = 28;
+pub const LMP_FEATURE_INTERLACED_PAGE_SCAN: u16 = 29;
 
 fn advertising_interval_units(milliseconds: f64) -> Option<u16> {
     let units = (milliseconds / 0.625).trunc();
@@ -662,6 +665,16 @@ pub struct ConnectionFeatureError {
     pub connection_handle: u16,
     pub page_number: Option<u8>,
     pub status: u8,
+}
+
+/// Controller version information learned during the upstream Host reset flow.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LocalVersionInformation {
+    pub hci_version: u8,
+    pub hci_subversion: u16,
+    pub lmp_version: u8,
+    pub company_identifier: u16,
+    pub lmp_subversion: u16,
 }
 
 /// Host-owned metadata for one established LE ACL connection.
@@ -1564,6 +1577,12 @@ pub struct Device {
     random_address: Address,
     local_supported_commands: Option<[u8; 64]>,
     local_supported_commands_status: Option<u8>,
+    local_version: Option<LocalVersionInformation>,
+    local_version_status: Option<u8>,
+    local_lmp_features: BTreeMap<u8, [u8; 8]>,
+    local_lmp_features_max_page: Option<u8>,
+    local_lmp_feature_statuses: BTreeMap<u8, u8>,
+    pending_local_lmp_feature_pages: VecDeque<u8>,
     local_le_features: Option<Vec<u8>>,
     local_le_features_max_page: Option<u8>,
     local_le_features_status: Option<u8>,
@@ -1688,6 +1707,12 @@ impl Device {
             static_address,
             local_supported_commands: None,
             local_supported_commands_status: None,
+            local_version: None,
+            local_version_status: None,
+            local_lmp_features: BTreeMap::new(),
+            local_lmp_features_max_page: None,
+            local_lmp_feature_statuses: BTreeMap::new(),
+            pending_local_lmp_feature_pages: VecDeque::new(),
             local_le_features: None,
             local_le_features_max_page: None,
             local_le_features_status: None,
@@ -1812,6 +1837,12 @@ impl Device {
             static_address,
             local_supported_commands: None,
             local_supported_commands_status: None,
+            local_version: None,
+            local_version_status: None,
+            local_lmp_features: BTreeMap::new(),
+            local_lmp_features_max_page: None,
+            local_lmp_feature_statuses: BTreeMap::new(),
+            pending_local_lmp_feature_pages: VecDeque::new(),
             local_le_features: None,
             local_le_features_max_page: None,
             local_le_features_status: None,
@@ -2026,6 +2057,60 @@ impl Device {
         self.local_supported_commands_status
     }
 
+    /// Controller HCI/LMP version information learned during reset.
+    pub fn local_version(&self) -> Option<LocalVersionInformation> {
+        self.local_version
+    }
+
+    pub fn local_version_status(&self) -> Option<u8> {
+        self.local_version_status
+    }
+
+    /// One local LMP feature page learned during reset.
+    pub fn local_lmp_feature_page(&self, page_number: u8) -> Option<&[u8; 8]> {
+        self.local_lmp_features.get(&page_number)
+    }
+
+    pub fn local_lmp_features_max_page(&self) -> Option<u8> {
+        self.local_lmp_features_max_page
+    }
+
+    pub fn local_lmp_feature_status(&self, page_number: u8) -> Option<u8> {
+        self.local_lmp_feature_statuses.get(&page_number).copied()
+    }
+
+    /// Whether one absolute upstream `LmpFeature` bit is set.
+    pub fn supports_lmp_feature(&self, feature: u16) -> bool {
+        let page_number = (feature / 64) as u8;
+        let page_bit = usize::from(feature % 64);
+        self.local_lmp_features
+            .get(&page_number)
+            .is_some_and(|page| page[page_bit / 8] & (1 << (page_bit % 8)) != 0)
+    }
+
+    pub fn supports_lmp_features(&self, features: &[u16]) -> bool {
+        features
+            .iter()
+            .all(|feature| self.supports_lmp_feature(*feature))
+    }
+
+    fn request_local_lmp_feature_page(&mut self, link: &mut LocalLink, page_number: u8) {
+        self.pending_local_lmp_feature_pages.push_back(page_number);
+        self.send_hci_command(link, Command::ReadLocalExtendedFeatures { page_number });
+    }
+
+    fn apply_supported_classic_scan_types(&mut self, link: &mut LocalLink) {
+        if !self.config.classic_enabled || !self.config.classic_interlaced_scan_enabled {
+            return;
+        }
+        if self.supports_lmp_feature(LMP_FEATURE_INTERLACED_PAGE_SCAN) {
+            self.send_hci_command(link, Command::WritePageScanType { page_scan_type: 1 });
+        }
+        if self.supports_lmp_feature(LMP_FEATURE_INTERLACED_INQUIRY_SCAN) {
+            self.send_hci_command(link, Command::WriteInquiryScanType { scan_type: 1 });
+        }
+    }
+
     /// Controller LE feature bitmap learned during power-on.
     ///
     /// Controllers advertising the Bluetooth 6.1 all-page command return the
@@ -2150,6 +2235,7 @@ impl Device {
         self.pending_classic_roles.clear();
         self.pending_remote_name_commands.clear();
         self.pending_remote_name_requests.clear();
+        self.pending_local_lmp_feature_pages.clear();
         self.synchronous_connections.clear();
         self.synchronous_requests.clear();
         self.synchronous_inbox.clear();
@@ -2233,6 +2319,7 @@ impl Device {
             || !self.cis_links.is_empty()
             || !self.synchronous_connections.is_empty()
             || !self.pending_remote_name_requests.is_empty()
+            || !self.pending_local_lmp_feature_pages.is_empty()
         {
             self.flush();
         }
@@ -2259,6 +2346,12 @@ impl Device {
         self.public_address = None;
         self.local_supported_commands = None;
         self.local_supported_commands_status = None;
+        self.local_version = None;
+        self.local_version_status = None;
+        self.local_lmp_features.clear();
+        self.local_lmp_features_max_page = None;
+        self.local_lmp_feature_statuses.clear();
+        self.pending_local_lmp_feature_pages.clear();
         self.local_le_features = None;
         self.local_le_features_max_page = None;
         self.local_le_features_status = None;
@@ -2379,10 +2472,6 @@ impl Device {
                 },
             );
             self.send_hci_command(link, Command::WriteScanEnable { scan_enable });
-            if self.config.classic_interlaced_scan_enabled {
-                self.send_hci_command(link, Command::WritePageScanType { page_scan_type: 1 });
-                self.send_hci_command(link, Command::WriteInquiryScanType { scan_type: 1 });
-            }
         }
 
         // Upstream Host initialization first learns the Supported Commands
@@ -2394,6 +2483,40 @@ impl Device {
 
         self.powered_on = true;
         Ok(())
+    }
+
+    /// Reset the controller and restart Host capability discovery.
+    ///
+    /// Like upstream `Device.reset`, this preserves the device's powered flag,
+    /// while an already-ready host is flushed before the reset command.
+    pub fn reset(&mut self, link: &mut LocalLink) {
+        if self.powered_on
+            || !self.le_connections.is_empty()
+            || !self.classic_connections.is_empty()
+            || !self.cis_links.is_empty()
+            || !self.synchronous_connections.is_empty()
+            || !self.pending_peer_lookups.is_empty()
+            || !self.pending_remote_name_requests.is_empty()
+            || !self.pending_local_lmp_feature_pages.is_empty()
+            || self.le_connecting
+            || !self.pending_disconnections.is_empty()
+        {
+            self.flush();
+        }
+
+        self.local_supported_commands = None;
+        self.local_supported_commands_status = None;
+        self.local_version = None;
+        self.local_version_status = None;
+        self.local_lmp_features.clear();
+        self.local_lmp_features_max_page = None;
+        self.local_lmp_feature_statuses.clear();
+        self.pending_local_lmp_feature_pages.clear();
+        self.local_le_features = None;
+        self.local_le_features_max_page = None;
+        self.local_le_features_status = None;
+        self.send_hci_command(link, Command::Reset);
+        self.send_hci_command(link, Command::ReadLocalSupportedCommands);
     }
 
     /// Mark the host side powered off after any transport-specific flush.
@@ -7386,6 +7509,9 @@ impl Device {
                         self.local_supported_commands = Some(supported_commands);
                         let supported_names =
                             bumble_hci::metadata::supported_command_names(&supported_commands);
+                        if supported_names.contains(&"HCI_READ_LOCAL_VERSION_INFORMATION_COMMAND") {
+                            self.send_hci_command(link, Command::ReadLocalVersionInformation);
+                        }
                         if supported_names
                             .contains(&"HCI_LE_READ_ALL_LOCAL_SUPPORTED_FEATURES_COMMAND")
                         {
@@ -7395,6 +7521,83 @@ impl Device {
                         {
                             self.send_hci_command(link, Command::LeReadLocalSupportedFeatures);
                         }
+                        if supported_names.contains(&"HCI_READ_LOCAL_EXTENDED_FEATURES_COMMAND") {
+                            self.request_local_lmp_feature_page(link, 0);
+                        } else if supported_names
+                            .contains(&"HCI_READ_LOCAL_SUPPORTED_FEATURES_COMMAND")
+                        {
+                            self.send_hci_command(link, Command::ReadLocalSupportedFeatures);
+                        }
+                    }
+                }
+                HciPacket::Event(Event::CommandComplete {
+                    command_opcode,
+                    return_parameters:
+                        bumble_hci::ReturnParameters::ReadLocalVersionInformation {
+                            status,
+                            hci_version,
+                            hci_subversion,
+                            lmp_version,
+                            company_identifier,
+                            lmp_subversion,
+                        },
+                    ..
+                }) if command_opcode == bumble_hci::HCI_READ_LOCAL_VERSION_INFORMATION_COMMAND => {
+                    self.local_version_status = Some(status);
+                    if status == 0 {
+                        self.local_version = Some(LocalVersionInformation {
+                            hci_version,
+                            hci_subversion,
+                            lmp_version,
+                            company_identifier,
+                            lmp_subversion,
+                        });
+                    }
+                }
+                HciPacket::Event(Event::CommandComplete {
+                    command_opcode,
+                    return_parameters:
+                        bumble_hci::ReturnParameters::ReadLocalExtendedFeatures {
+                            status,
+                            page_number,
+                            maximum_page_number,
+                            extended_lmp_features,
+                        },
+                    ..
+                }) if command_opcode == bumble_hci::HCI_READ_LOCAL_EXTENDED_FEATURES_COMMAND => {
+                    if let Some(index) = self
+                        .pending_local_lmp_feature_pages
+                        .iter()
+                        .position(|pending_page| *pending_page == page_number)
+                    {
+                        self.pending_local_lmp_feature_pages.remove(index);
+                    }
+                    self.local_lmp_feature_statuses.insert(page_number, status);
+                    if status == 0 {
+                        self.local_lmp_features
+                            .insert(page_number, extended_lmp_features);
+                        self.local_lmp_features_max_page = Some(maximum_page_number);
+                        if page_number < maximum_page_number {
+                            self.request_local_lmp_feature_page(link, page_number + 1);
+                        } else {
+                            self.apply_supported_classic_scan_types(link);
+                        }
+                    }
+                }
+                HciPacket::Event(Event::CommandComplete {
+                    command_opcode,
+                    return_parameters:
+                        bumble_hci::ReturnParameters::ReadLocalSupportedFeatures {
+                            status,
+                            lmp_features,
+                        },
+                    ..
+                }) if command_opcode == bumble_hci::HCI_READ_LOCAL_SUPPORTED_FEATURES_COMMAND => {
+                    self.local_lmp_feature_statuses.insert(0, status);
+                    if status == 0 {
+                        self.local_lmp_features.insert(0, lmp_features);
+                        self.local_lmp_features_max_page = Some(0);
+                        self.apply_supported_classic_scan_types(link);
                     }
                 }
                 HciPacket::Event(Event::CommandComplete {
@@ -7430,6 +7633,29 @@ impl Device {
                     if status == 0 {
                         self.local_le_features = Some(le_features.to_vec());
                         self.local_le_features_max_page = None;
+                    }
+                }
+                HciPacket::Event(Event::CommandComplete {
+                    command_opcode,
+                    return_parameters: bumble_hci::ReturnParameters::Status { status },
+                    ..
+                }) if command_opcode == bumble_hci::HCI_READ_LOCAL_VERSION_INFORMATION_COMMAND => {
+                    self.local_version_status = Some(status);
+                }
+                HciPacket::Event(Event::CommandComplete {
+                    command_opcode,
+                    return_parameters: bumble_hci::ReturnParameters::Status { status },
+                    ..
+                }) if command_opcode == bumble_hci::HCI_READ_LOCAL_SUPPORTED_FEATURES_COMMAND => {
+                    self.local_lmp_feature_statuses.insert(0, status);
+                }
+                HciPacket::Event(Event::CommandComplete {
+                    command_opcode,
+                    return_parameters: bumble_hci::ReturnParameters::Status { status },
+                    ..
+                }) if command_opcode == bumble_hci::HCI_READ_LOCAL_EXTENDED_FEATURES_COMMAND => {
+                    if let Some(page_number) = self.pending_local_lmp_feature_pages.pop_front() {
+                        self.local_lmp_feature_statuses.insert(page_number, status);
                     }
                 }
                 HciPacket::Event(Event::CommandComplete {
