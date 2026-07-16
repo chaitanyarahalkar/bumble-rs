@@ -3,6 +3,7 @@ use std::sync::{Arc, Mutex};
 use bumble::{Address, AddressType};
 use bumble_hci::{
     AclDataPacket, AdvertisingReport, Command, Event, HciPacket, IsoDataPacket, LeMetaEvent,
+    ReturnParameters, HCI_RESET_COMMAND,
 };
 use bumble_host::{
     ChannelSoundingSubeventResult, ChannelSoundingSubeventResultContinue, ClassicPairingEvent,
@@ -109,6 +110,88 @@ fn channel_sounding_subevents_and_vendor_events_are_retained_and_published() {
         ]
     );
     assert_eq!(*observed.lock().unwrap(), journal);
+}
+
+#[test]
+fn reset_gates_controller_packets_until_a_successful_completion() {
+    let mut transport = ScriptedTransport::default();
+    let mut device = Device::new(0);
+
+    device.reset(&mut transport);
+    assert!(!device.controller_ready());
+    assert_eq!(device.reset_status(), None);
+    transport.events.extend([
+        HciPacket::Event(Event::Vendor { data: vec![1] }),
+        HciPacket::Event(Event::CommandComplete {
+            num_hci_command_packets: 1,
+            command_opcode: HCI_RESET_COMMAND,
+            return_parameters: ReturnParameters::Status { status: 0 },
+        }),
+        HciPacket::Event(Event::Vendor { data: vec![2] }),
+    ]);
+
+    assert!(device.poll(&mut transport));
+    assert!(device.controller_ready());
+    assert_eq!(device.reset_status(), Some(0));
+    assert_eq!(device.take_vendor_events(), vec![vec![2]]);
+    assert_eq!(
+        device.take_device_events(),
+        vec![DeviceEvent::VendorEvent(vec![2])]
+    );
+
+    device.reset(&mut transport);
+    transport.events.extend([
+        HciPacket::Event(Event::CommandComplete {
+            num_hci_command_packets: 1,
+            command_opcode: HCI_RESET_COMMAND,
+            return_parameters: ReturnParameters::Status { status: 0x0C },
+        }),
+        HciPacket::Event(Event::Vendor { data: vec![3] }),
+    ]);
+
+    assert!(device.poll(&mut transport));
+    assert!(!device.controller_ready());
+    assert_eq!(device.reset_status(), Some(0x0C));
+    assert!(device.take_vendor_events().is_empty());
+    assert!(device.take_device_events().is_empty());
+}
+
+#[test]
+fn transport_loss_flushes_connections_through_the_normal_event_path() {
+    let handle = 0x0042;
+    let mut transport = ScriptedTransport {
+        events: vec![HciPacket::Event(Event::LeMeta(
+            LeMetaEvent::ConnectionComplete {
+                status: 0,
+                connection_handle: handle,
+                role: 0,
+                peer_address_type: 1,
+                peer_address: random_address("C0:00:00:00:00:42"),
+                connection_interval: 24,
+                peripheral_latency: 0,
+                supervision_timeout: 72,
+                central_clock_accuracy: 0,
+            },
+        ))],
+    };
+    let mut device = Device::new(0);
+    assert!(device.poll(&mut transport));
+    assert!(device.is_connected_on_handle(handle));
+    device.take_device_events();
+
+    device.on_transport_lost();
+
+    assert!(!device.is_connected_on_handle(handle));
+    assert_eq!(
+        device.take_device_events(),
+        vec![
+            DeviceEvent::Flush,
+            DeviceEvent::Disconnected {
+                connection_handle: handle,
+                reason: 0,
+            },
+        ]
+    );
 }
 
 impl HostTransport for ScriptedTransport {

@@ -158,6 +158,7 @@ crate whose behavior is verified against the upstream Python.
 | 182. External controller packet-pool application | `bumble-host` + `bumble-transport` | ✅ atomic distinct Classic/LE/ISO pools + zero-capacity fallback green |
 | 183. Host reset capability tail | `bumble-host` + `bumble-transport` | ✅ suggested data-length reconciliation + advertising capacity/default discovery green |
 | 184. Remaining Host event publication | `bumble-host` | ✅ Channel Sounding result fragments + opaque vendor events retained and published green |
+| 185. Host readiness and transport loss | `bumble-host` | ✅ pre-reset packet gate + reset status + ordered transport-loss flush green |
 | 103+. Repository completion audit and remaining gaps | workspace | in progress |
 
 The LE lifecycle is now complete end-to-end through library APIs: **connect →
@@ -4040,6 +4041,23 @@ survive the high-level device pump instead of falling through its catch-all.
   and the same ordered listener stream rather than inventing vendor semantics.
 - Focused scripted coverage pins result fidelity, unknown-handle forwarding,
   event ordering, listener ordering, and destructive journal drains.
+
+## Slice 185 — what's here
+
+The Host lifecycle now preserves upstream's controller-readiness boundary and
+transport-loss behavior.
+
+- `power_on` and explicit reset close the inbound packet gate until a matching
+  HCI Reset Command Complete reports success. Pre-reset controller traffic is
+  consumed but ignored; later packets in the same batch become visible only
+  after that successful completion.
+- Failed Reset completions retain their status and keep the gate closed, while
+  `controller_ready` and `reset_status` make the lifecycle observable without
+  adding an async command future.
+- `on_transport_lost` drives the ordinary ordered Flush and zero-reason
+  disconnection path, matching upstream after its pending command is failed.
+- Focused coverage pins successful and failed Reset gates, same-batch ordering,
+  stale fixture correction, and transport-loss cleanup of a live connection.
 
 ## Acceptance
 

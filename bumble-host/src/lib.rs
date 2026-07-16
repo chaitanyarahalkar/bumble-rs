@@ -1650,6 +1650,8 @@ pub struct Device {
     local_le_features: Option<Vec<u8>>,
     local_le_features_max_page: Option<u8>,
     local_le_features_status: Option<u8>,
+    controller_ready: bool,
+    reset_status: Option<u8>,
     host_initialization_started: bool,
     host_initialization_complete: bool,
     event_mask_status: Option<u8>,
@@ -1805,6 +1807,8 @@ impl Device {
             local_le_features: None,
             local_le_features_max_page: None,
             local_le_features_status: None,
+            controller_ready: true,
+            reset_status: None,
             host_initialization_started: false,
             host_initialization_complete: false,
             event_mask_status: None,
@@ -1960,6 +1964,8 @@ impl Device {
             local_le_features: None,
             local_le_features_max_page: None,
             local_le_features_status: None,
+            controller_ready: true,
+            reset_status: None,
             host_initialization_started: false,
             host_initialization_complete: false,
             event_mask_status: None,
@@ -2203,6 +2209,16 @@ impl Device {
 
     pub fn local_version_status(&self) -> Option<u8> {
         self.local_version_status
+    }
+
+    /// Whether controller packets are accepted after the most recent reset.
+    pub fn controller_ready(&self) -> bool {
+        self.controller_ready
+    }
+
+    /// Terminal status from the most recent HCI Reset completion, if any.
+    pub fn reset_status(&self) -> Option<u8> {
+        self.reset_status
     }
 
     /// Whether every reset-time Host initialization command has completed.
@@ -2577,6 +2593,16 @@ impl Device {
         self.local_channel_sounding_capabilities_status
     }
 
+    /// Notify the host that its controller transport has been lost.
+    ///
+    /// Upstream resolves any pending command with a transport error and emits
+    /// its ordinary flush event. This synchronous host has no outstanding
+    /// command future, so the observable equivalent is the same ordered flush
+    /// and per-connection teardown performed by [`Device::flush`].
+    pub fn on_transport_lost(&mut self) {
+        self.flush();
+    }
+
     /// Flush all host-side connection state.
     ///
     /// This is the synchronous counterpart to upstream `Host.flush` and
@@ -2762,6 +2788,8 @@ impl Device {
         self.local_le_features = None;
         self.local_le_features_max_page = None;
         self.local_le_features_status = None;
+        self.controller_ready = false;
+        self.reset_status = None;
         self.clear_host_initialization_state();
         self.address_resolver = None;
         self.local_channel_sounding_capabilities = None;
@@ -2923,6 +2951,8 @@ impl Device {
         self.local_le_features = None;
         self.local_le_features_max_page = None;
         self.local_le_features_status = None;
+        self.controller_ready = false;
+        self.reset_status = None;
         self.clear_host_initialization_state();
         self.send_hci_command(link, Command::Reset);
         self.send_hci_command(link, Command::ReadLocalSupportedCommands);
@@ -7262,7 +7292,26 @@ impl Device {
         }
 
         for event in events {
+            if !self.controller_ready
+                && !matches!(
+                    &event,
+                    HciPacket::Event(Event::CommandComplete {
+                        command_opcode,
+                        ..
+                    }) if *command_opcode == bumble_hci::HCI_RESET_COMMAND
+                )
+            {
+                continue;
+            }
             match event {
+                HciPacket::Event(Event::CommandComplete {
+                    command_opcode,
+                    return_parameters: bumble_hci::ReturnParameters::Status { status },
+                    ..
+                }) if command_opcode == bumble_hci::HCI_RESET_COMMAND => {
+                    self.reset_status = Some(status);
+                    self.controller_ready = status == 0;
+                }
                 HciPacket::Event(Event::LeMeta(LeMetaEvent::ConnectionComplete {
                     status: 0,
                     connection_handle,

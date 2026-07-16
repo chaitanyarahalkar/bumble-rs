@@ -9,7 +9,7 @@ use bumble_hci::{
     HCI_LE_WRITE_SUGGESTED_DEFAULT_DATA_LENGTH_COMMAND, HCI_READ_BUFFER_SIZE_COMMAND,
     HCI_READ_LOCAL_EXTENDED_FEATURES_COMMAND, HCI_READ_LOCAL_SUPPORTED_COMMANDS_COMMAND,
     HCI_READ_LOCAL_SUPPORTED_FEATURES_COMMAND, HCI_READ_LOCAL_VERSION_INFORMATION_COMMAND,
-    HCI_SET_EVENT_MASK_COMMAND, HCI_SET_EVENT_MASK_PAGE_2_COMMAND,
+    HCI_RESET_COMMAND, HCI_SET_EVENT_MASK_COMMAND, HCI_SET_EVENT_MASK_PAGE_2_COMMAND,
 };
 use bumble_host::{
     ControllerBufferInfo, Device, DeviceEvent, HostTransport, LeSuggestedDefaultDataLength,
@@ -101,13 +101,16 @@ fn power_on_selects_legacy_le_feature_fallback_and_exposes_capabilities() {
 
     let mut supported_commands = [0; 64];
     supported_commands[25] = 1 << 2;
-    transport.events.push(command_complete(
-        HCI_READ_LOCAL_SUPPORTED_COMMANDS_COMMAND,
-        ReturnParameters::ReadLocalSupportedCommands {
-            status: 0,
-            supported_commands,
-        },
-    ));
+    transport.events.extend([
+        command_complete(HCI_RESET_COMMAND, ReturnParameters::Status { status: 0 }),
+        command_complete(
+            HCI_READ_LOCAL_SUPPORTED_COMMANDS_COMMAND,
+            ReturnParameters::ReadLocalSupportedCommands {
+                status: 0,
+                supported_commands,
+            },
+        ),
+    ]);
     assert!(device.poll(&mut transport));
     assert_eq!(
         transport.commands,
@@ -159,13 +162,16 @@ fn power_on_discovers_local_version_and_every_lmp_feature_page() {
 
     let mut supported_commands = [0; 64];
     supported_commands[14] = (1 << 3) | (1 << 6);
-    transport.events.push(command_complete(
-        HCI_READ_LOCAL_SUPPORTED_COMMANDS_COMMAND,
-        ReturnParameters::ReadLocalSupportedCommands {
-            status: 0,
-            supported_commands,
-        },
-    ));
+    transport.events.extend([
+        command_complete(HCI_RESET_COMMAND, ReturnParameters::Status { status: 0 }),
+        command_complete(
+            HCI_READ_LOCAL_SUPPORTED_COMMANDS_COMMAND,
+            ReturnParameters::ReadLocalSupportedCommands {
+                status: 0,
+                supported_commands,
+            },
+        ),
+    ]);
     assert!(device.poll(&mut transport));
     assert_eq!(
         transport.commands,
