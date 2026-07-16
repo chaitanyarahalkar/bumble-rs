@@ -145,7 +145,7 @@ impl RuntimeState {
         self.device.poll(&mut self.host);
         match self
             .host
-            .wait_for_activity(timeout)
+            .wait_for_device_activity(&mut self.device, timeout)
             .map_err(|error| error.to_string())?
         {
             ExternalHostActivity::Packet | ExternalHostActivity::Timeout => Ok(true),

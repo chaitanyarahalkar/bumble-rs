@@ -369,7 +369,7 @@ impl LePairingSession {
                     self.connection_handle
                 )));
             }
-            match host.wait_for_activity(remaining)? {
+            match host.wait_for_device_activity(device, remaining)? {
                 ExternalHostActivity::Packet => {}
                 ExternalHostActivity::Timeout => {
                     return Err(Error::Remote(format!(
@@ -627,7 +627,7 @@ impl ClassicPairingSession {
                     self.connection_handle
                 )));
             }
-            match host.wait_for_activity(remaining)? {
+            match host.wait_for_device_activity(device, remaining)? {
                 ExternalHostActivity::Packet => {}
                 ExternalHostActivity::Timeout => {
                     return Err(Error::Remote(format!(
@@ -1028,7 +1028,7 @@ impl ClassicCtkdPairingSession {
                     self.connection_handle
                 )));
             }
-            match host.wait_for_activity(remaining)? {
+            match host.wait_for_device_activity(device, remaining)? {
                 ExternalHostActivity::Packet => {}
                 ExternalHostActivity::Timeout => {
                     return Err(Error::Remote(format!(
@@ -1154,7 +1154,7 @@ impl<'a> ExternalAttTransport<'a> {
                     request.op_code()
                 )));
             }
-            match self.host.wait_for_activity(remaining)? {
+            match self.host.wait_for_device_activity(self.device, remaining)? {
                 ExternalHostActivity::Packet => {}
                 ExternalHostActivity::Timeout => {
                     return Err(Error::Remote(format!(
@@ -1243,7 +1243,7 @@ impl<'a> ExternalEattTransport<'a> {
                     "timed out opening EATT on handle {connection_handle:#06x}"
                 )));
             }
-            match host.wait_for_activity(remaining)? {
+            match host.wait_for_device_activity(device, remaining)? {
                 ExternalHostActivity::Packet => {}
                 ExternalHostActivity::Timeout => {
                     return Err(Error::Remote(format!(
@@ -1327,7 +1327,7 @@ impl<'a> ExternalEattTransport<'a> {
                     request.op_code()
                 )));
             }
-            match self.host.wait_for_activity(remaining)? {
+            match self.host.wait_for_device_activity(self.device, remaining)? {
                 ExternalHostActivity::Packet => {}
                 ExternalHostActivity::Timeout => {
                     return Err(Error::Remote(format!(
@@ -1383,6 +1383,7 @@ pub struct ExternalHost {
     device_command_queue: VecDeque<Command>,
     device_pending_command: Option<u16>,
     device_command_credit: bool,
+    device_transport_loss_notified: bool,
     state: ExternalHostState,
 }
 
@@ -1417,6 +1418,7 @@ impl ExternalHost {
             device_command_queue: VecDeque::new(),
             device_pending_command: None,
             device_command_credit: true,
+            device_transport_loss_notified: false,
             state: ExternalHostState::Running,
         }
     }
@@ -1444,11 +1446,36 @@ impl ExternalHost {
         }
     }
 
+    /// Wait for controller activity and propagate terminal transport state to
+    /// the attached [`Device`].
+    ///
+    /// Upstream transport sources call `Host.on_transport_lost` when their
+    /// input terminates. Rust callers that drive a separate [`ExternalHost`]
+    /// and [`Device`] should use this method in their application loop so an
+    /// ended or failed transport performs the same ordered host flush exactly
+    /// once before the terminal activity or error is returned.
+    pub fn wait_for_device_activity(
+        &mut self,
+        device: &mut Device,
+        timeout: Duration,
+    ) -> Result<ExternalHostActivity> {
+        let activity = self.wait_for_activity(timeout);
+        if matches!(activity, Ok(ExternalHostActivity::Ended) | Err(_)) {
+            self.notify_device_transport_lost(device);
+        }
+        activity
+    }
+
     /// Send one HCI command and wait for its matching Command Complete or
     /// Command Status event. Unrelated asynchronous packets remain queued for
     /// the attached [`Device`].
     pub fn send_command(&mut self, command: Command, timeout: Duration) -> Result<CommandResponse> {
         let expected_opcode = command.op_code();
+        if !matches!(self.state, ExternalHostState::Running) {
+            return Err(
+                self.failure_error(format!("failed to send HCI command {expected_opcode:#06x}"))
+            );
+        }
         if self.device_pending_command.is_some()
             || !self.device_command_queue.is_empty()
             || !self.device_command_credit
@@ -1990,6 +2017,17 @@ impl ExternalHost {
         self.state = ExternalHostState::Failed(message.into());
     }
 
+    fn notify_device_transport_lost(&mut self, device: &mut Device) {
+        if self.device_transport_loss_notified {
+            return;
+        }
+        self.device_transport_loss_notified = true;
+        self.device_command_queue.clear();
+        self.device_pending_command = None;
+        self.device_command_credit = false;
+        device.on_transport_lost();
+    }
+
     fn failure_error(&self, fallback: String) -> Error {
         match &self.state {
             ExternalHostState::Failed(message) => Error::Remote(message.clone()),
@@ -2088,7 +2126,7 @@ mod tests {
         HCI_IO_CAPABILITY_REQUEST_REPLY_COMMAND, HCI_LINK_KEY_REQUEST_NEGATIVE_REPLY_COMMAND,
         HCI_USER_CONFIRMATION_REQUEST_REPLY_COMMAND,
     };
-    use bumble_host::Device;
+    use bumble_host::{Device, DeviceEvent};
     use bumble_l2cap::{ControlFrame, L2capPdu, L2CAP_LE_SIGNALING_CID};
     use std::collections::BTreeMap;
     use std::sync::{Arc, Mutex};
@@ -2223,6 +2261,116 @@ mod tests {
             host.wait_for_activity(Duration::from_secs(1)).unwrap(),
             ExternalHostActivity::Ended
         );
+    }
+
+    #[test]
+    fn device_aware_wait_flushes_once_when_transport_ends() {
+        let peer =
+            Address::parse("11:22:33:44:55:66/P", bumble::AddressType::PUBLIC_DEVICE).unwrap();
+        let connection_handle = 0x0234;
+        let connection = HciPacket::Event(Event::ConnectionComplete {
+            status: 0,
+            connection_handle,
+            bd_addr: peer,
+            link_type: 1,
+            encryption_enabled: 0,
+        });
+        let mut host = ExternalHost::new(split(vec![connection], RecordingSink::default()));
+        let mut device = Device::new(0);
+
+        assert_eq!(
+            host.wait_for_device_activity(&mut device, Duration::from_secs(1))
+                .unwrap(),
+            ExternalHostActivity::Packet
+        );
+        assert!(device.poll(&mut host));
+        assert!(device.classic_connection(connection_handle).is_some());
+        device.take_device_events();
+
+        assert_eq!(
+            host.wait_for_device_activity(&mut device, Duration::from_secs(1))
+                .unwrap(),
+            ExternalHostActivity::Ended
+        );
+        assert!(device.classic_connection(connection_handle).is_none());
+        assert_eq!(
+            device.take_device_events(),
+            vec![
+                DeviceEvent::Flush,
+                DeviceEvent::Disconnected {
+                    connection_handle,
+                    reason: 0,
+                },
+            ]
+        );
+
+        assert_eq!(
+            host.wait_for_device_activity(&mut device, Duration::from_secs(1))
+                .unwrap(),
+            ExternalHostActivity::Ended
+        );
+        assert!(device.take_device_events().is_empty());
+        assert!(matches!(
+            host.send_command(Command::Reset, Duration::from_secs(1)),
+            Err(Error::Remote(message)) if message == "transport has ended"
+        ));
+    }
+
+    #[test]
+    fn device_aware_wait_flushes_once_when_transport_fails() {
+        let peer =
+            Address::parse("11:22:33:44:55:66/P", bumble::AddressType::PUBLIC_DEVICE).unwrap();
+        let connection_handle = 0x0234;
+        let script = VecDeque::from([
+            Ok(Some(HciPacket::Event(Event::ConnectionComplete {
+                status: 0,
+                connection_handle,
+                bd_addr: peer,
+                link_type: 1,
+                encryption_enabled: 0,
+            }))),
+            Err(Error::Remote("read failed".into())),
+        ]);
+        let mut host = ExternalHost::new(SplitOpenedTransport {
+            source: Box::new(ScriptedSource(script)),
+            sink: Box::new(RecordingSink::default()),
+            metadata: BTreeMap::new(),
+        });
+        let mut device = Device::new(0);
+
+        assert_eq!(
+            host.wait_for_device_activity(&mut device, Duration::from_secs(1))
+                .unwrap(),
+            ExternalHostActivity::Packet
+        );
+        assert!(device.poll(&mut host));
+        assert!(device.classic_connection(connection_handle).is_some());
+        device.take_device_events();
+
+        assert!(matches!(
+            host.wait_for_device_activity(&mut device, Duration::from_secs(1)),
+            Err(Error::Remote(message)) if message.contains("read failed")
+        ));
+        assert!(device.classic_connection(connection_handle).is_none());
+        assert_eq!(
+            device.take_device_events(),
+            vec![
+                DeviceEvent::Flush,
+                DeviceEvent::Disconnected {
+                    connection_handle,
+                    reason: 0,
+                },
+            ]
+        );
+
+        assert!(host
+            .wait_for_device_activity(&mut device, Duration::from_secs(1))
+            .is_err());
+        assert!(device.take_device_events().is_empty());
+        assert!(matches!(
+            host.send_command(Command::Reset, Duration::from_secs(1)),
+            Err(Error::Remote(message)) if message.contains("read failed")
+        ));
     }
 
     #[test]

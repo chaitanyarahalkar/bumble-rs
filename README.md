@@ -160,6 +160,7 @@ crate whose behavior is verified against the upstream Python.
 | 184. Remaining Host event publication | `bumble-host` | ✅ Channel Sounding result fragments + opaque vendor events retained and published green |
 | 185. Host readiness and transport loss | `bumble-host` | ✅ pre-reset packet gate + reset status + ordered transport-loss flush green |
 | 186. External Host command serialization | `bumble-transport` | ✅ one pending Device command + HCI credit stalls/resume + blocking-route exclusion green |
+| 187. External transport-loss propagation | `bumble-transport` + `bumble-pandora` | ✅ device-aware terminal wait + exactly-once ordered flush green |
 | 103+. Repository completion audit and remaining gaps | workspace | in progress |
 
 The LE lifecycle is now complete end-to-end through library APIs: **connect →
@@ -4081,6 +4082,25 @@ one-command-at-a-time HCI flow-control boundary.
 - Focused coverage pins FIFO writes, Complete and Status handling, zero-credit
   stalling, credit-only resumption, event/response handoff ordering, Classic
   Pandora pairing, and blocking-route exclusion.
+
+## Slice 187 — what's here
+
+External controller termination now reaches the attached `Device` through the
+same Host flush lifecycle as upstream transport sources.
+
+- `ExternalHost::wait_for_device_activity` wraps the raw activity wait and
+  invokes `Device::on_transport_lost` before returning an ended transport or
+  read/write failure.
+- Notification is exactly once: queued and pending Device commands are retired,
+  the command-credit gate is closed, and repeated terminal waits cannot emit a
+  second Flush or Disconnected event.
+- Managed LE/Classic pairing, Classic CTKD, ATT/EATT request loops, and the
+  long-lived Pandora runtime use the device-aware path. The raw
+  `wait_for_activity` API remains available for controller-only tooling that
+  does not own a `Device`.
+- Focused coverage pins both graceful end-of-stream and failed-reader paths,
+  including ordered Flush then zero-reason Disconnected publication and
+  duplicate-notification suppression.
 
 ## Acceptance
 
