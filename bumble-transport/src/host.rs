@@ -10,8 +10,8 @@ use bumble_hci::{
     SynchronousDataPacket,
 };
 use bumble_host::{
-    ClassicPairingEvent, Device, HostTransport, HOST_EVENT_MASK, HOST_EVENT_MASK_PAGE_2,
-    HOST_LE_EVENT_MASK, HOST_LE_EVENT_MASK_LEGACY,
+    ClassicPairingEvent, ControllerBufferInfo, Device, HostTransport, HOST_EVENT_MASK,
+    HOST_EVENT_MASK_PAGE_2, HOST_LE_EVENT_MASK, HOST_LE_EVENT_MASK_LEGACY,
 };
 use bumble_l2cap::LeCreditBasedChannelSpec;
 use bumble_smp::{
@@ -1500,8 +1500,8 @@ impl ExternalHost {
         }
     }
 
-    /// Reset and configure an external controller, then apply its LE ACL flow
-    /// control limits to `device`.
+    /// Reset and configure an external controller, then apply its distinct
+    /// Classic ACL, LE ACL, and ISO flow-control pools to `device`.
     pub fn initialize_device(
         &mut self,
         device: &mut Device,
@@ -1717,27 +1717,28 @@ impl ExternalHost {
             }
         }
 
-        let (packet_length, packet_count) =
-            if info.le_acl_data_packet_length != 0 && info.total_num_le_acl_data_packets != 0 {
-                (
-                    info.le_acl_data_packet_length,
-                    usize::from(info.total_num_le_acl_data_packets),
-                )
-            } else {
-                (
-                    info.acl_data_packet_length,
-                    usize::from(info.total_num_acl_data_packets),
-                )
-            };
-        if packet_length != 0 && !device.set_acl_data_packet_length(usize::from(packet_length)) {
-            return Err(Error::Remote(format!(
-                "invalid controller ACL packet length {packet_length}"
-            )));
-        }
-        if packet_count != 0 && !device.set_acl_max_in_flight(packet_count) {
-            return Err(Error::Remote(format!(
-                "invalid controller ACL packet count {packet_count}"
-            )));
+        let classic_acl = supported_names
+            .contains(&"HCI_READ_BUFFER_SIZE_COMMAND")
+            .then_some(ControllerBufferInfo {
+                data_packet_length: info.acl_data_packet_length,
+                total_num_data_packets: info.total_num_acl_data_packets,
+            });
+        let has_le_acl_pool = supported_names.contains(&"HCI_LE_READ_BUFFER_SIZE_V2_COMMAND")
+            || supported_names.contains(&"HCI_LE_READ_BUFFER_SIZE_COMMAND");
+        let le_acl = has_le_acl_pool.then_some(ControllerBufferInfo {
+            data_packet_length: info.le_acl_data_packet_length,
+            total_num_data_packets: u16::from(info.total_num_le_acl_data_packets),
+        });
+        let iso = supported_names
+            .contains(&"HCI_LE_READ_BUFFER_SIZE_V2_COMMAND")
+            .then_some(ControllerBufferInfo {
+                data_packet_length: info.iso_data_packet_length,
+                total_num_data_packets: u16::from(info.total_num_iso_data_packets),
+            });
+        if !device.configure_controller_packet_pools(classic_acl, le_acl, iso) {
+            return Err(Error::Remote(
+                "cannot replace controller packet pools while packets are pending".into(),
+            ));
         }
         Ok(info)
     }
@@ -2089,7 +2090,7 @@ mod tests {
     }
 
     #[test]
-    fn initializes_controller_and_device_acl_flow_control() {
+    fn initializes_controller_and_all_device_packet_pools() {
         let mut supported_commands = [0; 64];
         supported_commands[14] = 0xF8;
         supported_commands[22] = 0x04;
@@ -2224,8 +2225,33 @@ mod tests {
         assert_eq!(info.local_lmp_features.len(), 4);
         assert_eq!(info.local_lmp_features[0][7], 0x80);
         assert_eq!(info.local_lmp_features[3][0], 3);
-        assert_eq!(device.acl_data_packet_length(), 251);
-        assert_eq!(device.acl_max_in_flight(), 12);
+        assert_eq!(
+            device.classic_acl_buffer(),
+            Some(ControllerBufferInfo {
+                data_packet_length: 1021,
+                total_num_data_packets: 8,
+            })
+        );
+        assert_eq!(
+            device.le_acl_buffer(),
+            Some(ControllerBufferInfo {
+                data_packet_length: 251,
+                total_num_data_packets: 12,
+            })
+        );
+        assert_eq!(
+            device.iso_buffer(),
+            Some(ControllerBufferInfo {
+                data_packet_length: 120,
+                total_num_data_packets: 6,
+            })
+        );
+        assert_eq!(device.acl_data_packet_length(), 1021);
+        assert_eq!(device.acl_max_in_flight(), 8);
+        assert_eq!(device.le_acl_data_packet_length(), 251);
+        assert_eq!(device.le_acl_max_in_flight(), 12);
+        assert_eq!(device.iso_data_packet_length(), Some(120));
+        assert_eq!(device.iso_max_in_flight(), Some(6));
         assert_eq!(
             recorded
                 .0

@@ -5513,6 +5513,76 @@ impl Device {
         self.server.is_some()
     }
 
+    /// Atomically apply the controller-owned Classic ACL, LE ACL, and ISO
+    /// packet pools discovered by an external Host reset.
+    ///
+    /// A pool is usable only when both its packet length and packet count are
+    /// nonzero. An unusable LE pool shares the Classic ACL queue, matching
+    /// upstream Bumble, while an unusable ISO pool remains unavailable. The
+    /// raw descriptors are retained even when they report zero capacity.
+    /// Reconfiguration is rejected while any existing pool has queued or
+    /// in-flight packets so flow-control accounting cannot be discarded.
+    pub fn configure_controller_packet_pools(
+        &mut self,
+        classic_acl: Option<ControllerBufferInfo>,
+        le_acl: Option<ControllerBufferInfo>,
+        iso: Option<ControllerBufferInfo>,
+    ) -> bool {
+        if self.acl_packet_queue.pending() != 0
+            || self
+                .le_acl_packet_queue
+                .as_ref()
+                .is_some_and(|queue| queue.pending() != 0)
+            || self
+                .iso_packet_queue
+                .as_ref()
+                .is_some_and(|queue| queue.pending() != 0)
+        {
+            return false;
+        }
+
+        let usable_classic = classic_acl
+            .filter(|buffer| buffer.data_packet_length != 0 && buffer.total_num_data_packets != 0);
+        let acl_data_packet_length = usable_classic
+            .map(|buffer| usize::from(buffer.data_packet_length))
+            .unwrap_or(27);
+        let acl_packet_queue = DataPacketQueue::new(
+            usable_classic
+                .map(|buffer| usize::from(buffer.total_num_data_packets))
+                .unwrap_or(64),
+        )
+        .expect("default and discovered Classic ACL pools have nonzero capacity");
+
+        let usable_le = le_acl
+            .filter(|buffer| buffer.data_packet_length != 0 && buffer.total_num_data_packets != 0);
+        let le_acl_data_packet_length =
+            usable_le.map(|buffer| usize::from(buffer.data_packet_length));
+        let le_acl_packet_queue = usable_le.map(|buffer| {
+            DataPacketQueue::new(usize::from(buffer.total_num_data_packets))
+                .expect("usable LE ACL pool has nonzero capacity")
+        });
+
+        let usable_iso = iso
+            .filter(|buffer| buffer.data_packet_length != 0 && buffer.total_num_data_packets != 0);
+        let iso_data_packet_length =
+            usable_iso.map(|buffer| usize::from(buffer.data_packet_length));
+        let iso_packet_queue = usable_iso.map(|buffer| {
+            DataPacketQueue::new(usize::from(buffer.total_num_data_packets))
+                .expect("usable ISO pool has nonzero capacity")
+        });
+
+        self.classic_acl_buffer = classic_acl;
+        self.le_acl_buffer = le_acl;
+        self.iso_buffer = iso;
+        self.acl_data_packet_length = acl_data_packet_length;
+        self.acl_packet_queue = acl_packet_queue;
+        self.le_acl_data_packet_length = le_acl_data_packet_length;
+        self.le_acl_packet_queue = le_acl_packet_queue;
+        self.iso_data_packet_length = iso_data_packet_length;
+        self.iso_packet_queue = iso_packet_queue;
+        true
+    }
+
     /// Set the controller's maximum ACL data payload, normally learned from
     /// Read Buffer Size / LE Read Buffer Size.
     pub fn set_acl_data_packet_length(&mut self, length: usize) -> bool {
