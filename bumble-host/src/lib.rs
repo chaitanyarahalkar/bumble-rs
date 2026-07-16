@@ -9601,9 +9601,7 @@ impl Device {
                     connection_handles,
                     num_completed_packets,
                 }) => {
-                    for (handle, count) in connection_handles
-                        .into_iter()
-                        .zip(num_completed_packets.into_iter())
+                    for (handle, count) in connection_handles.into_iter().zip(num_completed_packets)
                     {
                         let count = usize::from(count);
                         if self.cis_links.contains_key(&handle)
