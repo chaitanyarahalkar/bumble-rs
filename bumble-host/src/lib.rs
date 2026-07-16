@@ -668,6 +668,38 @@ pub struct ChannelSoundingError {
     pub status: u8,
 }
 
+/// One complete Channel Sounding subevent result emitted by the controller.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ChannelSoundingSubeventResult {
+    pub connection_handle: u16,
+    pub config_id: u8,
+    pub start_acl_conn_event_counter: u16,
+    pub procedure_counter: u16,
+    pub frequency_compensation: u16,
+    pub reference_power_level: i8,
+    pub procedure_done_status: u8,
+    pub subevent_done_status: u8,
+    pub abort_reason: u8,
+    pub num_antenna_paths: u8,
+    pub step_mode: Vec<u8>,
+    pub step_channel: Vec<u8>,
+    pub step_data: Vec<Vec<u8>>,
+}
+
+/// Continuation fragment for a Channel Sounding subevent result.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ChannelSoundingSubeventResultContinue {
+    pub connection_handle: u16,
+    pub config_id: u8,
+    pub procedure_done_status: u8,
+    pub subevent_done_status: u8,
+    pub abort_reason: u8,
+    pub num_antenna_paths: u8,
+    pub step_mode: Vec<u8>,
+    pub step_channel: Vec<u8>,
+    pub step_data: Vec<Vec<u8>>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ConnectionFeatureTransport {
     Le,
@@ -1071,6 +1103,9 @@ pub enum DeviceEvent {
         peer_address: Address,
         host_supported_features: [u8; 8],
     },
+    ChannelSoundingSubeventResult(ChannelSoundingSubeventResult),
+    ChannelSoundingSubeventResultContinue(ChannelSoundingSubeventResultContinue),
+    VendorEvent(Vec<u8>),
 }
 
 /// Stable identifier returned when registering a [`DeviceEvent`] listener.
@@ -1719,6 +1754,9 @@ pub struct Device {
     pending_channel_sounding_configs: BTreeSet<(u16, u8)>,
     channel_sounding_errors: Vec<ChannelSoundingError>,
     channel_sounding_security_results: Vec<(u16, u8)>,
+    channel_sounding_subevent_results: Vec<ChannelSoundingSubeventResult>,
+    channel_sounding_subevent_result_continuations: Vec<ChannelSoundingSubeventResultContinue>,
+    vendor_events: Vec<Vec<u8>>,
     advertising_reports: Vec<AdvertisingReport>,
     extended_advertising_reports: Vec<ExtendedAdvertisingReport>,
     advertisement_accumulators: BTreeMap<(u8, [u8; 6]), AdvertisementDataAccumulator>,
@@ -1870,6 +1908,9 @@ impl Device {
             pending_channel_sounding_configs: BTreeSet::new(),
             channel_sounding_errors: Vec::new(),
             channel_sounding_security_results: Vec::new(),
+            channel_sounding_subevent_results: Vec::new(),
+            channel_sounding_subevent_result_continuations: Vec::new(),
+            vendor_events: Vec::new(),
             advertising_reports: Vec::new(),
             extended_advertising_reports: Vec::new(),
             advertisement_accumulators: BTreeMap::new(),
@@ -2022,6 +2063,9 @@ impl Device {
             pending_channel_sounding_configs: BTreeSet::new(),
             channel_sounding_errors: Vec::new(),
             channel_sounding_security_results: Vec::new(),
+            channel_sounding_subevent_results: Vec::new(),
+            channel_sounding_subevent_result_continuations: Vec::new(),
+            vendor_events: Vec::new(),
             advertising_reports: Vec::new(),
             extended_advertising_reports: Vec::new(),
             advertisement_accumulators: BTreeMap::new(),
@@ -3549,6 +3593,20 @@ impl Device {
 
     pub fn take_channel_sounding_security_results(&mut self) -> Vec<(u16, u8)> {
         std::mem::take(&mut self.channel_sounding_security_results)
+    }
+
+    pub fn take_channel_sounding_subevent_results(&mut self) -> Vec<ChannelSoundingSubeventResult> {
+        std::mem::take(&mut self.channel_sounding_subevent_results)
+    }
+
+    pub fn take_channel_sounding_subevent_result_continuations(
+        &mut self,
+    ) -> Vec<ChannelSoundingSubeventResultContinue> {
+        std::mem::take(&mut self.channel_sounding_subevent_result_continuations)
+    }
+
+    pub fn take_vendor_events(&mut self) -> Vec<Vec<u8>> {
+        std::mem::take(&mut self.vendor_events)
     }
 
     pub fn enter_sniff_mode_on_handle(
@@ -7640,6 +7698,67 @@ impl Device {
                         }
                     }
                 }
+                HciPacket::Event(Event::LeMeta(LeMetaEvent::CsSubeventResult {
+                    connection_handle,
+                    config_id,
+                    start_acl_conn_event_counter,
+                    procedure_counter,
+                    frequency_compensation,
+                    reference_power_level,
+                    procedure_done_status,
+                    subevent_done_status,
+                    abort_reason,
+                    num_antenna_paths,
+                    step_mode,
+                    step_channel,
+                    step_data,
+                })) => {
+                    let result = ChannelSoundingSubeventResult {
+                        connection_handle,
+                        config_id,
+                        start_acl_conn_event_counter,
+                        procedure_counter,
+                        frequency_compensation,
+                        reference_power_level,
+                        procedure_done_status,
+                        subevent_done_status,
+                        abort_reason,
+                        num_antenna_paths,
+                        step_mode,
+                        step_channel,
+                        step_data,
+                    };
+                    self.channel_sounding_subevent_results.push(result.clone());
+                    self.emit_device_event(DeviceEvent::ChannelSoundingSubeventResult(result));
+                }
+                HciPacket::Event(Event::LeMeta(LeMetaEvent::CsSubeventResultContinue {
+                    connection_handle,
+                    config_id,
+                    procedure_done_status,
+                    subevent_done_status,
+                    abort_reason,
+                    num_antenna_paths,
+                    step_mode,
+                    step_channel,
+                    step_data,
+                })) => {
+                    let result = ChannelSoundingSubeventResultContinue {
+                        connection_handle,
+                        config_id,
+                        procedure_done_status,
+                        subevent_done_status,
+                        abort_reason,
+                        num_antenna_paths,
+                        step_mode,
+                        step_channel,
+                        step_data,
+                    };
+                    self.channel_sounding_subevent_result_continuations
+                        .push(result.clone());
+                    self.emit_device_event(DeviceEvent::ChannelSoundingSubeventResultContinue(
+                        result,
+                    ));
+                }
                 HciPacket::Event(Event::LeMeta(LeMetaEvent::AdvertisingReport { reports })) => {
                     for report in reports {
                         self.advertising_reports.push(report.clone());
@@ -9554,6 +9673,10 @@ impl Device {
                         peer_address: bd_addr,
                         host_supported_features,
                     });
+                }
+                HciPacket::Event(Event::Vendor { data }) => {
+                    self.vendor_events.push(data.clone());
+                    self.emit_device_event(DeviceEvent::VendorEvent(data));
                 }
                 HciPacket::AclData(acl) => self.on_acl(link, acl),
                 HciPacket::SyncData(packet) => self.synchronous_inbox.push(packet),

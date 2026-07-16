@@ -5,8 +5,9 @@ use bumble_hci::{
     AclDataPacket, AdvertisingReport, Command, Event, HciPacket, IsoDataPacket, LeMetaEvent,
 };
 use bumble_host::{
-    ClassicPairingEvent, Device, DeviceConnectionTransport, DeviceEvent, HostTransport,
-    LeConnectionControlEvent, LeDataLength, PeerLookupTransport, RemoteNameError,
+    ChannelSoundingSubeventResult, ChannelSoundingSubeventResultContinue, ClassicPairingEvent,
+    Device, DeviceConnectionTransport, DeviceEvent, HostTransport, LeConnectionControlEvent,
+    LeDataLength, PeerLookupTransport, RemoteNameError,
 };
 
 fn random_address(value: &str) -> Address {
@@ -16,6 +17,98 @@ fn random_address(value: &str) -> Address {
 #[derive(Default)]
 struct ScriptedTransport {
     events: Vec<HciPacket>,
+}
+
+#[test]
+fn channel_sounding_subevents_and_vendor_events_are_retained_and_published() {
+    let handle = 0x0BAD;
+    let first = ChannelSoundingSubeventResult {
+        connection_handle: handle,
+        config_id: 2,
+        start_acl_conn_event_counter: 0x1234,
+        procedure_counter: 0x5678,
+        frequency_compensation: 0x9ABC,
+        reference_power_level: -12,
+        procedure_done_status: 1,
+        subevent_done_status: 2,
+        abort_reason: 3,
+        num_antenna_paths: 4,
+        step_mode: vec![1, 2],
+        step_channel: vec![7, 8],
+        step_data: vec![vec![0xAA, 0xBB], vec![0xCC]],
+    };
+    let continuation = ChannelSoundingSubeventResultContinue {
+        connection_handle: handle,
+        config_id: 2,
+        procedure_done_status: 4,
+        subevent_done_status: 5,
+        abort_reason: 6,
+        num_antenna_paths: 7,
+        step_mode: vec![3],
+        step_channel: vec![9],
+        step_data: vec![vec![0xDD, 0xEE]],
+    };
+    let vendor_data = vec![0x01, 0xFE, 0x80, 0x00];
+    let mut transport = ScriptedTransport {
+        events: vec![
+            HciPacket::Event(Event::LeMeta(LeMetaEvent::CsSubeventResult {
+                connection_handle: first.connection_handle,
+                config_id: first.config_id,
+                start_acl_conn_event_counter: first.start_acl_conn_event_counter,
+                procedure_counter: first.procedure_counter,
+                frequency_compensation: first.frequency_compensation,
+                reference_power_level: first.reference_power_level,
+                procedure_done_status: first.procedure_done_status,
+                subevent_done_status: first.subevent_done_status,
+                abort_reason: first.abort_reason,
+                num_antenna_paths: first.num_antenna_paths,
+                step_mode: first.step_mode.clone(),
+                step_channel: first.step_channel.clone(),
+                step_data: first.step_data.clone(),
+            })),
+            HciPacket::Event(Event::Vendor {
+                data: vendor_data.clone(),
+            }),
+            HciPacket::Event(Event::LeMeta(LeMetaEvent::CsSubeventResultContinue {
+                connection_handle: continuation.connection_handle,
+                config_id: continuation.config_id,
+                procedure_done_status: continuation.procedure_done_status,
+                subevent_done_status: continuation.subevent_done_status,
+                abort_reason: continuation.abort_reason,
+                num_antenna_paths: continuation.num_antenna_paths,
+                step_mode: continuation.step_mode.clone(),
+                step_channel: continuation.step_channel.clone(),
+                step_data: continuation.step_data.clone(),
+            })),
+        ],
+    };
+    let observed = Arc::new(Mutex::new(Vec::new()));
+    let listener_events = Arc::clone(&observed);
+    let mut device = Device::new(0);
+    device.add_event_listener(move |event| {
+        listener_events.lock().unwrap().push(event.clone());
+    });
+
+    assert!(device.poll(&mut transport));
+    assert_eq!(
+        device.take_channel_sounding_subevent_results(),
+        vec![first.clone()]
+    );
+    assert_eq!(device.take_vendor_events(), vec![vendor_data.clone()]);
+    assert_eq!(
+        device.take_channel_sounding_subevent_result_continuations(),
+        vec![continuation.clone()]
+    );
+    let journal = device.take_device_events();
+    assert_eq!(
+        journal,
+        vec![
+            DeviceEvent::ChannelSoundingSubeventResult(first),
+            DeviceEvent::VendorEvent(vendor_data),
+            DeviceEvent::ChannelSoundingSubeventResultContinue(continuation),
+        ]
+    );
+    assert_eq!(*observed.lock().unwrap(), journal);
 }
 
 impl HostTransport for ScriptedTransport {
