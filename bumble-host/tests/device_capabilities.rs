@@ -2,18 +2,22 @@ use bumble::{Address, AddressType};
 use bumble_hci::{
     AclDataPacket, Command, Event, HciPacket, IsoDataPacket, LeMetaEvent, ReturnParameters,
     HCI_LE_READ_ALL_LOCAL_SUPPORTED_FEATURES_COMMAND, HCI_LE_READ_BUFFER_SIZE_V2_COMMAND,
-    HCI_LE_READ_LOCAL_SUPPORTED_FEATURES_COMMAND, HCI_LE_SET_EVENT_MASK_COMMAND,
-    HCI_READ_BUFFER_SIZE_COMMAND, HCI_READ_LOCAL_EXTENDED_FEATURES_COMMAND,
-    HCI_READ_LOCAL_SUPPORTED_COMMANDS_COMMAND, HCI_READ_LOCAL_SUPPORTED_FEATURES_COMMAND,
-    HCI_READ_LOCAL_VERSION_INFORMATION_COMMAND, HCI_SET_EVENT_MASK_COMMAND,
-    HCI_SET_EVENT_MASK_PAGE_2_COMMAND,
+    HCI_LE_READ_LOCAL_SUPPORTED_FEATURES_COMMAND,
+    HCI_LE_READ_MAXIMUM_ADVERTISING_DATA_LENGTH_COMMAND,
+    HCI_LE_READ_NUMBER_OF_SUPPORTED_ADVERTISING_SETS_COMMAND,
+    HCI_LE_READ_SUGGESTED_DEFAULT_DATA_LENGTH_COMMAND, HCI_LE_SET_EVENT_MASK_COMMAND,
+    HCI_LE_WRITE_SUGGESTED_DEFAULT_DATA_LENGTH_COMMAND, HCI_READ_BUFFER_SIZE_COMMAND,
+    HCI_READ_LOCAL_EXTENDED_FEATURES_COMMAND, HCI_READ_LOCAL_SUPPORTED_COMMANDS_COMMAND,
+    HCI_READ_LOCAL_SUPPORTED_FEATURES_COMMAND, HCI_READ_LOCAL_VERSION_INFORMATION_COMMAND,
+    HCI_SET_EVENT_MASK_COMMAND, HCI_SET_EVENT_MASK_PAGE_2_COMMAND,
 };
 use bumble_host::{
-    ControllerBufferInfo, Device, DeviceEvent, HostTransport, LocalVersionInformation,
-    HOST_EVENT_MASK, HOST_EVENT_MASK_PAGE_2, HOST_LE_EVENT_MASK, HOST_LE_EVENT_MASK_LEGACY,
-    LE_1M_PHY, LE_2M_PHY, LE_CODED_PHY, LE_FEATURE_2M_PHY, LE_FEATURE_CODED_PHY,
-    LE_FEATURE_PERIODIC_ADVERTISING, LMP_FEATURE_INTERLACED_INQUIRY_SCAN,
-    LMP_FEATURE_INTERLACED_PAGE_SCAN,
+    ControllerBufferInfo, Device, DeviceEvent, HostTransport, LeSuggestedDefaultDataLength,
+    LocalVersionInformation, HOST_DEFAULT_MAXIMUM_ADVERTISING_DATA_LENGTH, HOST_EVENT_MASK,
+    HOST_EVENT_MASK_PAGE_2, HOST_LE_EVENT_MASK, HOST_LE_EVENT_MASK_LEGACY,
+    HOST_SUGGESTED_MAX_TX_OCTETS, HOST_SUGGESTED_MAX_TX_TIME, LE_1M_PHY, LE_2M_PHY, LE_CODED_PHY,
+    LE_FEATURE_2M_PHY, LE_FEATURE_CODED_PHY, LE_FEATURE_PERIODIC_ADVERTISING,
+    LMP_FEATURE_INTERLACED_INQUIRY_SCAN, LMP_FEATURE_INTERLACED_PAGE_SCAN,
 };
 
 #[derive(Default)]
@@ -633,6 +637,137 @@ fn zero_sized_legacy_le_pool_uses_the_classic_acl_queue() {
 }
 
 #[test]
+fn reset_reconciles_suggested_data_length_and_tolerates_advertising_query_failure() {
+    let mut device = Device::new(0);
+    let mut transport = ScriptedTransport::default();
+    let mut supported_commands = [0; 64];
+    supported_commands[33] = 0x80;
+    supported_commands[34] = 0x01;
+    supported_commands[36] = 0xC0;
+    transport.events.push(command_complete(
+        HCI_READ_LOCAL_SUPPORTED_COMMANDS_COMMAND,
+        ReturnParameters::ReadLocalSupportedCommands {
+            status: 0,
+            supported_commands,
+        },
+    ));
+    assert!(device.poll(&mut transport));
+    assert_eq!(
+        transport.commands,
+        vec![
+            Command::SetEventMask {
+                event_mask: HOST_EVENT_MASK,
+            },
+            Command::LeSetEventMask {
+                le_event_mask: HOST_LE_EVENT_MASK,
+            },
+            Command::LeReadSuggestedDefaultDataLength,
+            Command::LeReadNumberOfSupportedAdvertisingSets,
+            Command::LeReadMaximumAdvertisingDataLength,
+        ]
+    );
+
+    complete_host_masks(&mut transport);
+    transport.events.extend([
+        command_complete(
+            HCI_LE_READ_SUGGESTED_DEFAULT_DATA_LENGTH_COMMAND,
+            ReturnParameters::LeReadSuggestedDefaultDataLength {
+                status: 0,
+                suggested_max_tx_octets: 27,
+                suggested_max_tx_time: 0x0148,
+            },
+        ),
+        command_complete(
+            HCI_LE_READ_NUMBER_OF_SUPPORTED_ADVERTISING_SETS_COMMAND,
+            ReturnParameters::Status { status: 0x0C },
+        ),
+        command_complete(
+            HCI_LE_READ_MAXIMUM_ADVERTISING_DATA_LENGTH_COMMAND,
+            ReturnParameters::LeReadMaximumAdvertisingDataLength {
+                status: 0,
+                max_advertising_data_length: 1_650,
+            },
+        ),
+    ]);
+    assert!(device.poll(&mut transport));
+    assert_eq!(
+        device.suggested_default_data_length(),
+        Some(LeSuggestedDefaultDataLength {
+            suggested_max_tx_octets: 27,
+            suggested_max_tx_time: 0x0148,
+        })
+    );
+    assert_eq!(
+        transport.commands.last(),
+        Some(&Command::LeWriteSuggestedDefaultDataLength {
+            suggested_max_tx_octets: HOST_SUGGESTED_MAX_TX_OCTETS,
+            suggested_max_tx_time: HOST_SUGGESTED_MAX_TX_TIME,
+        })
+    );
+    assert!(!device.host_initialization_complete());
+
+    transport.events.push(command_complete(
+        HCI_LE_WRITE_SUGGESTED_DEFAULT_DATA_LENGTH_COMMAND,
+        ReturnParameters::Status { status: 0 },
+    ));
+    assert!(device.poll(&mut transport));
+    assert!(device.host_initialization_complete());
+    assert!(device.host_initialization_succeeded());
+    assert_eq!(device.suggested_default_data_length_read_status(), Some(0));
+    assert_eq!(device.suggested_default_data_length_write_status(), Some(0));
+    assert_eq!(
+        device.suggested_default_data_length(),
+        Some(LeSuggestedDefaultDataLength {
+            suggested_max_tx_octets: HOST_SUGGESTED_MAX_TX_OCTETS,
+            suggested_max_tx_time: HOST_SUGGESTED_MAX_TX_TIME,
+        })
+    );
+    assert_eq!(
+        device.number_of_supported_advertising_sets_status(),
+        Some(0x0C)
+    );
+    assert_eq!(device.number_of_supported_advertising_sets(), 0);
+    assert_eq!(device.maximum_advertising_data_length_status(), Some(0));
+    assert_eq!(device.maximum_advertising_data_length(), 1_650);
+}
+
+#[test]
+fn failed_suggested_data_length_read_fails_host_initialization_without_a_write() {
+    let mut device = Device::new(0);
+    let mut transport = ScriptedTransport::default();
+    let mut supported_commands = [0; 64];
+    supported_commands[33] = 0x80;
+    supported_commands[34] = 0x01;
+    transport.events.push(command_complete(
+        HCI_READ_LOCAL_SUPPORTED_COMMANDS_COMMAND,
+        ReturnParameters::ReadLocalSupportedCommands {
+            status: 0,
+            supported_commands,
+        },
+    ));
+    assert!(device.poll(&mut transport));
+    complete_host_masks(&mut transport);
+    transport.events.push(command_complete(
+        HCI_LE_READ_SUGGESTED_DEFAULT_DATA_LENGTH_COMMAND,
+        ReturnParameters::Status { status: 0x01 },
+    ));
+    assert!(device.poll(&mut transport));
+
+    assert!(device.host_initialization_complete());
+    assert!(!device.host_initialization_succeeded());
+    assert_eq!(
+        device.suggested_default_data_length_read_status(),
+        Some(0x01)
+    );
+    assert_eq!(device.suggested_default_data_length(), None);
+    assert_eq!(device.suggested_default_data_length_write_status(), None);
+    assert!(!transport
+        .commands
+        .iter()
+        .any(|command| matches!(command, Command::LeWriteSuggestedDefaultDataLength { .. })));
+}
+
+#[test]
 fn reset_flushes_ready_state_and_restarts_capability_discovery() {
     let mut device = Device::new(0);
     let mut transport = ScriptedTransport::default();
@@ -657,6 +792,16 @@ fn reset_flushes_ready_state_and_restarts_capability_discovery() {
     assert_eq!(device.classic_acl_buffer(), None);
     assert_eq!(device.le_acl_buffer(), None);
     assert_eq!(device.iso_buffer(), None);
+    assert_eq!(device.suggested_default_data_length_read_status(), None);
+    assert_eq!(device.suggested_default_data_length(), None);
+    assert_eq!(device.suggested_default_data_length_write_status(), None);
+    assert_eq!(device.number_of_supported_advertising_sets_status(), None);
+    assert_eq!(device.number_of_supported_advertising_sets(), 0);
+    assert_eq!(device.maximum_advertising_data_length_status(), None);
+    assert_eq!(
+        device.maximum_advertising_data_length(),
+        HOST_DEFAULT_MAXIMUM_ADVERTISING_DATA_LENGTH
+    );
 }
 
 #[test]

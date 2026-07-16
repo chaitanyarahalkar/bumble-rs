@@ -92,6 +92,12 @@ pub const HOST_EVENT_MASK_PAGE_2: [u8; 8] = [0, 0, 0, 2, 0, 0, 0, 0];
 pub const HOST_LE_EVENT_MASK: [u8; 8] = [0xFF, 0xFF, 0xF7, 0xFF, 0x0F, 0xED, 0x7B, 0x00];
 /// Conservative LE Meta event mask used for Bluetooth 4.0 and older controllers.
 pub const HOST_LE_EVENT_MASK_LEGACY: [u8; 8] = [0x1F, 0, 0, 0, 0, 0, 0, 0];
+/// Upstream Host reset target for the controller's suggested maximum TX octets.
+pub const HOST_SUGGESTED_MAX_TX_OCTETS: u16 = 251;
+/// Upstream Host reset target for the controller's suggested maximum TX time.
+pub const HOST_SUGGESTED_MAX_TX_TIME: u16 = 2_120;
+/// Legacy advertising-data capacity retained when the extended query is unavailable.
+pub const HOST_DEFAULT_MAXIMUM_ADVERTISING_DATA_LENGTH: u16 = 31;
 
 fn advertising_interval_units(milliseconds: f64) -> Option<u16> {
     let units = (milliseconds / 0.625).trunc();
@@ -691,6 +697,13 @@ pub struct LocalVersionInformation {
 pub struct ControllerBufferInfo {
     pub data_packet_length: u16,
     pub total_num_data_packets: u16,
+}
+
+/// Controller suggestion used as the default LE connection data length.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LeSuggestedDefaultDataLength {
+    pub suggested_max_tx_octets: u16,
+    pub suggested_max_tx_time: u16,
 }
 
 /// Host-owned metadata for one established LE ACL connection.
@@ -1612,6 +1625,14 @@ pub struct Device {
     le_buffer_status: Option<u8>,
     le_acl_buffer: Option<ControllerBufferInfo>,
     iso_buffer: Option<ControllerBufferInfo>,
+    suggested_default_data_length_read_status: Option<u8>,
+    suggested_default_data_length: Option<LeSuggestedDefaultDataLength>,
+    suggested_default_data_length_write_required: bool,
+    suggested_default_data_length_write_status: Option<u8>,
+    number_of_supported_advertising_sets_status: Option<u8>,
+    number_of_supported_advertising_sets: u8,
+    maximum_advertising_data_length_status: Option<u8>,
+    maximum_advertising_data_length: u16,
     local_channel_sounding_capabilities: Option<ChannelSoundingCapabilities>,
     local_channel_sounding_capabilities_status: Option<u8>,
     controller_id: usize,
@@ -1756,6 +1777,14 @@ impl Device {
             le_buffer_status: None,
             le_acl_buffer: None,
             iso_buffer: None,
+            suggested_default_data_length_read_status: None,
+            suggested_default_data_length: None,
+            suggested_default_data_length_write_required: false,
+            suggested_default_data_length_write_status: None,
+            number_of_supported_advertising_sets_status: None,
+            number_of_supported_advertising_sets: 0,
+            maximum_advertising_data_length_status: None,
+            maximum_advertising_data_length: HOST_DEFAULT_MAXIMUM_ADVERTISING_DATA_LENGTH,
             local_channel_sounding_capabilities: None,
             local_channel_sounding_capabilities_status: None,
             controller_id,
@@ -1900,6 +1929,14 @@ impl Device {
             le_buffer_status: None,
             le_acl_buffer: None,
             iso_buffer: None,
+            suggested_default_data_length_read_status: None,
+            suggested_default_data_length: None,
+            suggested_default_data_length_write_required: false,
+            suggested_default_data_length_write_status: None,
+            number_of_supported_advertising_sets_status: None,
+            number_of_supported_advertising_sets: 0,
+            maximum_advertising_data_length_status: None,
+            maximum_advertising_data_length: HOST_DEFAULT_MAXIMUM_ADVERTISING_DATA_LENGTH,
             local_channel_sounding_capabilities: None,
             local_channel_sounding_capabilities_status: None,
             controller_id,
@@ -2124,12 +2161,12 @@ impl Device {
         self.local_version_status
     }
 
-    /// Whether every reset-time event-mask and advertised buffer command has completed.
+    /// Whether every reset-time Host initialization command has completed.
     pub fn host_initialization_complete(&self) -> bool {
         self.host_initialization_complete
     }
 
-    /// Whether reset-time event-mask and buffer initialization completed successfully.
+    /// Whether reset-time Host initialization completed successfully.
     pub fn host_initialization_succeeded(&self) -> bool {
         if !self.host_initialization_complete
             || self.event_mask_status != Some(0)
@@ -2150,6 +2187,13 @@ impl Device {
         if (self.supports_command_name("HCI_LE_READ_BUFFER_SIZE_V2_COMMAND")
             || self.supports_command_name("HCI_LE_READ_BUFFER_SIZE_COMMAND"))
             && self.le_buffer_status != Some(0)
+        {
+            return false;
+        }
+        if self.manages_suggested_default_data_length()
+            && (self.suggested_default_data_length_read_status != Some(0)
+                || (self.suggested_default_data_length_write_required
+                    && self.suggested_default_data_length_write_status != Some(0)))
         {
             return false;
         }
@@ -2188,6 +2232,35 @@ impl Device {
         self.iso_buffer
     }
 
+    pub fn suggested_default_data_length_read_status(&self) -> Option<u8> {
+        self.suggested_default_data_length_read_status
+    }
+
+    /// Effective controller suggestion after any reset-time corrective write.
+    pub fn suggested_default_data_length(&self) -> Option<LeSuggestedDefaultDataLength> {
+        self.suggested_default_data_length
+    }
+
+    pub fn suggested_default_data_length_write_status(&self) -> Option<u8> {
+        self.suggested_default_data_length_write_status
+    }
+
+    pub fn number_of_supported_advertising_sets_status(&self) -> Option<u8> {
+        self.number_of_supported_advertising_sets_status
+    }
+
+    pub fn number_of_supported_advertising_sets(&self) -> u8 {
+        self.number_of_supported_advertising_sets
+    }
+
+    pub fn maximum_advertising_data_length_status(&self) -> Option<u8> {
+        self.maximum_advertising_data_length_status
+    }
+
+    pub fn maximum_advertising_data_length(&self) -> u16 {
+        self.maximum_advertising_data_length
+    }
+
     /// One local LMP feature page learned during reset.
     pub fn local_lmp_feature_page(&self, page_number: u8) -> Option<&[u8; 8]> {
         self.local_lmp_features.get(&page_number)
@@ -2222,6 +2295,11 @@ impl Device {
             .is_some_and(|commands| {
                 bumble_hci::metadata::supported_command_names(commands).contains(&command_name)
             })
+    }
+
+    fn manages_suggested_default_data_length(&self) -> bool {
+        self.supports_command_name("HCI_LE_READ_SUGGESTED_DEFAULT_DATA_LENGTH_COMMAND")
+            && self.supports_command_name("HCI_LE_WRITE_SUGGESTED_DEFAULT_DATA_LENGTH_COMMAND")
     }
 
     fn capability_discovery_complete(&self) -> bool {
@@ -2304,6 +2382,15 @@ impl Device {
         } else if self.supports_command_name("HCI_LE_READ_BUFFER_SIZE_COMMAND") {
             self.send_hci_command(link, Command::LeReadBufferSize);
         }
+        if self.manages_suggested_default_data_length() {
+            self.send_hci_command(link, Command::LeReadSuggestedDefaultDataLength);
+        }
+        if self.supports_command_name("HCI_LE_READ_NUMBER_OF_SUPPORTED_ADVERTISING_SETS_COMMAND") {
+            self.send_hci_command(link, Command::LeReadNumberOfSupportedAdvertisingSets);
+        }
+        if self.supports_command_name("HCI_LE_READ_MAXIMUM_ADVERTISING_DATA_LENGTH_COMMAND") {
+            self.send_hci_command(link, Command::LeReadMaximumAdvertisingDataLength);
+        }
     }
 
     fn maybe_finish_host_initialization(&mut self, link: &mut LocalLink) {
@@ -2318,6 +2405,15 @@ impl Device {
             || ((self.supports_command_name("HCI_LE_READ_BUFFER_SIZE_V2_COMMAND")
                 || self.supports_command_name("HCI_LE_READ_BUFFER_SIZE_COMMAND"))
                 && self.le_buffer_status.is_none())
+            || (self.manages_suggested_default_data_length()
+                && self.suggested_default_data_length_read_status.is_none())
+            || (self.suggested_default_data_length_write_required
+                && self.suggested_default_data_length_write_status.is_none())
+            || (self
+                .supports_command_name("HCI_LE_READ_NUMBER_OF_SUPPORTED_ADVERTISING_SETS_COMMAND")
+                && self.number_of_supported_advertising_sets_status.is_none())
+            || (self.supports_command_name("HCI_LE_READ_MAXIMUM_ADVERTISING_DATA_LENGTH_COMMAND")
+                && self.maximum_advertising_data_length_status.is_none())
         {
             return;
         }
@@ -2338,6 +2434,14 @@ impl Device {
         self.le_buffer_status = None;
         self.le_acl_buffer = None;
         self.iso_buffer = None;
+        self.suggested_default_data_length_read_status = None;
+        self.suggested_default_data_length = None;
+        self.suggested_default_data_length_write_required = false;
+        self.suggested_default_data_length_write_status = None;
+        self.number_of_supported_advertising_sets_status = None;
+        self.number_of_supported_advertising_sets = 0;
+        self.maximum_advertising_data_length_status = None;
+        self.maximum_advertising_data_length = HOST_DEFAULT_MAXIMUM_ADVERTISING_DATA_LENGTH;
         self.acl_data_packet_length = 27;
         self.acl_packet_queue =
             DataPacketQueue::new(64).expect("nonzero default ACL queue capacity");
@@ -8218,6 +8322,112 @@ impl Device {
                         self.classic_buffer_status = Some(status);
                     } else {
                         self.le_buffer_status = Some(status);
+                    }
+                    self.maybe_finish_host_initialization(link);
+                }
+                HciPacket::Event(Event::CommandComplete {
+                    command_opcode,
+                    return_parameters:
+                        bumble_hci::ReturnParameters::LeReadSuggestedDefaultDataLength {
+                            status,
+                            suggested_max_tx_octets,
+                            suggested_max_tx_time,
+                        },
+                    ..
+                }) if command_opcode
+                    == bumble_hci::HCI_LE_READ_SUGGESTED_DEFAULT_DATA_LENGTH_COMMAND =>
+                {
+                    self.suggested_default_data_length_read_status = Some(status);
+                    if status == 0 {
+                        let suggestion = LeSuggestedDefaultDataLength {
+                            suggested_max_tx_octets,
+                            suggested_max_tx_time,
+                        };
+                        self.suggested_default_data_length = Some(suggestion);
+                        self.suggested_default_data_length_write_required = suggestion
+                            != (LeSuggestedDefaultDataLength {
+                                suggested_max_tx_octets: HOST_SUGGESTED_MAX_TX_OCTETS,
+                                suggested_max_tx_time: HOST_SUGGESTED_MAX_TX_TIME,
+                            });
+                        if self.suggested_default_data_length_write_required {
+                            self.send_hci_command(
+                                link,
+                                Command::LeWriteSuggestedDefaultDataLength {
+                                    suggested_max_tx_octets: HOST_SUGGESTED_MAX_TX_OCTETS,
+                                    suggested_max_tx_time: HOST_SUGGESTED_MAX_TX_TIME,
+                                },
+                            );
+                        }
+                    }
+                    self.maybe_finish_host_initialization(link);
+                }
+                HciPacket::Event(Event::CommandComplete {
+                    command_opcode,
+                    return_parameters:
+                        bumble_hci::ReturnParameters::LeReadNumberOfSupportedAdvertisingSets {
+                            status,
+                            num_supported_advertising_sets,
+                        },
+                    ..
+                }) if command_opcode
+                    == bumble_hci::HCI_LE_READ_NUMBER_OF_SUPPORTED_ADVERTISING_SETS_COMMAND =>
+                {
+                    self.number_of_supported_advertising_sets_status = Some(status);
+                    if status == 0 {
+                        self.number_of_supported_advertising_sets = num_supported_advertising_sets;
+                    }
+                    self.maybe_finish_host_initialization(link);
+                }
+                HciPacket::Event(Event::CommandComplete {
+                    command_opcode,
+                    return_parameters:
+                        bumble_hci::ReturnParameters::LeReadMaximumAdvertisingDataLength {
+                            status,
+                            max_advertising_data_length,
+                        },
+                    ..
+                }) if command_opcode
+                    == bumble_hci::HCI_LE_READ_MAXIMUM_ADVERTISING_DATA_LENGTH_COMMAND =>
+                {
+                    self.maximum_advertising_data_length_status = Some(status);
+                    if status == 0 {
+                        self.maximum_advertising_data_length = max_advertising_data_length;
+                    }
+                    self.maybe_finish_host_initialization(link);
+                }
+                HciPacket::Event(Event::CommandComplete {
+                    command_opcode,
+                    return_parameters: bumble_hci::ReturnParameters::Status { status },
+                    ..
+                }) if matches!(
+                    command_opcode,
+                    bumble_hci::HCI_LE_READ_SUGGESTED_DEFAULT_DATA_LENGTH_COMMAND
+                        | bumble_hci::HCI_LE_WRITE_SUGGESTED_DEFAULT_DATA_LENGTH_COMMAND
+                        | bumble_hci::HCI_LE_READ_NUMBER_OF_SUPPORTED_ADVERTISING_SETS_COMMAND
+                        | bumble_hci::HCI_LE_READ_MAXIMUM_ADVERTISING_DATA_LENGTH_COMMAND
+                ) =>
+                {
+                    match command_opcode {
+                        bumble_hci::HCI_LE_READ_SUGGESTED_DEFAULT_DATA_LENGTH_COMMAND => {
+                            self.suggested_default_data_length_read_status = Some(status);
+                        }
+                        bumble_hci::HCI_LE_WRITE_SUGGESTED_DEFAULT_DATA_LENGTH_COMMAND => {
+                            self.suggested_default_data_length_write_status = Some(status);
+                            if status == 0 {
+                                self.suggested_default_data_length =
+                                    Some(LeSuggestedDefaultDataLength {
+                                        suggested_max_tx_octets: HOST_SUGGESTED_MAX_TX_OCTETS,
+                                        suggested_max_tx_time: HOST_SUGGESTED_MAX_TX_TIME,
+                                    });
+                            }
+                        }
+                        bumble_hci::HCI_LE_READ_NUMBER_OF_SUPPORTED_ADVERTISING_SETS_COMMAND => {
+                            self.number_of_supported_advertising_sets_status = Some(status);
+                        }
+                        bumble_hci::HCI_LE_READ_MAXIMUM_ADVERTISING_DATA_LENGTH_COMMAND => {
+                            self.maximum_advertising_data_length_status = Some(status);
+                        }
+                        _ => unreachable!("guard restricts Host reset tail opcodes"),
                     }
                     self.maybe_finish_host_initialization(link);
                 }

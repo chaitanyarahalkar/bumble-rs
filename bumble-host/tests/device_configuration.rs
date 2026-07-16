@@ -5,10 +5,12 @@ use bumble_controller::{Controller, LocalLink};
 use bumble_hci::{AclDataPacket, Command, HciPacket, IsoDataPacket};
 use bumble_host::{
     pump, ControllerBufferInfo, Device, DeviceConfiguration, DeviceConfigurationError,
-    DevicePowerError, ExtendedAdvertisingConfig, HostTransport, LePhyError, DEVICE_DEFAULT_ADDRESS,
-    DEVICE_DEFAULT_ADVERTISING_INTERVAL, DEVICE_DEFAULT_LE_RPA_TIMEOUT, DEVICE_DEFAULT_NAME,
-    HOST_EVENT_MASK, HOST_EVENT_MASK_PAGE_2, HOST_LE_EVENT_MASK, LE_1M_PHY, LE_2M_PHY,
-    LE_CODED_PHY,
+    DevicePowerError, ExtendedAdvertisingConfig, HostTransport, LePhyError,
+    LeSuggestedDefaultDataLength, DEVICE_DEFAULT_ADDRESS, DEVICE_DEFAULT_ADVERTISING_INTERVAL,
+    DEVICE_DEFAULT_LE_RPA_TIMEOUT, DEVICE_DEFAULT_NAME,
+    HOST_DEFAULT_MAXIMUM_ADVERTISING_DATA_LENGTH, HOST_EVENT_MASK, HOST_EVENT_MASK_PAGE_2,
+    HOST_LE_EVENT_MASK, HOST_SUGGESTED_MAX_TX_OCTETS, HOST_SUGGESTED_MAX_TX_TIME, LE_1M_PHY,
+    LE_2M_PHY, LE_CODED_PHY,
 };
 use bumble_smp::verify_resolvable_private_address;
 
@@ -561,6 +563,22 @@ fn configured_power_on_is_live_against_the_software_controller() {
             data_packet_length: 960,
             total_num_data_packets: 64,
         })
+    );
+    assert_eq!(device.suggested_default_data_length_read_status(), Some(0));
+    assert_eq!(device.suggested_default_data_length_write_status(), Some(0));
+    assert_eq!(
+        device.suggested_default_data_length(),
+        Some(LeSuggestedDefaultDataLength {
+            suggested_max_tx_octets: HOST_SUGGESTED_MAX_TX_OCTETS,
+            suggested_max_tx_time: HOST_SUGGESTED_MAX_TX_TIME,
+        })
+    );
+    assert_eq!(device.number_of_supported_advertising_sets_status(), None);
+    assert_eq!(device.number_of_supported_advertising_sets(), 0);
+    assert_eq!(device.maximum_advertising_data_length_status(), None);
+    assert_eq!(
+        device.maximum_advertising_data_length(),
+        HOST_DEFAULT_MAXIMUM_ADVERTISING_DATA_LENGTH
     );
     assert!(device.supports_le_features(&[12, 32, 38, 47, 73]));
     assert!(device.supports_le_extended_advertising());

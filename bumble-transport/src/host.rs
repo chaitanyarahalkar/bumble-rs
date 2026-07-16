@@ -10,8 +10,10 @@ use bumble_hci::{
     SynchronousDataPacket,
 };
 use bumble_host::{
-    ClassicPairingEvent, ControllerBufferInfo, Device, HostTransport, HOST_EVENT_MASK,
-    HOST_EVENT_MASK_PAGE_2, HOST_LE_EVENT_MASK, HOST_LE_EVENT_MASK_LEGACY,
+    ClassicPairingEvent, ControllerBufferInfo, Device, HostTransport, LeSuggestedDefaultDataLength,
+    HOST_DEFAULT_MAXIMUM_ADVERTISING_DATA_LENGTH, HOST_EVENT_MASK, HOST_EVENT_MASK_PAGE_2,
+    HOST_LE_EVENT_MASK, HOST_LE_EVENT_MASK_LEGACY, HOST_SUGGESTED_MAX_TX_OCTETS,
+    HOST_SUGGESTED_MAX_TX_TIME,
 };
 use bumble_l2cap::LeCreditBasedChannelSpec;
 use bumble_smp::{
@@ -59,6 +61,9 @@ pub struct ExternalControllerInfo {
     pub total_num_le_acl_data_packets: u8,
     pub iso_data_packet_length: u16,
     pub total_num_iso_data_packets: u8,
+    pub suggested_default_data_length: Option<LeSuggestedDefaultDataLength>,
+    pub number_of_supported_advertising_sets: u8,
+    pub maximum_advertising_data_length: u16,
 }
 
 /// Transport-neutral LE SMP orchestration for a live [`Device`] connection.
@@ -1661,6 +1666,9 @@ impl ExternalHost {
             total_num_le_acl_data_packets: 0,
             iso_data_packet_length: 0,
             total_num_iso_data_packets: 0,
+            suggested_default_data_length: None,
+            number_of_supported_advertising_sets: 0,
+            maximum_advertising_data_length: HOST_DEFAULT_MAXIMUM_ADVERTISING_DATA_LENGTH,
         };
         if supported_names.contains(&"HCI_READ_BUFFER_SIZE_COMMAND") {
             match self.send_successful_command(Command::ReadBufferSize, timeout)? {
@@ -1717,6 +1725,86 @@ impl ExternalHost {
             }
         }
 
+        if supported_names.contains(&"HCI_LE_READ_SUGGESTED_DEFAULT_DATA_LENGTH_COMMAND")
+            && supported_names.contains(&"HCI_LE_WRITE_SUGGESTED_DEFAULT_DATA_LENGTH_COMMAND")
+        {
+            match self
+                .send_successful_command(Command::LeReadSuggestedDefaultDataLength, timeout)?
+            {
+                ReturnParameters::LeReadSuggestedDefaultDataLength {
+                    suggested_max_tx_octets,
+                    suggested_max_tx_time,
+                    ..
+                } => {
+                    let mut suggestion = LeSuggestedDefaultDataLength {
+                        suggested_max_tx_octets,
+                        suggested_max_tx_time,
+                    };
+                    let target = LeSuggestedDefaultDataLength {
+                        suggested_max_tx_octets: HOST_SUGGESTED_MAX_TX_OCTETS,
+                        suggested_max_tx_time: HOST_SUGGESTED_MAX_TX_TIME,
+                    };
+                    if suggestion != target {
+                        self.send_successful_command(
+                            Command::LeWriteSuggestedDefaultDataLength {
+                                suggested_max_tx_octets: HOST_SUGGESTED_MAX_TX_OCTETS,
+                                suggested_max_tx_time: HOST_SUGGESTED_MAX_TX_TIME,
+                            },
+                            timeout,
+                        )?;
+                        suggestion = target;
+                    }
+                    info.suggested_default_data_length = Some(suggestion);
+                }
+                response => {
+                    return Err(Error::Remote(format!(
+                        "unexpected LE Read Suggested Default Data Length response: {response:?}"
+                    )))
+                }
+            }
+        }
+        if supported_names.contains(&"HCI_LE_READ_NUMBER_OF_SUPPORTED_ADVERTISING_SETS_COMMAND") {
+            if let Some(response) = self.send_optional_successful_command(
+                Command::LeReadNumberOfSupportedAdvertisingSets,
+                timeout,
+            )? {
+                match response {
+                    ReturnParameters::LeReadNumberOfSupportedAdvertisingSets {
+                        num_supported_advertising_sets,
+                        ..
+                    } => {
+                        info.number_of_supported_advertising_sets =
+                            num_supported_advertising_sets;
+                    }
+                    response => {
+                        return Err(Error::Remote(format!(
+                            "unexpected LE Read Number Of Supported Advertising Sets response: {response:?}"
+                        )))
+                    }
+                }
+            }
+        }
+        if supported_names.contains(&"HCI_LE_READ_MAXIMUM_ADVERTISING_DATA_LENGTH_COMMAND") {
+            if let Some(response) = self.send_optional_successful_command(
+                Command::LeReadMaximumAdvertisingDataLength,
+                timeout,
+            )? {
+                match response {
+                    ReturnParameters::LeReadMaximumAdvertisingDataLength {
+                        max_advertising_data_length,
+                        ..
+                    } => {
+                        info.maximum_advertising_data_length = max_advertising_data_length;
+                    }
+                    response => {
+                        return Err(Error::Remote(format!(
+                        "unexpected LE Read Maximum Advertising Data Length response: {response:?}"
+                    )))
+                    }
+                }
+            }
+        }
+
         let classic_acl = supported_names
             .contains(&"HCI_READ_BUFFER_SIZE_COMMAND")
             .then_some(ControllerBufferInfo {
@@ -1761,6 +1849,30 @@ impl ExternalHost {
                 "HCI command {opcode:#06x} returned Command Status instead of Command Complete"
             ))
         })
+    }
+
+    /// Send a reset-time capability query whose HCI failure is explicitly
+    /// tolerated by upstream Host reset. Transport failures and malformed
+    /// successful responses remain errors.
+    fn send_optional_successful_command(
+        &mut self,
+        command: Command,
+        timeout: Duration,
+    ) -> Result<Option<ReturnParameters>> {
+        let opcode = command.op_code();
+        let response = self.send_command(command, timeout)?;
+        if response.status() != Some(0) {
+            return Ok(None);
+        }
+        response
+            .return_parameters()
+            .cloned()
+            .map(Some)
+            .ok_or_else(|| {
+                Error::Remote(format!(
+                    "HCI command {opcode:#06x} returned Command Status instead of Command Complete"
+                ))
+            })
     }
 
     fn receive_message(&mut self, message: ReaderMessage) -> Result<ExternalHostActivity> {
@@ -2095,6 +2207,9 @@ mod tests {
         supported_commands[14] = 0xF8;
         supported_commands[22] = 0x04;
         supported_commands[25] = 0x07;
+        supported_commands[33] = 0x80;
+        supported_commands[34] = 0x01;
+        supported_commands[36] = 0xC0;
         supported_commands[41] = 0x20;
         let responses = vec![
             command_complete(Command::Reset, ReturnParameters::Status { status: 0 }),
@@ -2195,6 +2310,35 @@ mod tests {
                     total_num_iso_data_packets: 6,
                 },
             ),
+            command_complete(
+                Command::LeReadSuggestedDefaultDataLength,
+                ReturnParameters::LeReadSuggestedDefaultDataLength {
+                    status: 0,
+                    suggested_max_tx_octets: 27,
+                    suggested_max_tx_time: 0x0148,
+                },
+            ),
+            command_complete(
+                Command::LeWriteSuggestedDefaultDataLength {
+                    suggested_max_tx_octets: HOST_SUGGESTED_MAX_TX_OCTETS,
+                    suggested_max_tx_time: HOST_SUGGESTED_MAX_TX_TIME,
+                },
+                ReturnParameters::Status { status: 0 },
+            ),
+            command_complete(
+                Command::LeReadNumberOfSupportedAdvertisingSets,
+                ReturnParameters::LeReadNumberOfSupportedAdvertisingSets {
+                    status: 0,
+                    num_supported_advertising_sets: 4,
+                },
+            ),
+            command_complete(
+                Command::LeReadMaximumAdvertisingDataLength,
+                ReturnParameters::LeReadMaximumAdvertisingDataLength {
+                    status: 0,
+                    max_advertising_data_length: 1_650,
+                },
+            ),
         ];
         let sink = RecordingSink::default();
         let recorded = sink.clone();
@@ -2207,6 +2351,15 @@ mod tests {
         assert_eq!(info.le_acl_data_packet_length, 251);
         assert_eq!(info.total_num_le_acl_data_packets, 12);
         assert_eq!(info.iso_data_packet_length, 120);
+        assert_eq!(
+            info.suggested_default_data_length,
+            Some(LeSuggestedDefaultDataLength {
+                suggested_max_tx_octets: HOST_SUGGESTED_MAX_TX_OCTETS,
+                suggested_max_tx_time: HOST_SUGGESTED_MAX_TX_TIME,
+            })
+        );
+        assert_eq!(info.number_of_supported_advertising_sets, 4);
+        assert_eq!(info.maximum_advertising_data_length, 1_650);
         assert_eq!(
             info.local_version,
             Some(LocalControllerVersion {
@@ -2283,6 +2436,14 @@ mod tests {
                 .op_code(),
                 Command::ReadBufferSize.op_code(),
                 Command::LeReadBufferSizeV2.op_code(),
+                Command::LeReadSuggestedDefaultDataLength.op_code(),
+                Command::LeWriteSuggestedDefaultDataLength {
+                    suggested_max_tx_octets: HOST_SUGGESTED_MAX_TX_OCTETS,
+                    suggested_max_tx_time: HOST_SUGGESTED_MAX_TX_TIME,
+                }
+                .op_code(),
+                Command::LeReadNumberOfSupportedAdvertisingSets.op_code(),
+                Command::LeReadMaximumAdvertisingDataLength.op_code(),
             ]
         );
         let packets = recorded.0.lock().unwrap();
@@ -2310,6 +2471,77 @@ mod tests {
                 "LE subevent 0x{subevent:02X} is masked out"
             );
         }
+    }
+
+    #[test]
+    fn initialization_tolerates_advertising_capacity_query_failures() {
+        let mut supported_commands = [0; 64];
+        supported_commands[36] = 0xC0;
+        let responses = vec![
+            command_complete(Command::Reset, ReturnParameters::Status { status: 0 }),
+            command_complete(
+                Command::ReadLocalSupportedCommands,
+                ReturnParameters::ReadLocalSupportedCommands {
+                    status: 0,
+                    supported_commands,
+                },
+            ),
+            command_complete(
+                Command::SetEventMask { event_mask: [0; 8] },
+                ReturnParameters::Status { status: 0 },
+            ),
+            command_complete(
+                Command::LeSetEventMask {
+                    le_event_mask: [0; 8],
+                },
+                ReturnParameters::Status { status: 0 },
+            ),
+            command_complete(
+                Command::LeReadNumberOfSupportedAdvertisingSets,
+                ReturnParameters::Status { status: 0x0C },
+            ),
+            command_complete(
+                Command::LeReadMaximumAdvertisingDataLength,
+                ReturnParameters::Status { status: 0x01 },
+            ),
+        ];
+        let sink = RecordingSink::default();
+        let recorded = sink.clone();
+        let mut host = ExternalHost::new(split(responses, sink));
+        let mut device = Device::new(0);
+
+        let info = host
+            .initialize_device(&mut device, Duration::from_secs(1))
+            .unwrap();
+        assert_eq!(info.suggested_default_data_length, None);
+        assert_eq!(info.number_of_supported_advertising_sets, 0);
+        assert_eq!(
+            info.maximum_advertising_data_length,
+            HOST_DEFAULT_MAXIMUM_ADVERTISING_DATA_LENGTH
+        );
+        assert_eq!(
+            recorded
+                .0
+                .lock()
+                .unwrap()
+                .iter()
+                .filter_map(|packet| match packet {
+                    HciPacket::Command(command) => Some(command.op_code()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>(),
+            vec![
+                Command::Reset.op_code(),
+                Command::ReadLocalSupportedCommands.op_code(),
+                Command::SetEventMask { event_mask: [0; 8] }.op_code(),
+                Command::LeSetEventMask {
+                    le_event_mask: [0; 8],
+                }
+                .op_code(),
+                Command::LeReadNumberOfSupportedAdvertisingSets.op_code(),
+                Command::LeReadMaximumAdvertisingDataLength.op_code(),
+            ]
+        );
     }
 
     #[test]
