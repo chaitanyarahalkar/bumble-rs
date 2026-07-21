@@ -49,7 +49,7 @@ jobs:
           <meta http-equiv="refresh" content="0; url=bumble/index.html">
           <a href="bumble/index.html">Redirecting to the bumble crate documentation…</a>
           EOF
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/upload-pages-artifact@v5
         with:
           path: site
 
